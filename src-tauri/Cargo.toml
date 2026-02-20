@@ -1,0 +1,37 @@
+[package]
+name = "helixdb"
+version = "0.1.0"
+description = "HelixDB — High-Performance PostgreSQL Admin Panel"
+authors = ["you"]
+license = ""
+repository = ""
+edition = "2021"
+rust-version = "1.77.2"
+
+[lib]
+name = "app_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2.5.4", features = [] }
+
+[dependencies]
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+log = "0.4"
+tauri = { version = "2.10.0", features = ["devtools"] }
+tauri-plugin-log = "2"
+
+# Async runtime
+tokio = { version = "1", features = ["full"] }
+
+# PostgreSQL
+tokio-postgres = { version = "0.7", features = ["with-serde_json-1", "with-uuid-1", "with-chrono-0_4"] }
+deadpool-postgres = { version = "0.14" }
+postgres-native-tls = "0.5"
+native-tls = "0.2"
+
+# Utilities
+uuid = { version = "1", features = ["v4", "serde"] }
+dashmap = "6"
+chrono = { version = "0.4", features = ["serde"] }
