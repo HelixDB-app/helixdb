@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { APP_NAME } from "@/lib/app-config";
 import {
-    Database,
     Zap,
     Shield,
     Terminal,
@@ -106,9 +105,11 @@ export function WelcomeScreen({ onDismiss }: WelcomeScreenProps) {
                     <div className="flex justify-center mb-6">
                         <div className="relative">
                             <div className="absolute -inset-6 rounded-full bg-gradient-to-r from-emerald-500/20 to-cyan-500/20 blur-2xl animate-pulse-slow" />
-                            <div className="relative flex h-20 w-20 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500 to-cyan-500 shadow-2xl shadow-emerald-500/30">
-                                <Database className="h-10 w-10 text-white" />
-                            </div>
+                            <img
+                                src="/logo.png"
+                                alt=""
+                                className="relative h-20 w-20 rounded-2xl object-contain shadow-2xl shadow-emerald-500/20"
+                            />
                         </div>
                     </div>
 

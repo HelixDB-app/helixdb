@@ -4,6 +4,8 @@ import { useConnectionStore } from "@/stores/connection-store";
 import { APP_NAME, APP_VERSION } from "@/lib/app-config";
 import { Database } from "lucide-react";
 
+const APP_LOGO = "/logo.png";
+
 export function StatusBar() {
     const { isConnected, databaseName, serverVersion, selectedTable, selectedSchema } = useConnectionStore();
 
@@ -54,7 +56,8 @@ export function StatusBar() {
                         PostgreSQL {pgVersion}
                     </span>
                 )}
-                <span className="text-[10px] text-muted-foreground/25 font-mono">
+                <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground/25 font-mono">
+                    <img src={APP_LOGO} alt="" className="h-3.5 w-3.5 rounded object-contain opacity-80" />
                     {`${APP_NAME} v${APP_VERSION.split(".").slice(0, 2).join(".")}`}
                 </span>
             </div>

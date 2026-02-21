@@ -155,9 +155,7 @@ export function LandingConnections() {
             >
                 {/* Logo */}
                 <div className="flex items-center gap-2.5">
-                    <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-gradient-to-br from-emerald-500 to-cyan-500 shadow-sm shadow-emerald-500/25">
-                        <Database className="h-3.5 w-3.5 text-white" />
-                    </div>
+                    <img src="/logo.png" alt="" className="h-7 w-7 rounded-lg object-contain shrink-0" />
                     <span className="font-bold text-sm bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent tracking-tight">
                         {APP_NAME}
                     </span>

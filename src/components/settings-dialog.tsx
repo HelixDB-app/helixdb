@@ -34,7 +34,6 @@ import {
     Check,
     Minus,
     Plus,
-    Database,
     Zap,
 } from "lucide-react";
 import { toast } from "sonner";
@@ -484,9 +483,7 @@ function AboutSection() {
         <div className="space-y-5">
             <SettingSection title="Application">
                 <div className="py-4 flex items-start gap-4">
-                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-500 to-cyan-500 shadow-md shadow-emerald-500/20 shrink-0">
-                        <Database className="h-5 w-5 text-white" />
-                    </div>
+                    <img src="/logo.png" alt="" className="h-10 w-10 rounded-xl object-contain shrink-0" />
                     <div>
                         <p className="font-semibold text-foreground">
                             {APP_NAME}

@@ -7,7 +7,9 @@
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
-    "tauri": "cargo tauri"
+    "tauri": "cargo tauri",
+    "build:mac": "CI= pnpm tauri build",
+    "release:mac": "pnpm build:mac"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

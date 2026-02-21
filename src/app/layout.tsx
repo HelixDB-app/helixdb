@@ -20,6 +20,7 @@ export const metadata: Metadata = {
   title: `${APP_NAME} — ${APP_TAGLINE}`,
   description:
     "A blazing-fast, modern database admin panel powered by Rust and Next.js",
+  icons: { icon: "/logo.png" },
 };
 
 export default function RootLayout({

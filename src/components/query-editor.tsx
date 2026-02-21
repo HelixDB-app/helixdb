@@ -13,6 +13,7 @@ import { SandboxDiffViewer } from "@/components/sandbox-diff-viewer";
 import { DataCanvas } from "@/components/data-canvas";
 import { format as formatSQL } from "sql-formatter";
 import { MonacoSqlEditor } from "@/components/monaco-sql-editor";
+import { aiSuggestionEngine } from "@/lib/ai-suggestions";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -47,7 +48,6 @@ import {
     X,
     Loader2,
     Clock,
-    Rows3,
     AlertCircle,
     CheckCircle2,
     Terminal,
@@ -81,6 +81,32 @@ function timeAgo(ms: number): string {
     if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
     if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
     return new Date(ms).toLocaleDateString();
+}
+
+/** True when backend returned a single "affected_rows" column (INSERT/UPDATE/DELETE). */
+function isCommandResult(result: QueryResult): boolean {
+    return (
+        result.columns.length === 1 &&
+        result.columns[0].name === "affected_rows" &&
+        result.rows.length === 1
+    );
+}
+
+/** Display count: for command results use the cell value; for SELECT use row_count. */
+function getDisplayCount(result: QueryResult): number {
+    if (isCommandResult(result)) {
+        const cell = result.rows[0]?.[0];
+        if (cell && "value" in cell && typeof cell.value === "number") return cell.value;
+    }
+    return result.row_count;
+}
+
+/** Human-readable row summary: "2 rows affected" vs "3 rows returned". */
+function getRowCountLabel(result: QueryResult): string {
+    const n = getDisplayCount(result);
+    const affected = isCommandResult(result);
+    if (n === 1) return affected ? "1 row affected" : "1 row returned";
+    return affected ? `${n.toLocaleString()} rows affected` : `${n.toLocaleString()} rows returned`;
 }
 
 function exportResultToCSV(result: QueryResult): string {
@@ -555,6 +581,9 @@ export function QueryEditor() {
 
     // Column cache for schema-aware completions: tableName → column names
     const [columnCache, setColumnCache] = useState<Record<string, string[]>>({});
+    // Ref so eager-loader can read current cache without being in its dep array
+    const columnCacheRef = useRef<Record<string, string[]>>({});
+    useEffect(() => { columnCacheRef.current = columnCache; }, [columnCache]);
 
     // Build schema context from connection store
     const schemaContext = useMemo(
@@ -565,10 +594,53 @@ export function QueryEditor() {
         [tables, columnCache]
     );
 
-    // Lazily fetch columns for autocomplete when user types "tableName."
+    // ── Eager column preloading ─────────────────────────────────────────────
+    // When the connection or table list changes, batch-fetch columns for every
+    // table so the AI always has the real schema instead of guessing.
+    useEffect(() => {
+        if (!connectionId || tables.length === 0) return;
+        let cancelled = false;
+
+        const load = async () => {
+            const BATCH = 6;
+            for (let i = 0; i < tables.length; i += BATCH) {
+                if (cancelled) break;
+                const batch = tables.slice(i, i + BATCH);
+                await Promise.allSettled(
+                    batch
+                        .filter((t) => !columnCacheRef.current[t.name])
+                        .map(async (tableInfo) => {
+                            try {
+                                const cols = await dbGetColumns(
+                                    connectionId,
+                                    tableInfo.schema,
+                                    tableInfo.name
+                                );
+                                if (!cancelled) {
+                                    setColumnCache((prev) => ({
+                                        ...prev,
+                                        [tableInfo.name]: cols.map((c) => c.name),
+                                    }));
+                                }
+                            } catch {
+                                // ignore individual failures silently
+                            }
+                        })
+                );
+            }
+        };
+
+        load();
+        return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [connectionId, tables]);
+
+    // Lazily fetch columns on-demand (e.g. "tableName." typed) — keeps cache warm
     const handleFetchColumns = useCallback(
         async (tableName: string): Promise<string[]> => {
             if (!connectionId) return [];
+            const cached = columnCacheRef.current[tableName];
+            if (cached) return cached;
             const tableInfo = tables.find(
                 (t) => t.name.toLowerCase() === tableName.toLowerCase()
             );
@@ -605,6 +677,31 @@ export function QueryEditor() {
             }
         },
         [activeTabId, updateSql]
+    );
+
+    // Convert a next-action suggestion (plain-text description) to SQL and apply it
+    const handleNextAction = useCallback(
+        async (action: string) => {
+            if (!activeTabId) return;
+            const currentSql = activeTab?.sql ?? "";
+            toast.loading("Nova is applying suggestion…", { id: "nova-action" });
+            try {
+                const ctx = schemaContext;
+                const prompt = currentSql
+                    ? `Given this existing query:\n${currentSql}\n\nApply the following change and return the updated SQL:\n${action}`
+                    : action;
+                const newSql = await aiSuggestionEngine.getNaturalLanguageSQL(prompt, ctx);
+                if (newSql) {
+                    updateSql(activeTabId, newSql);
+                    toast.success("Suggestion applied", { id: "nova-action", duration: 1500 });
+                } else {
+                    toast.dismiss("nova-action");
+                }
+            } catch {
+                toast.error("Nova couldn't apply the suggestion", { id: "nova-action", duration: 2000 });
+            }
+        },
+        [activeTabId, activeTab?.sql, schemaContext, updateSql]
     );
 
     // Load history from localStorage on mount
@@ -926,6 +1023,7 @@ export function QueryEditor() {
                             onExecute={handleExecute}
                             onFormatSql={handleFormatSql}
                             onFetchColumns={handleFetchColumns}
+                            onNextAction={handleNextAction}
                             schemaContext={schemaContext}
                             disabled={activeTab.isExecuting}
                             className="rounded-none border-0"
@@ -1141,150 +1239,158 @@ export function QueryEditor() {
                                             </Button>
                                         </div>
                                     )}
-                                    {/* Result info bar */}
-                                    <div className="flex items-center justify-between gap-3 px-4 py-2 border-b border-border/20 bg-card/20 shrink-0">
-                                        <div className="flex items-center gap-2">
-                                            <div className="flex items-center gap-1.5">
-                                                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-400" />
-                                                <span className="text-xs font-medium text-emerald-400">
-                                                    Success
+                                    {/* Result info bar — success message and stats */}
+                                    <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-border/20 bg-emerald-500/5 shrink-0">
+                                        <div className="flex items-center gap-3">
+                                            <div className="flex items-center gap-2">
+                                                <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                                                <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
+                                                    Query succeeded
                                                 </span>
                                             </div>
-                                            <Badge
-                                                variant="secondary"
-                                                className="text-[10px] font-mono gap-1"
-                                            >
-                                                <Rows3 className="h-3 w-3" />
-                                                {activeTab.result.row_count} rows
-                                            </Badge>
+                                            <span className="text-muted-foreground text-xs">
+                                                {getRowCountLabel(activeTab.result)}
+                                            </span>
                                             <Badge
                                                 variant="outline"
-                                                className="text-[10px] font-mono gap-1 border-emerald-500/20 text-emerald-400"
+                                                className="text-[10px] font-mono gap-1 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
                                             >
                                                 <Clock className="h-3 w-3" />
                                                 {activeTab.result.execution_time_ms.toFixed(1)}ms
                                             </Badge>
                                         </div>
 
-                                        {/* Export dropdown */}
+                                        {/* Export dropdown — only for result sets with multiple columns */}
                                         <div className="flex items-center gap-1">
-                                            <Tooltip>
-                                                <TooltipTrigger asChild>
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="sm"
-                                                        className="h-7 text-xs gap-1.5 text-muted-foreground hover:text-foreground px-2"
-                                                        onClick={() => {
-                                                            const r = activeTab.result!;
-                                                            const header = r.columns.map((c) => c.name).join("\t");
-                                                            const rows = r.rows.map((row) =>
-                                                                row.map((cell) => formatCellValue(cell)).join("\t")
-                                                            );
-                                                            navigator.clipboard.writeText([header, ...rows].join("\n"));
-                                                            toast.success("Copied as TSV", { duration: 1500 });
-                                                        }}
-                                                        disabled={!hasResult}
-                                                    >
-                                                        <Copy className="h-3 w-3" />
-                                                        Copy
-                                                    </Button>
-                                                </TooltipTrigger>
-                                                <TooltipContent>Copy as TSV</TooltipContent>
-                                            </Tooltip>
+                                            {!isCommandResult(activeTab.result) && (
+                                                <>
+                                                    <Tooltip>
+                                                        <TooltipTrigger asChild>
+                                                            <Button
+                                                                variant="ghost"
+                                                                size="sm"
+                                                                className="h-7 text-xs gap-1.5 text-muted-foreground hover:text-foreground px-2"
+                                                                onClick={() => {
+                                                                    const r = activeTab.result!;
+                                                                    const header = r.columns.map((c) => c.name).join("\t");
+                                                                    const rows = r.rows.map((row) =>
+                                                                        row.map((cell) => formatCellValue(cell)).join("\t")
+                                                                    );
+                                                                    navigator.clipboard.writeText([header, ...rows].join("\n"));
+                                                                    toast.success("Copied as TSV", { duration: 1500 });
+                                                                }}
+                                                                disabled={!hasResult}
+                                                            >
+                                                                <Copy className="h-3 w-3" />
+                                                                Copy
+                                                            </Button>
+                                                        </TooltipTrigger>
+                                                        <TooltipContent>Copy as TSV</TooltipContent>
+                                                    </Tooltip>
 
-                                            <DropdownMenu>
-                                                <DropdownMenuTrigger asChild>
-                                                    <Button
-                                                        variant="ghost"
-                                                        size="sm"
-                                                        className="h-7 text-xs gap-1.5 text-muted-foreground hover:text-foreground px-2"
-                                                        disabled={!hasResult}
-                                                    >
-                                                        <Download className="h-3 w-3" />
-                                                        Export
-                                                        <ChevronDown className="h-3 w-3 ml-0.5" />
-                                                    </Button>
-                                                </DropdownMenuTrigger>
-                                                <DropdownMenuContent align="end" className="w-44">
-                                                    <DropdownMenuItem
-                                                        onClick={() => handleExport("csv")}
-                                                        className="gap-2 text-xs"
-                                                    >
-                                                        <FileText className="h-3.5 w-3.5" />
-                                                        Download as CSV
-                                                    </DropdownMenuItem>
-                                                    <DropdownMenuItem
-                                                        onClick={() => handleExport("json")}
-                                                        className="gap-2 text-xs"
-                                                    >
-                                                        <Braces className="h-3.5 w-3.5" />
-                                                        Download as JSON
-                                                    </DropdownMenuItem>
-                                                </DropdownMenuContent>
-                                            </DropdownMenu>
+                                                    <DropdownMenu>
+                                                        <DropdownMenuTrigger asChild>
+                                                            <Button
+                                                                variant="ghost"
+                                                                size="sm"
+                                                                className="h-7 text-xs gap-1.5 text-muted-foreground hover:text-foreground px-2"
+                                                                disabled={!hasResult}
+                                                            >
+                                                                <Download className="h-3 w-3" />
+                                                                Export
+                                                                <ChevronDown className="h-3 w-3 ml-0.5" />
+                                                            </Button>
+                                                        </DropdownMenuTrigger>
+                                                        <DropdownMenuContent align="end" className="w-44">
+                                                            <DropdownMenuItem
+                                                                onClick={() => handleExport("csv")}
+                                                                className="gap-2 text-xs"
+                                                            >
+                                                                <FileText className="h-3.5 w-3.5" />
+                                                                Download as CSV
+                                                            </DropdownMenuItem>
+                                                            <DropdownMenuItem
+                                                                onClick={() => handleExport("json")}
+                                                                className="gap-2 text-xs"
+                                                            >
+                                                                <Braces className="h-3.5 w-3.5" />
+                                                                Download as JSON
+                                                            </DropdownMenuItem>
+                                                        </DropdownMenuContent>
+                                                    </DropdownMenu>
+                                                </>
+                                            )}
                                         </div>
                                     </div>
 
-                                    {/* Result table */}
-                                    <ScrollArea className="flex-1">
-                                        <Table>
-                                            <TableHeader>
-                                                <TableRow className="hover:bg-transparent border-border/30">
-                                                    <TableHead className="w-12 text-center text-[10px] font-mono text-muted-foreground/50">
-                                                        #
-                                                    </TableHead>
-                                                    {activeTab.result.columns.map((col) => (
-                                                        <TableHead key={col.name} className="whitespace-nowrap">
-                                                            <div className="flex items-center gap-1.5">
-                                                                <span className="text-xs font-semibold">
-                                                                    {col.name}
-                                                                </span>
-                                                                <span className="text-[10px] font-mono text-muted-foreground/40">
-                                                                    {col.data_type}
-                                                                </span>
-                                                            </div>
+                                    {/* Result: compact message for INSERT/UPDATE/DELETE, table for SELECT */}
+                                    {isCommandResult(activeTab.result) ? (
+                                        <div className="flex-1 flex items-center justify-center p-6">
+                                            <p className="text-sm text-muted-foreground">
+                                                {getDisplayCount(activeTab.result).toLocaleString()} row{getDisplayCount(activeTab.result) !== 1 ? "s" : ""} affected.
+                                            </p>
+                                        </div>
+                                    ) : (
+                                        <ScrollArea className="flex-1">
+                                            <Table>
+                                                <TableHeader>
+                                                    <TableRow className="hover:bg-transparent border-border/30">
+                                                        <TableHead className="w-12 text-center text-[10px] font-mono text-muted-foreground/50">
+                                                            #
                                                         </TableHead>
-                                                    ))}
-                                                </TableRow>
-                                            </TableHeader>
-                                            <TableBody>
-                                                {activeTab.result.rows.map((row, rowIdx) => (
-                                                    <TableRow
-                                                        key={rowIdx}
-                                                        className="border-border/20 hover:bg-accent/30 transition-colors"
-                                                    >
-                                                        <TableCell className="text-center text-[10px] font-mono text-muted-foreground/40">
-                                                            {rowIdx + 1}
-                                                        </TableCell>
-                                                        {row.map((cell, colIdx) => (
-                                                            <TableCell
-                                                                key={colIdx}
-                                                                className={cn(
-                                                                    "text-xs font-mono max-w-xs truncate cursor-pointer hover:bg-accent/30 transition-colors",
-                                                                    cell.type === "Null" &&
-                                                                    "text-muted-foreground/30 italic"
-                                                                )}
-                                                                title={formatCellValue(cell)}
-                                                                onClick={() => {
-                                                                    if (cell.type !== "Null") {
-                                                                        navigator.clipboard.writeText(
-                                                                            formatCellValue(cell)
-                                                                        );
-                                                                        toast.success("Copied", {
-                                                                            duration: 1200,
-                                                                        });
-                                                                    }
-                                                                }}
-                                                            >
-                                                                {formatCellValue(cell)}
-                                                            </TableCell>
+                                                        {activeTab.result.columns.map((col) => (
+                                                            <TableHead key={col.name} className="whitespace-nowrap">
+                                                                <div className="flex items-center gap-1.5">
+                                                                    <span className="text-xs font-semibold">
+                                                                        {col.name}
+                                                                    </span>
+                                                                    <span className="text-[10px] font-mono text-muted-foreground/40">
+                                                                        {col.data_type}
+                                                                    </span>
+                                                                </div>
+                                                            </TableHead>
                                                         ))}
                                                     </TableRow>
-                                                ))}
-                                            </TableBody>
-                                        </Table>
-                                        <ScrollBar orientation="horizontal" />
-                                    </ScrollArea>
+                                                </TableHeader>
+                                                <TableBody>
+                                                    {activeTab.result.rows.map((row, rowIdx) => (
+                                                        <TableRow
+                                                            key={rowIdx}
+                                                            className="border-border/20 hover:bg-accent/30 transition-colors"
+                                                        >
+                                                            <TableCell className="text-center text-[10px] font-mono text-muted-foreground/40">
+                                                                {rowIdx + 1}
+                                                            </TableCell>
+                                                            {row.map((cell, colIdx) => (
+                                                                <TableCell
+                                                                    key={colIdx}
+                                                                    className={cn(
+                                                                        "text-xs font-mono max-w-xs truncate cursor-pointer hover:bg-accent/30 transition-colors",
+                                                                        cell.type === "Null" &&
+                                                                        "text-muted-foreground/30 italic"
+                                                                    )}
+                                                                    title={formatCellValue(cell)}
+                                                                    onClick={() => {
+                                                                        if (cell.type !== "Null") {
+                                                                            navigator.clipboard.writeText(
+                                                                                formatCellValue(cell)
+                                                                            );
+                                                                            toast.success("Copied", {
+                                                                                duration: 1200,
+                                                                            });
+                                                                        }
+                                                                    }}
+                                                                >
+                                                                    {formatCellValue(cell)}
+                                                                </TableCell>
+                                                            ))}
+                                                        </TableRow>
+                                                    ))}
+                                                </TableBody>
+                                            </Table>
+                                            <ScrollBar orientation="horizontal" />
+                                        </ScrollArea>
+                                    )}
                                 </div>
                             )
                         ) : null}

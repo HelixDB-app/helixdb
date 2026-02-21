@@ -29,7 +29,6 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
     Activity,
-    Database,
     Layers,
     PlugZap,
     RefreshCw,
@@ -127,9 +126,7 @@ export default function Home() {
                         onClick={() => !isConnected && setShowConnectionDialog(true)}
                         className="flex items-center gap-2 group"
                     >
-                        <div className="flex h-6 w-6 items-center justify-center rounded-md bg-gradient-to-br from-emerald-500 to-cyan-500 shadow-sm shadow-emerald-500/20">
-                            <Database className="h-3.5 w-3.5 text-white" />
-                        </div>
+                        <img src="/logo.png" alt="" className="h-6 w-6 rounded-md object-contain shrink-0" />
                         <span className="font-bold text-sm bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">
                             {APP_NAME}
                         </span>
