@@ -12,6 +12,20 @@ import {
     TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+    ContextMenu,
+    ContextMenuContent,
+    ContextMenuItem,
+    ContextMenuLabel,
+    ContextMenuSeparator,
+    ContextMenuSub,
+    ContextMenuSubContent,
+    ContextMenuSubTrigger,
+    ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import { TableManagerDialog } from "@/components/table-manager-dialog";
+import { CreateTableDialog } from "@/components/create-table-dialog";
+import { CreateDatabaseDialog } from "@/components/create-database-dialog";
+import {
     ChevronRight,
     ChevronDown,
     Table2,
@@ -28,8 +42,18 @@ import {
     Code2,
     Type,
     Braces,
+    Columns,
+    ShieldCheck,
+    Hash,
+    Trash2,
+    AlertTriangle,
+    Copy,
+    Play,
+    Info,
+    Plus,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 
 function formatRowCount(count: number): string {
     if (count < 0) return "~";
@@ -51,6 +75,8 @@ function TreeNode({
     isActive,
     level = 0,
     iconColor = "text-muted-foreground",
+    onAdd,
+    addTitle,
 }: {
     icon: React.ElementType;
     label: string;
@@ -60,31 +86,47 @@ function TreeNode({
     isActive?: boolean;
     level?: number;
     iconColor?: string;
+    onAdd?: () => void;
+    addTitle?: string;
 }) {
     return (
-        <button
-            type="button"
-            onClick={onToggle}
+        <div
             className={cn(
-                "flex w-full items-center gap-2 py-1.5 text-left text-xs transition-colors rounded-r-md",
+                "group flex w-full items-center gap-2 py-1.5 text-left text-xs transition-colors rounded-r-md",
                 "hover:bg-accent/50",
                 isActive && "bg-primary/10 text-primary"
             )}
             style={{ paddingLeft: INDENT + level * 14 }}
         >
-            {expanded ? (
-                <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
-            ) : (
-                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+            <button
+                type="button"
+                onClick={onToggle}
+                className="flex flex-1 min-w-0 items-center gap-2"
+            >
+                {expanded ? (
+                    <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                ) : (
+                    <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
+                )}
+                <Icon className={cn("h-3.5 w-3.5 shrink-0", iconColor)} />
+                <span className="truncate flex-1 font-medium">{label}</span>
+                {count != null && (
+                    <span className="shrink-0 min-w-[1.25rem] text-right text-[10px] font-mono text-muted-foreground/70 tabular-nums">
+                        {count}
+                    </span>
+                )}
+            </button>
+            {onAdd && (
+                <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onAdd(); }}
+                    title={addTitle ?? `Add ${label.toLowerCase()}`}
+                    className="mr-1 opacity-0 group-hover:opacity-100 transition-opacity h-4 w-4 flex items-center justify-center rounded hover:bg-emerald-500/20 text-emerald-400/70 hover:text-emerald-400 shrink-0"
+                >
+                    <Plus className="h-2.5 w-2.5" />
+                </button>
             )}
-            <Icon className={cn("h-3.5 w-3.5 shrink-0", iconColor)} />
-            <span className="truncate flex-1 font-medium">{label}</span>
-            {count != null && (
-                <span className="shrink-0 min-w-[1.25rem] text-right text-[10px] font-mono text-muted-foreground/70 tabular-nums">
-                    {count}
-                </span>
-            )}
-        </button>
+        </div>
     );
 }
 
@@ -94,20 +136,34 @@ function SchemaSectionHeader({
     label,
     count,
     iconColor = "text-muted-foreground/70",
+    onAdd,
+    addTitle,
 }: {
     icon: React.ElementType;
     label: string;
     count: number;
     iconColor?: string;
+    onAdd?: () => void;
+    addTitle?: string;
 }) {
     return (
         <div
-            className="flex items-center gap-2 py-1 pr-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 border-l-2 border-transparent pl-1"
+            className="group flex items-center gap-2 py-1 pr-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/60 border-l-2 border-transparent"
             style={{ paddingLeft: LEAF_INDENT + 4 }}
         >
             <Icon className={cn("h-3 w-3 shrink-0", iconColor)} />
             <span>{label}</span>
             <span className="font-mono tabular-nums">({count})</span>
+            {onAdd && (
+                <button
+                    type="button"
+                    onClick={(e) => { e.stopPropagation(); onAdd(); }}
+                    title={addTitle ?? `Add ${label.toLowerCase()}`}
+                    className="ml-auto opacity-0 group-hover:opacity-100 transition-opacity h-4 w-4 flex items-center justify-center rounded hover:bg-emerald-500/20 text-emerald-400/70 hover:text-emerald-400"
+                >
+                    <Plus className="h-2.5 w-2.5" />
+                </button>
+            )}
         </div>
     );
 }
@@ -158,6 +214,149 @@ function ObjectLeaf({
     );
 }
 
+/** Table/View leaf wrapped with a right-click context menu */
+function TableLeaf({
+    schema,
+    tableName,
+    isView,
+    isActive,
+    rowCount,
+    onClick,
+    onOpenManager,
+}: {
+    schema: string;
+    tableName: string;
+    isView: boolean;
+    isActive: boolean;
+    rowCount?: number;
+    onClick: () => void;
+    onOpenManager: (tab: string) => void;
+}) {
+    const copyName = () => {
+        navigator.clipboard.writeText(tableName);
+        toast.success("Table name copied");
+    };
+    const copyQualified = () => {
+        navigator.clipboard.writeText(`"${schema}"."${tableName}"`);
+        toast.success("Qualified name copied");
+    };
+
+    const Icon = isView ? Eye : Table2;
+
+    return (
+        <ContextMenu>
+            <ContextMenuTrigger asChild>
+                <button
+                    type="button"
+                    onClick={onClick}
+                    className={cn(
+                        "flex w-full items-center gap-2 py-1 pr-2 text-left text-xs transition-colors rounded-r-md",
+                        "hover:bg-accent/40",
+                        isActive && "bg-primary/10 border-r-2 border-primary text-primary"
+                    )}
+                    style={{ paddingLeft: LEAF_INDENT + 20 }}
+                >
+                    <span className="w-3.5 shrink-0" />
+                    <Icon
+                        className={cn(
+                            "h-3 w-3 shrink-0",
+                            isActive ? "text-primary" : "text-muted-foreground/60"
+                        )}
+                    />
+                    <span className={cn("truncate flex-1", isActive && "font-medium")}>
+                        {tableName}
+                    </span>
+                    {rowCount != null && rowCount >= 0 && (
+                        <span className="text-[9px] font-mono text-muted-foreground/40 tabular-nums shrink-0">
+                            {formatRowCount(rowCount)}
+                        </span>
+                    )}
+                </button>
+            </ContextMenuTrigger>
+            <ContextMenuContent className="w-52">
+                <ContextMenuLabel className="flex items-center gap-1.5">
+                    <Icon className="h-3 w-3 text-muted-foreground/60" />
+                    <span className="font-mono truncate">{tableName}</span>
+                </ContextMenuLabel>
+                <ContextMenuSeparator />
+
+                <ContextMenuItem onClick={onClick}>
+                    <Eye className="h-3.5 w-3.5" />
+                    View Data
+                </ContextMenuItem>
+                <ContextMenuItem onClick={() => onOpenManager("overview")}>
+                    <Info className="h-3.5 w-3.5" />
+                    Table Details
+                </ContextMenuItem>
+
+                <ContextMenuSeparator />
+                <ContextMenuLabel>Structure</ContextMenuLabel>
+
+                <ContextMenuItem onClick={() => onOpenManager("columns")}>
+                    <Columns className="h-3.5 w-3.5" />
+                    Manage Columns
+                </ContextMenuItem>
+                <ContextMenuItem onClick={() => onOpenManager("constraints")}>
+                    <ShieldCheck className="h-3.5 w-3.5" />
+                    View Constraints
+                </ContextMenuItem>
+                <ContextMenuItem onClick={() => onOpenManager("indexes")}>
+                    <Hash className="h-3.5 w-3.5" />
+                    View Indexes
+                </ContextMenuItem>
+                {!isView && (
+                    <ContextMenuItem onClick={() => onOpenManager("triggers")}>
+                        <Zap className="h-3.5 w-3.5" />
+                        View Triggers
+                    </ContextMenuItem>
+                )}
+
+                <ContextMenuSeparator />
+                <ContextMenuLabel>Actions</ContextMenuLabel>
+
+                <ContextMenuItem onClick={() => onOpenManager("sql")}>
+                    <Play className="h-3.5 w-3.5 text-emerald-400" />
+                    Run SQL Script
+                </ContextMenuItem>
+
+                <ContextMenuSub>
+                    <ContextMenuSubTrigger>
+                        <Copy className="h-3.5 w-3.5" />
+                        Copy Name
+                    </ContextMenuSubTrigger>
+                    <ContextMenuSubContent>
+                        <ContextMenuItem onClick={copyName}>
+                            Table name only
+                        </ContextMenuItem>
+                        <ContextMenuItem onClick={copyQualified}>
+                            Qualified (schema.table)
+                        </ContextMenuItem>
+                    </ContextMenuSubContent>
+                </ContextMenuSub>
+
+                <ContextMenuSeparator />
+
+                {!isView && (
+                    <ContextMenuItem
+                        onClick={() => onOpenManager("overview")}
+                        className="text-amber-400 focus:text-amber-300 focus:bg-amber-500/10"
+                    >
+                        <AlertTriangle className="h-3.5 w-3.5" />
+                        Truncate Table…
+                    </ContextMenuItem>
+                )}
+                <ContextMenuItem
+                    onClick={() => onOpenManager("overview")}
+                    className="text-destructive focus:text-destructive focus:bg-destructive/10"
+                >
+                    <Trash2 className="h-3.5 w-3.5" />
+                    Drop {isView ? "View" : "Table"}…
+                </ContextMenuItem>
+            </ContextMenuContent>
+        </ContextMenu>
+    );
+}
+
 /** Read-only leaf (e.g. event trigger, function name without table select) */
 function InfoLeaf({
     icon: Icon,
@@ -182,7 +381,69 @@ function InfoLeaf({
     );
 }
 
-export function Sidebar() {
+function DropDatabaseConfirm({
+    name,
+    isDropping,
+    onConfirm,
+    onCancel,
+}: {
+    name: string;
+    isDropping: boolean;
+    onConfirm: () => void;
+    onCancel: () => void;
+}) {
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+            <div className="w-full max-w-sm rounded-xl border border-border/40 bg-card shadow-2xl p-5 space-y-4 mx-4">
+                <div className="flex items-start gap-3">
+                    <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-destructive/15">
+                        <AlertTriangle className="h-4 w-4 text-destructive" />
+                    </div>
+                    <div className="space-y-1">
+                        <p className="text-sm font-semibold">Drop database?</p>
+                        <p className="text-xs text-muted-foreground">
+                            This will permanently delete{" "}
+                            <span className="font-mono font-medium text-foreground">
+                                {name}
+                            </span>{" "}
+                            and all its data. This action cannot be undone.
+                        </p>
+                    </div>
+                </div>
+                <div className="flex justify-end gap-2">
+                    <button
+                        type="button"
+                        onClick={onCancel}
+                        disabled={isDropping}
+                        className="h-8 px-3 text-xs rounded-lg border border-border/40 bg-background/60 hover:bg-accent/50 transition-colors disabled:opacity-50"
+                    >
+                        Cancel
+                    </button>
+                    <button
+                        type="button"
+                        onClick={onConfirm}
+                        disabled={isDropping}
+                        className="h-8 px-3 text-xs rounded-lg bg-destructive text-destructive-foreground hover:bg-destructive/90 transition-colors disabled:opacity-50 flex items-center gap-1.5"
+                    >
+                        {isDropping ? (
+                            <>
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                                Dropping…
+                            </>
+                        ) : (
+                            <>
+                                <Trash2 className="h-3 w-3" />
+                                Drop Database
+                            </>
+                        )}
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}) {
     const {
         schemas,
         tables,
@@ -204,6 +465,8 @@ export function Sidebar() {
         previewSelection,
         refreshSchemas,
         switchDatabase,
+        dropDatabase,
+        isLoadingDatabases,
     } = useConnectionStore();
 
     const [search, setSearch] = useState("");
@@ -213,6 +476,22 @@ export function Sidebar() {
     const [dbPickerOpen, setDbPickerOpen] = useState(false);
     const [dbSearch, setDbSearch] = useState("");
     const dbPickerRef = useRef<HTMLDivElement>(null);
+
+    // Create Database Dialog
+    const [createDatabaseOpen, setCreateDatabaseOpen] = useState(false);
+    // Drop database confirmation
+    const [dropDbName, setDropDbName] = useState<string | null>(null);
+    const [isDroppingDb, setIsDroppingDb] = useState(false);
+
+    // Table Manager Dialog
+    const [managerDialog, setManagerDialog] = useState<{
+        schema: string;
+        table: string;
+        tab: string;
+    } | null>(null);
+
+    // Create Table Dialog
+    const [createTableSchema, setCreateTableSchema] = useState<string | null>(null);
 
     useEffect(() => {
         function handler(e: MouseEvent) {
@@ -268,7 +547,57 @@ export function Sidebar() {
             return f.length > 0 || t.length > 0;
         });
 
+    const handleDropDatabase = async (name: string) => {
+        setIsDroppingDb(true);
+        try {
+            await dropDatabase(name);
+            toast.success(`Database "${name}" dropped`);
+        } catch (err) {
+            const msg = String(err).replace(/^[a-z_]+:\s*/i, "");
+            toast.error(msg || `Failed to drop "${name}"`);
+        } finally {
+            setIsDroppingDb(false);
+            setDropDbName(null);
+        }
+    };
+
     return (
+        <>
+        <CreateDatabaseDialog
+            open={createDatabaseOpen}
+            onClose={() => setCreateDatabaseOpen(false)}
+            onCreated={() => {}}
+        />
+        {dropDbName && (
+            <DropDatabaseConfirm
+                name={dropDbName}
+                isDropping={isDroppingDb}
+                onConfirm={() => handleDropDatabase(dropDbName)}
+                onCancel={() => setDropDbName(null)}
+            />
+        )}
+        {managerDialog && (
+            <TableManagerDialog
+                open={!!managerDialog}
+                onClose={() => setManagerDialog(null)}
+                schema={managerDialog.schema}
+                table={managerDialog.table}
+                initialTab={managerDialog.tab}
+                onTableChanged={() => refreshSchemas()}
+            />
+        )}
+        {createTableSchema !== null && (
+            <CreateTableDialog
+                open={true}
+                onClose={() => setCreateTableSchema(null)}
+                defaultSchema={createTableSchema}
+                schemas={schemas.map((s) => s.name)}
+                onCreated={(_schema, _table) => {
+                    refreshSchemas();
+                    setCreateTableSchema(null);
+                }}
+            />
+        )}
         <div className="flex h-full w-full flex-col min-h-0 bg-card/10 border-r border-border/20 overflow-hidden">
             {/* Header */}
             <div className="px-3 pt-3 pb-2.5 border-b border-border/20 bg-card/20 space-y-2 shrink-0">
@@ -357,6 +686,19 @@ export function Sidebar() {
                                             })}
                                     </div>
                                 </ScrollArea>
+                                <div className="border-t border-border/20 p-1">
+                                    <button
+                                        onClick={() => {
+                                            setDbPickerOpen(false);
+                                            setDbSearch("");
+                                            setCreateDatabaseOpen(true);
+                                        }}
+                                        className="flex w-full items-center gap-2 px-3 py-2 text-xs text-left text-emerald-400/80 hover:text-emerald-400 hover:bg-emerald-500/10 rounded-lg transition-colors"
+                                    >
+                                        <Plus className="h-3.5 w-3.5 shrink-0" />
+                                        <span>Create new database</span>
+                                    </button>
+                                </div>
                             </div>
                         )}
                     </div>
@@ -453,9 +795,10 @@ export function Sidebar() {
                                                     previewSelection?.kind === "event_trigger" &&
                                                     previewSelection.name === et.name
                                                 }
-                                                onClick={() =>
-                                                    selectPreview({ kind: "event_trigger", name: et.name })
-                                                }
+                                                onClick={() => {
+                                                    onSelectObject?.();
+                                                    selectPreview({ kind: "event_trigger", name: et.name });
+                                                }}
                                             />
                                         ))
                                     )}
@@ -470,32 +813,98 @@ export function Sidebar() {
                                 expanded={databasesOpen}
                                 onToggle={() => setDatabasesOpen((o) => !o)}
                                 iconColor="text-amber-400/90"
+                                onAdd={() => setCreateDatabaseOpen(true)}
+                                addTitle="Create new database"
                             />
                             {databasesOpen && (
                                 <div className="ml-1 border-l border-border/20 pl-0.5">
-                                    {databases.map((db) => {
-                                        const isCurrent = db === databaseName;
-                                        return (
-                                            <button
-                                                key={db}
-                                                type="button"
-                                                onClick={() => !isCurrent && switchDatabase(db)}
-                                                disabled={isCurrent}
-                                                className={cn(
-                                                    "flex w-full items-center gap-2 py-1.5 pr-2 text-xs text-left transition-colors rounded-r-md hover:bg-accent/40",
-                                                    isCurrent && "text-primary font-medium"
-                                                )}
-                                                style={{ paddingLeft: LEAF_INDENT + 20 }}
-                                            >
-                                                <span className="w-3.5 shrink-0" />
-                                                <Database className="h-3 w-3 shrink-0 text-amber-400/80" />
-                                                <span className="truncate flex-1">{db}</span>
-                                                {isCurrent && (
-                                                    <Check className="h-3 w-3 text-primary shrink-0" />
-                                                )}
-                                            </button>
-                                        );
-                                    })}
+                                    {isLoadingDatabases ? (
+                                        <div
+                                            className="flex items-center gap-1.5 py-2 text-[10px] text-muted-foreground/50"
+                                            style={{ paddingLeft: LEAF_INDENT + 20 }}
+                                        >
+                                            <Loader2 className="h-3 w-3 animate-spin" />
+                                            Loading…
+                                        </div>
+                                    ) : databases.length === 0 ? (
+                                        <div
+                                            className="py-2 text-[10px] text-muted-foreground/50 italic"
+                                            style={{ paddingLeft: LEAF_INDENT + 20 }}
+                                        >
+                                            No databases
+                                        </div>
+                                    ) : (
+                                        databases.map((db) => {
+                                            const isCurrent = db === databaseName;
+                                            return (
+                                                <ContextMenu key={db}>
+                                                    <ContextMenuTrigger asChild>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => !isCurrent && switchDatabase(db)}
+                                                            disabled={isSwitchingDatabase}
+                                                            className={cn(
+                                                                "flex w-full items-center gap-2 py-1.5 pr-2 text-xs text-left transition-colors rounded-r-md hover:bg-accent/40",
+                                                                isCurrent && "text-primary font-medium"
+                                                            )}
+                                                            style={{ paddingLeft: LEAF_INDENT + 20 }}
+                                                        >
+                                                            <span className="w-3.5 shrink-0" />
+                                                            <Database className="h-3 w-3 shrink-0 text-amber-400/80" />
+                                                            <span className="truncate flex-1">{db}</span>
+                                                            {isCurrent && (
+                                                                <Check className="h-3 w-3 text-primary shrink-0" />
+                                                            )}
+                                                        </button>
+                                                    </ContextMenuTrigger>
+                                                    <ContextMenuContent className="w-48">
+                                                        <ContextMenuLabel className="flex items-center gap-1.5">
+                                                            <Database className="h-3 w-3 text-amber-400/80" />
+                                                            <span className="font-mono truncate">{db}</span>
+                                                        </ContextMenuLabel>
+                                                        <ContextMenuSeparator />
+                                                        {!isCurrent && (
+                                                            <ContextMenuItem
+                                                                onClick={() => switchDatabase(db)}
+                                                                disabled={isSwitchingDatabase}
+                                                            >
+                                                                <Database className="h-3.5 w-3.5" />
+                                                                Connect
+                                                            </ContextMenuItem>
+                                                        )}
+                                                        <ContextMenuItem
+                                                            onClick={() => {
+                                                                navigator.clipboard.writeText(db);
+                                                                toast.success("Name copied");
+                                                            }}
+                                                        >
+                                                            <Copy className="h-3.5 w-3.5" />
+                                                            Copy Name
+                                                        </ContextMenuItem>
+                                                        <ContextMenuSeparator />
+                                                        <ContextMenuItem
+                                                            onClick={() => setDropDbName(db)}
+                                                            disabled={isCurrent}
+                                                            className="text-destructive focus:text-destructive"
+                                                        >
+                                                            <Trash2 className="h-3.5 w-3.5" />
+                                                            Drop Database…
+                                                        </ContextMenuItem>
+                                                    </ContextMenuContent>
+                                                </ContextMenu>
+                                            );
+                                        })
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => setCreateDatabaseOpen(true)}
+                                        className="flex w-full items-center gap-1.5 py-1.5 pr-2 text-[10px] text-emerald-400/60 hover:text-emerald-400 transition-colors rounded-r-md hover:bg-emerald-500/10"
+                                        style={{ paddingLeft: LEAF_INDENT + 20 }}
+                                    >
+                                        <span className="w-3.5 shrink-0" />
+                                        <Plus className="h-2.5 w-2.5 shrink-0" />
+                                        <span>New database</span>
+                                    </button>
                                 </div>
                             )}
 
@@ -573,30 +982,33 @@ export function Sidebar() {
                                                             )}
 
                                                         {/* Tables */}
-                                                        {tableList.length > 0 && (
+                                                        {(tableList.length > 0 || allTablesLoaded) && (
                                                             <>
                                                                 <SchemaSectionHeader
                                                                     icon={Table2}
                                                                     label="Tables"
                                                                     count={tableList.length}
                                                                     iconColor="text-emerald-500/80"
+                                                                    onAdd={() => setCreateTableSchema(schema.name)}
+                                                                    addTitle="Create new table"
                                                                 />
                                                                 {tableList.map((t) => (
-                                                                    <ObjectLeaf
+                                                                    <TableLeaf
                                                                         key={t.name}
-                                                                        icon={Table2}
-                                                                        label={t.name}
+                                                                        schema={schema.name}
+                                                                        tableName={t.name}
+                                                                        isView={false}
                                                                         rowCount={t.row_count}
                                                                         isActive={
-                                                                            selectedSchema ===
-                                                                                schema.name &&
+                                                                            selectedSchema === schema.name &&
                                                                             selectedTable === t.name
                                                                         }
-                                                                        onClick={() =>
-                                                                            selectTable(
-                                                                                schema.name,
-                                                                                t.name
-                                                                            )
+                                                                        onClick={() => {
+                                                                            onSelectObject?.();
+                                                                            selectTable(schema.name, t.name);
+                                                                        }}
+                                                                        onOpenManager={(tab) =>
+                                                                            setManagerDialog({ schema: schema.name, table: t.name, tab })
                                                                         }
                                                                     />
                                                                 ))}
@@ -613,21 +1025,22 @@ export function Sidebar() {
                                                                     iconColor="text-blue-400/80"
                                                                 />
                                                                 {viewList.map((v) => (
-                                                                    <ObjectLeaf
+                                                                    <TableLeaf
                                                                         key={v.name}
-                                                                        icon={Eye}
-                                                                        label={v.name}
+                                                                        schema={schema.name}
+                                                                        tableName={v.name}
+                                                                        isView={true}
                                                                         rowCount={v.row_count}
                                                                         isActive={
-                                                                            selectedSchema ===
-                                                                                schema.name &&
+                                                                            selectedSchema === schema.name &&
                                                                             selectedTable === v.name
                                                                         }
-                                                                        onClick={() =>
-                                                                            selectTable(
-                                                                                schema.name,
-                                                                                v.name
-                                                                            )
+                                                                        onClick={() => {
+                                                                            onSelectObject?.();
+                                                                            selectTable(schema.name, v.name);
+                                                                        }}
+                                                                        onOpenManager={(tab) =>
+                                                                            setManagerDialog({ schema: schema.name, table: v.name, tab })
                                                                         }
                                                                     />
                                                                 ))}
@@ -660,14 +1073,15 @@ export function Sidebar() {
                                                                                     : f.name
                                                                             }
                                                                             isActive={isActive}
-                                                                            onClick={() =>
+                                                                            onClick={() => {
+                                                                                onSelectObject?.();
                                                                                 selectPreview({
                                                                                     kind: "function",
                                                                                     schema: schema.name,
                                                                                     name: f.name,
                                                                                     arguments: f.arguments,
-                                                                                })
-                                                                            }
+                                                                                });
+                                                                            }}
                                                                         />
                                                                     );
                                                                 })}
@@ -700,14 +1114,15 @@ export function Sidebar() {
                                                                                     : f.name
                                                                             }
                                                                             isActive={isActive}
-                                                                            onClick={() =>
+                                                                            onClick={() => {
+                                                                                onSelectObject?.();
                                                                                 selectPreview({
                                                                                     kind: "function",
                                                                                     schema: schema.name,
                                                                                     name: f.name,
                                                                                     arguments: f.arguments,
-                                                                                })
-                                                                            }
+                                                                                });
+                                                                            }}
                                                                         />
                                                                     );
                                                                 })}
@@ -733,13 +1148,14 @@ export function Sidebar() {
                                                                             previewSelection.schema === schema.name &&
                                                                             previewSelection.name === ty.name
                                                                         }
-                                                                        onClick={() =>
+                                                                        onClick={() => {
+                                                                            onSelectObject?.();
                                                                             selectPreview({
                                                                                 kind: "type",
                                                                                 schema: schema.name,
                                                                                 name: ty.name,
-                                                                            })
-                                                                        }
+                                                                            });
+                                                                        }}
                                                                     />
                                                                 ))}
                                                             </>
@@ -751,14 +1167,22 @@ export function Sidebar() {
                                                             triggerFuncs.length === 0 &&
                                                             typeList.length === 0 && (
                                                                 <div
-                                                                    className="py-2 text-[10px] text-muted-foreground/50 italic"
-                                                                    style={{
-                                                                        paddingLeft: LEAF_INDENT + 20,
-                                                                    }}
+                                                                    style={{ paddingLeft: LEAF_INDENT + 16 }}
+                                                                    className="py-1.5 flex items-center gap-2"
                                                                 >
-                                                                    {hasSearch
-                                                                        ? "No matches"
-                                                                        : "No objects"}
+                                                                    <span className="text-[10px] text-muted-foreground/40 italic">
+                                                                        {hasSearch ? "No matches" : "Empty schema"}
+                                                                    </span>
+                                                                    {!hasSearch && (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => setCreateTableSchema(schema.name)}
+                                                                            className="flex items-center gap-1 h-5 px-1.5 rounded text-[10px] text-emerald-400/70 hover:text-emerald-400 hover:bg-emerald-500/10 border border-emerald-500/20 transition-colors"
+                                                                        >
+                                                                            <Plus className="h-2.5 w-2.5" />
+                                                                            Create table
+                                                                        </button>
+                                                                    )}
                                                                 </div>
                                                             )}
                                                     </div>
@@ -780,5 +1204,6 @@ export function Sidebar() {
                 </p>
             </div>
         </div>
+        </>
     );
 }

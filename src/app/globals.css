@@ -49,37 +49,38 @@
 
 :root {
   --radius: 0.625rem;
-  --background: oklch(1 0 0);
-  --foreground: oklch(0.145 0 0);
+  --monaco-editor-border: rgba(0, 0, 0, 0.10);
+  --background: oklch(0.975 0 0);
+  --foreground: oklch(0.12 0 0);
   --card: oklch(1 0 0);
-  --card-foreground: oklch(0.145 0 0);
+  --card-foreground: oklch(0.12 0 0);
   --popover: oklch(1 0 0);
-  --popover-foreground: oklch(0.145 0 0);
-  --primary: oklch(0.205 0 0);
+  --popover-foreground: oklch(0.12 0 0);
+  --primary: oklch(0.52 0.15 162);
   --primary-foreground: oklch(0.985 0 0);
-  --secondary: oklch(0.97 0 0);
-  --secondary-foreground: oklch(0.205 0 0);
-  --muted: oklch(0.97 0 0);
-  --muted-foreground: oklch(0.556 0 0);
-  --accent: oklch(0.97 0 0);
-  --accent-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.95 0 0);
+  --secondary-foreground: oklch(0.2 0 0);
+  --muted: oklch(0.95 0 0);
+  --muted-foreground: oklch(0.46 0 0);
+  --accent: oklch(0.94 0.01 162);
+  --accent-foreground: oklch(0.12 0 0);
   --destructive: oklch(0.577 0.245 27.325);
-  --border: oklch(0.922 0 0);
-  --input: oklch(0.922 0 0);
-  --ring: oklch(0.708 0 0);
-  --chart-1: oklch(0.646 0.222 41.116);
+  --border: oklch(0.87 0 0);
+  --input: oklch(0.87 0 0);
+  --ring: oklch(0.52 0.15 162);
+  --chart-1: oklch(0.52 0.15 162);
   --chart-2: oklch(0.6 0.118 184.704);
   --chart-3: oklch(0.398 0.07 227.392);
   --chart-4: oklch(0.828 0.189 84.429);
   --chart-5: oklch(0.769 0.188 70.08);
-  --sidebar: oklch(0.985 0 0);
-  --sidebar-foreground: oklch(0.145 0 0);
-  --sidebar-primary: oklch(0.205 0 0);
+  --sidebar: oklch(0.965 0 0);
+  --sidebar-foreground: oklch(0.12 0 0);
+  --sidebar-primary: oklch(0.52 0.15 162);
   --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.97 0 0);
-  --sidebar-accent-foreground: oklch(0.205 0 0);
-  --sidebar-border: oklch(0.922 0 0);
-  --sidebar-ring: oklch(0.708 0 0);
+  --sidebar-accent: oklch(0.94 0.01 162);
+  --sidebar-accent-foreground: oklch(0.12 0 0);
+  --sidebar-border: oklch(0.87 0 0);
+  --sidebar-ring: oklch(0.52 0.15 162);
 }
 
 .dark {
@@ -101,6 +102,8 @@
   --border: oklch(1 0 0 / 10%);
   --input: oklch(1 0 0 / 15%);
   --ring: oklch(0.556 0 0);
+  /* Cursor Dark Mode: SQL editor panel border */
+  --monaco-editor-border: #454545;
   --chart-1: oklch(0.488 0.243 264.376);
   --chart-2: oklch(0.696 0.17 162.48);
   --chart-3: oklch(0.769 0.188 70.08);
@@ -123,4 +126,91 @@
   body {
     @apply bg-background text-foreground;
   }
+}
+
+/* Welcome screen animations */
+@keyframes fade-up {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes orb-slow {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(30px, -20px) scale(1.05); }
+  66% { transform: translate(-20px, 15px) scale(0.97); }
+}
+
+@keyframes orb-slow-reverse {
+  0%, 100% { transform: translate(0, 0) scale(1); }
+  33% { transform: translate(-25px, 18px) scale(1.04); }
+  66% { transform: translate(20px, -12px) scale(0.98); }
+}
+
+@keyframes gradient-x {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+@keyframes pulse-slow {
+  0%, 100% { opacity: 0.6; }
+  50% { opacity: 1; }
+}
+
+.animate-fade-up {
+  animation: fade-up 0.5s ease-out both;
+}
+
+.animate-orb-slow {
+  animation: orb-slow 12s ease-in-out infinite;
+}
+
+.animate-orb-slow-reverse {
+  animation: orb-slow-reverse 14s ease-in-out infinite;
+}
+
+.animate-gradient-x {
+  animation: gradient-x 4s ease infinite;
+}
+
+.animate-pulse-slow {
+  animation: pulse-slow 3s ease-in-out infinite;
+}
+
+/* ── Live Table Watcher row animations ───────────────────────────────────── */
+
+@keyframes watch-insert {
+  0%   { background-color: rgb(34 197 94 / 0.28); transform: translateY(-4px); opacity: 0.6; }
+  15%  { opacity: 1; transform: translateY(0); }
+  60%  { background-color: rgb(34 197 94 / 0.18); }
+  100% { background-color: transparent; }
+}
+
+@keyframes watch-update {
+  0%   { background-color: rgb(234 179 8 / 0.30); }
+  50%  { background-color: rgb(234 179 8 / 0.20); }
+  100% { background-color: transparent; }
+}
+
+@keyframes watch-delete {
+  0%   { opacity: 1; background-color: rgb(239 68 68 / 0.18); }
+  100% { opacity: 0; background-color: rgb(239 68 68 / 0.28); transform: translateX(8px); }
+}
+
+.watch-row-insert {
+  animation: watch-insert 2s ease forwards;
+}
+
+.watch-row-update {
+  animation: watch-update 2s ease forwards;
+}
+
+.watch-row-delete {
+  animation: watch-delete 0.55s ease forwards;
+  pointer-events: none;
 }

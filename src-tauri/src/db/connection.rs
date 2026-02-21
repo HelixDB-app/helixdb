@@ -6,10 +6,10 @@ use std::sync::Arc;
 use tokio_postgres::NoTls;
 
 /// Manages multiple PostgreSQL connection pools keyed by connection ID.
-/// Each pool entry also stores the server's numeric version (e.g. 160004)
-/// so that version-specific queries can adapt at runtime.
+/// Each entry stores the pool, the server's numeric version, and the original
+/// connection string (needed by the watch engine to open a dedicated LISTEN connection).
 pub struct ConnectionManager {
-    pools: DashMap<String, (Pool, u32)>,
+    pools: DashMap<String, (Pool, u32, String)>,
 }
 
 impl ConnectionManager {
@@ -75,7 +75,7 @@ impl ConnectionManager {
 
         let pg_version = Self::probe_version(&client).await.unwrap_or(90600);
 
-        self.pools.insert(connection_id.to_string(), (pool, pg_version));
+        self.pools.insert(connection_id.to_string(), (pool, pg_version, connection_string.to_string()));
         Ok(())
     }
 
@@ -119,6 +119,13 @@ impl ConnectionManager {
             .get(connection_id)
             .map(|entry| entry.value().1)
             .unwrap_or(90600)
+    }
+
+    /// Return the original connection string for a connection (used by the watch engine).
+    pub fn get_connection_string(&self, connection_id: &str) -> Option<String> {
+        self.pools
+            .get(connection_id)
+            .map(|entry| entry.value().2.clone())
     }
 
     /// Disconnect and drop the pool for a connection.

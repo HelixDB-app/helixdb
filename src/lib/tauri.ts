@@ -10,6 +10,15 @@ import type {
     FunctionInfo,
     TypeInfo,
     TypeDefinitionDetail,
+    TableDetails,
+    LocalPostgresStatus,
+    FilterCondition,
+    ColumnStats,
+    PgSession,
+    IndexStats,
+    IndexImpactQuery,
+    IndexBuildProgress,
+    CreateIndexRequest,
 } from "./types";
 
 /** Connect to a PostgreSQL database */
@@ -97,6 +106,22 @@ export async function dbListDatabases(
     return invoke<string[]>("db_list_databases", { connectionId });
 }
 
+/** Create a new database */
+export async function dbCreateDatabase(
+    connectionId: string,
+    name: string
+): Promise<void> {
+    return invoke<void>("db_create_database", { connectionId, name });
+}
+
+/** Drop a database (cannot be the currently connected database) */
+export async function dbDropDatabase(
+    connectionId: string,
+    name: string
+): Promise<void> {
+    return invoke<void>("db_drop_database", { connectionId, name });
+}
+
 /** List event triggers (database level) */
 export async function dbListEventTriggers(
     connectionId: string
@@ -153,6 +178,68 @@ export async function dbGetTypeDefinition(
     });
 }
 
+/**
+ * Multi-condition filter search with pagination and sort.
+ * Each condition is { column, operator, value, logical_op }.
+ */
+export async function dbSearchTableDataMulti(
+    connectionId: string,
+    schema: string,
+    table: string,
+    conditions: FilterCondition[],
+    limit: number,
+    page: number,
+    sortColumn?: string,
+    sortDirection?: string
+): Promise<QueryResult> {
+    return invoke<QueryResult>("db_search_table_data_multi", {
+        connectionId,
+        schema,
+        table,
+        conditions,
+        limit,
+        page,
+        sortColumn: sortColumn ?? null,
+        sortDirection: sortDirection ?? "ASC",
+    });
+}
+
+/** Structured filter search: SELECT * FROM schema.table WHERE col OP value LIMIT limit */
+export async function dbSearchTableData(
+    connectionId: string,
+    schema: string,
+    table: string,
+    column: string,
+    operator: string,
+    value?: string | null,
+    limit?: number
+): Promise<QueryResult> {
+    return invoke<QueryResult>("db_search_table_data", {
+        connectionId,
+        schema,
+        table,
+        column,
+        operator,
+        value: value ?? null,
+        limit: limit ?? 200,
+    });
+}
+
+/** Insert one table row. Only include columns to set; omit or null uses DEFAULT/NULL. Returns rows affected (1). */
+export async function dbInsertTableRow(
+    connectionId: string,
+    schema: string,
+    table: string,
+    values: { column: string; value: string | null }[]
+): Promise<number> {
+    return invoke<number>("db_insert_table_row", {
+        connectionId,
+        schema,
+        table,
+        values: values.map(({ column, value }) => ({ column, value: value ?? null })),
+    });
+}
+
 /** Update one table row by primary key. Returns rows affected (0 or 1). */
 export async function dbUpdateTableRow(
     connectionId: string,
@@ -166,8 +253,8 @@ export async function dbUpdateTableRow(
         connectionId,
         schema,
         table,
-        pk_columns: pkColumns,
-        pk_values: pkValues,
+        pkColumns,
+        pkValues,
         updates: updates.map(({ column, value }) => ({ column, value: value ?? null })),
     });
 }
@@ -184,9 +271,138 @@ export async function dbDeleteTableRows(
         connectionId,
         schema,
         table,
-        pk_columns: pkColumns,
-        rows_pk_values: rowsPkValues,
+        pkColumns,
+        rowsPkValues,
     });
+}
+
+// ─── Table Details & DDL ────────────────────────────────────────────────────
+
+/** Get full table details: columns, constraints, indexes, triggers, stats */
+export async function dbGetTableDetails(
+    connectionId: string,
+    schema: string,
+    table: string
+): Promise<TableDetails> {
+    return invoke<TableDetails>("db_get_table_details", { connectionId, schema, table });
+}
+
+/** Rename a table */
+export async function dbRenameTable(
+    connectionId: string,
+    schema: string,
+    table: string,
+    newName: string
+): Promise<void> {
+    return invoke<void>("db_rename_table", { connectionId, schema, table, newName });
+}
+
+/** Rename a column */
+export async function dbRenameColumn(
+    connectionId: string,
+    schema: string,
+    table: string,
+    column: string,
+    newName: string
+): Promise<void> {
+    return invoke<void>("db_rename_column", { connectionId, schema, table, column, newName });
+}
+
+/** Alter a column: change type, default, or nullability */
+export async function dbAlterColumn(
+    connectionId: string,
+    schema: string,
+    table: string,
+    column: string,
+    newType?: string | null,
+    newDefault?: string | null,
+    nullable?: boolean | null
+): Promise<void> {
+    return invoke<void>("db_alter_column", {
+        connectionId, schema, table, column,
+        newType: newType ?? null,
+        newDefault: newDefault ?? null,
+        nullable: nullable ?? null,
+    });
+}
+
+/** Add a new column to a table */
+export async function dbAddColumn(
+    connectionId: string,
+    schema: string,
+    table: string,
+    column: string,
+    dataType: string,
+    isNullable: boolean,
+    defaultValue?: string | null
+): Promise<void> {
+    return invoke<void>("db_add_column", {
+        connectionId, schema, table, column,
+        dataType, isNullable,
+        defaultValue: defaultValue ?? null,
+    });
+}
+
+/** Drop a column */
+export async function dbDropColumn(
+    connectionId: string,
+    schema: string,
+    table: string,
+    column: string
+): Promise<void> {
+    return invoke<void>("db_drop_column", { connectionId, schema, table, column });
+}
+
+/** Column definition for CREATE TABLE */
+export interface CreateColumnDef {
+    name: string;
+    data_type: string;
+    /** Optional length/precision, e.g. "255" or "10,2" */
+    length?: string | null;
+    is_nullable: boolean;
+    default_value?: string | null;
+    is_primary_key: boolean;
+    is_unique: boolean;
+    check_constraint?: string | null;
+}
+
+/**
+ * Create a new table with specified columns.
+ * Returns the generated CREATE TABLE SQL on success.
+ */
+export async function dbCreateTable(
+    connectionId: string,
+    schema: string,
+    table: string,
+    columns: CreateColumnDef[],
+    ifNotExists: boolean
+): Promise<string> {
+    return invoke<string>("db_create_table", {
+        connectionId,
+        schema,
+        table,
+        columns,
+        ifNotExists,
+    });
+}
+
+/** Truncate a table (removes all rows, resets sequences) */
+export async function dbTruncateTable(
+    connectionId: string,
+    schema: string,
+    table: string
+): Promise<void> {
+    return invoke<void>("db_truncate_table", { connectionId, schema, table });
+}
+
+/** Drop a table */
+export async function dbDropTable(
+    connectionId: string,
+    schema: string,
+    table: string,
+    cascade: boolean
+): Promise<void> {
+    return invoke<void>("db_drop_table", { connectionId, schema, table, cascade });
 }
 
 /** Load saved connections from app data dir */
@@ -216,5 +432,204 @@ export async function updateSavedConnectionDatabaseName(
     return invoke<SavedConnection[]>("update_saved_connection_database_name", {
         id,
         databaseName,
+    });
+}
+
+// ─── Local PostgreSQL ─────────────────────────────────────────────────────
+
+/** Check if local PostgreSQL is installed and running */
+export async function localPostgresCheck(): Promise<LocalPostgresStatus> {
+    return invoke<LocalPostgresStatus>("local_postgres_check");
+}
+
+/** Start the local PostgreSQL service */
+export async function localPostgresStart(): Promise<LocalPostgresStatus> {
+    return invoke<LocalPostgresStatus>("local_postgres_start");
+}
+
+/** Stop the local PostgreSQL service */
+export async function localPostgresStop(): Promise<LocalPostgresStatus> {
+    return invoke<LocalPostgresStatus>("local_postgres_stop");
+}
+
+/** Restart the local PostgreSQL service */
+export async function localPostgresRestart(): Promise<LocalPostgresStatus> {
+    return invoke<LocalPostgresStatus>("local_postgres_restart");
+}
+
+/** Install PostgreSQL (streams progress via "local-postgres-install-progress" events) */
+export async function localPostgresInstall(): Promise<LocalPostgresStatus> {
+    return invoke<LocalPostgresStatus>("local_postgres_install");
+}
+
+// ─── Live Table Watcher ───────────────────────────────────────────────────
+
+/** Start watching a table for INSERT / UPDATE / DELETE events via LISTEN/NOTIFY. */
+export async function dbWatchTable(
+    connectionId: string,
+    schema: string,
+    table: string
+): Promise<void> {
+    return invoke<void>("db_watch_table", { connectionId, schema, table });
+}
+
+/** Stop watching a table and drop the trigger from the database. */
+export async function dbUnwatchTable(
+    connectionId: string,
+    schema: string,
+    table: string
+): Promise<void> {
+    return invoke<void>("db_unwatch_table", { connectionId, schema, table });
+}
+
+/** Returns whether a table is currently being actively watched. */
+export async function dbIsWatching(
+    connectionId: string,
+    schema: string,
+    table: string
+): Promise<boolean> {
+    return invoke<boolean>("db_is_watching", { connectionId, schema, table });
+}
+
+// ─── Session Monitor ─────────────────────────────────────────────────────
+
+/** Fetch all active sessions from pg_stat_activity */
+export async function dbGetSessions(connectionId: string): Promise<PgSession[]> {
+    return invoke<PgSession[]>("db_get_sessions", { connectionId });
+}
+
+/** Terminate a backend process by PID (SIGTERM) */
+export async function dbTerminateBackend(connectionId: string, pid: number): Promise<boolean> {
+    return invoke<boolean>("db_terminate_backend", { connectionId, pid });
+}
+
+/** Cancel the current query of a backend by PID (gentler SIGINT) */
+export async function dbCancelBackend(connectionId: string, pid: number): Promise<boolean> {
+    return invoke<boolean>("db_cancel_backend", { connectionId, pid });
+}
+
+// ─── Column Statistics ────────────────────────────────────────────────────
+
+/** Fetch null%, distinct count, min, max, avg and top-5 frequent values for a column */
+export async function dbGetColumnStats(
+    connectionId: string,
+    schema: string,
+    table: string,
+    column: string
+): Promise<ColumnStats> {
+    return invoke<ColumnStats>("db_get_column_stats", {
+        connectionId,
+        schema,
+        table,
+        column,
+    });
+}
+
+/** Run EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON) and return the raw JSON string */
+export async function dbExplainQuery(
+    connectionId: string,
+    sql: string
+): Promise<string> {
+    return invoke<string>("db_explain_query", { connectionId, sql });
+}
+
+// ─── Smart Query Sandbox ──────────────────────────────────────────────────
+
+export interface SandboxDiffRow {
+    before: (string | null)[] | null;
+    after: (string | null)[] | null;
+}
+
+export interface SandboxExecuteResult {
+    rows_affected: number;
+    diff_rows: SandboxDiffRow[];
+    columns: string[];
+    query_type: string;
+    warnings: string[];
+    missing_where: boolean;
+    select_columns: string[];
+    select_rows: (string | null)[][];
+}
+
+/** Open a dedicated sandbox connection and BEGIN a transaction. Returns sandbox_id. */
+export async function dbSandboxBegin(connectionId: string): Promise<string> {
+    return invoke<string>("db_sandbox_begin", { connectionId });
+}
+
+/** Execute SQL inside the open sandbox transaction and get the before/after diff. */
+export async function dbSandboxExecute(
+    sandboxId: string,
+    sql: string
+): Promise<SandboxExecuteResult> {
+    return invoke<SandboxExecuteResult>("db_sandbox_execute", { sandboxId, sql });
+}
+
+/** COMMIT the sandbox transaction — changes become permanent. */
+export async function dbSandboxCommit(sandboxId: string): Promise<void> {
+    return invoke<void>("db_sandbox_commit", { sandboxId });
+}
+
+/** ROLLBACK the sandbox transaction — all changes are discarded. */
+export async function dbSandboxRollback(sandboxId: string): Promise<void> {
+    return invoke<void>("db_sandbox_rollback", { sandboxId });
+}
+
+/** Seconds since the sandbox transaction was opened. */
+export async function dbSandboxElapsed(sandboxId: string): Promise<number> {
+    return invoke<number>("db_sandbox_elapsed", { sandboxId });
+}
+
+// ─── Visual Index Builder ─────────────────────────────────────────────────
+
+/** Get all indexes in a schema with live usage stats from pg_stat_user_indexes. */
+export async function dbGetIndexes(
+    connectionId: string,
+    schema: string
+): Promise<IndexStats[]> {
+    return invoke<IndexStats[]>("db_get_indexes", { connectionId, schema });
+}
+
+/** Find queries in pg_stat_statements that would benefit from a proposed index. */
+export async function dbGetIndexImpact(
+    connectionId: string,
+    schema: string,
+    table: string,
+    columns: string[],
+    whereClause: string | null
+): Promise<IndexImpactQuery[]> {
+    return invoke<IndexImpactQuery[]>("db_get_index_impact", {
+        connectionId,
+        schema,
+        table,
+        columns,
+        whereClause,
+    });
+}
+
+/** Create an index CONCURRENTLY (no table locking). Returns the generated SQL. */
+export async function dbCreateIndex(
+    connectionId: string,
+    request: CreateIndexRequest
+): Promise<string> {
+    return invoke<string>("db_create_index", { connectionId, request });
+}
+
+/** Drop an index CONCURRENTLY to avoid locking. */
+export async function dbDropIndex(
+    connectionId: string,
+    schema: string,
+    indexName: string
+): Promise<boolean> {
+    return invoke<boolean>("db_drop_index", { connectionId, schema, indexName });
+}
+
+/** Poll build progress for a CONCURRENTLY-building index. Returns null when complete. */
+export async function dbGetIndexBuildProgress(
+    connectionId: string,
+    indexName: string
+): Promise<IndexBuildProgress | null> {
+    return invoke<IndexBuildProgress | null>("db_get_index_build_progress", {
+        connectionId,
+        indexName,
     });
 }

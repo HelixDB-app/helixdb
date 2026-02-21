@@ -1,6 +1,7 @@
 "use client";
 
 import { useConnectionStore } from "@/stores/connection-store";
+import { APP_NAME, APP_VERSION } from "@/lib/app-config";
 import { Database } from "lucide-react";
 
 export function StatusBar() {
@@ -54,7 +55,7 @@ export function StatusBar() {
                     </span>
                 )}
                 <span className="text-[10px] text-muted-foreground/25 font-mono">
-                    HelixDB v0.1
+                    {`${APP_NAME} v${APP_VERSION.split(".").slice(0, 2).join(".")}`}
                 </span>
             </div>
         </div>

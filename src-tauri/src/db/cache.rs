@@ -103,9 +103,22 @@ impl MetadataCache {
     /// Invalidate all caches for a specific connection
     pub fn invalidate(&self, conn_id: &str) {
         self.schemas.remove(conn_id);
-        // Remove all table/column entries for this connection
         self.tables.retain(|k, _| !k.starts_with(conn_id));
         self.columns.retain(|k, _| !k.starts_with(conn_id));
+    }
+
+    /// Invalidate table list for a schema (after DDL on tables)
+    pub fn invalidate_tables(&self, conn_id: &str, schema: &str) {
+        let key = format!("{}::{}", conn_id, schema);
+        self.tables.remove(&key);
+        // Also refresh schema counts
+        self.schemas.remove(conn_id);
+    }
+
+    /// Invalidate column cache for a specific table
+    pub fn invalidate_columns(&self, conn_id: &str, schema: &str, table: &str) {
+        let key = format!("{}::{}::{}", conn_id, schema, table);
+        self.columns.remove(&key);
     }
 
     /// Remove all cache entries

@@ -1,7 +1,9 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { useConnectionStore } from "@/stores/connection-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import {
     dbGetTableData,
     dbGetFunctionDefinition,
@@ -9,8 +11,13 @@ import {
     dbGetColumns,
     dbUpdateTableRow,
     dbDeleteTableRows,
+    dbSearchTableDataMulti,
+    dbGetColumnStats,
+    dbWatchTable,
+    dbUnwatchTable,
 } from "@/lib/tauri";
-import { formatCellValue } from "@/lib/types";
+import { formatCellValue, watchEventName } from "@/lib/types";
+import type { TableWatchEvent } from "@/lib/types";
 import type {
     QueryResult,
     TypeDefinitionDetail,
@@ -18,6 +25,8 @@ import type {
     EventTriggerInfo,
     CellValue,
     ColumnInfo,
+    ColumnStats,
+    ResultColumn,
 } from "@/lib/types";
 import {
     Table,
@@ -64,13 +73,180 @@ import {
     Zap,
     Braces,
     LayoutGrid,
-    Save,
     Trash2,
     GalleryVerticalEnd,
     Layers,
+    Pencil,
+    X,
+    Plus,
+    SlidersHorizontal,
+    ChevronDown,
+    Download,
+    FileText,
+    BarChart2,
+    Hash,
+    Percent,
+    Database,
+    Radio,
+    RadioTower,
 } from "lucide-react";
+import {
+    ContextMenu,
+    ContextMenuContent,
+    ContextMenuItem,
+    ContextMenuLabel,
+    ContextMenuSeparator,
+    ContextMenuTrigger,
+} from "@/components/ui/context-menu";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator as DDSep,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
+    Popover,
+    PopoverContent,
+    PopoverTrigger,
+} from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { InsertRowDialog } from "@/components/insert-row-dialog";
+
+// ── Export / copy helpers ────────────────────────────────────────────────
+
+function downloadBlob(content: string, filename: string, mimeType: string) {
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+}
+
+function rowsToCSV(columns: ResultColumn[], rows: CellValue[][]): string {
+    const esc = (v: string) => `"${v.replace(/"/g, '""')}"`;
+    const header = columns.map((c) => esc(c.name)).join(",");
+    const body = rows
+        .map((row) =>
+            row.map((cell) => (cell.type === "Null" ? "" : esc(formatCellValue(cell)))).join(",")
+        )
+        .join("\n");
+    return header + "\n" + body;
+}
+
+function rowsToJSON(columns: ResultColumn[], rows: CellValue[][]): string {
+    return JSON.stringify(
+        rows.map((row) =>
+            Object.fromEntries(
+                columns.map((col, i) => {
+                    const cell = row[i] ?? { type: "Null" as const };
+                    if (cell.type === "Null") return [col.name, null];
+                    if (["Bool", "Int16", "Int32", "Int64", "Float32", "Float64"].includes(cell.type))
+                        return [col.name, cell.value];
+                    if (cell.type === "Json") return [col.name, cell.value];
+                    return [col.name, formatCellValue(cell)];
+                })
+            )
+        ),
+        null,
+        2
+    );
+}
+
+function rowToInsertSQL(
+    schema: string,
+    table: string,
+    columns: ResultColumn[],
+    row: CellValue[]
+): string {
+    const cols = columns.map((c) => `"${c.name}"`).join(", ");
+    const vals = row
+        .map((cell) => {
+            if (cell.type === "Null") return "NULL";
+            if (cell.type === "Bool") return cell.value ? "TRUE" : "FALSE";
+            if (["Int16", "Int32", "Int64", "Float32", "Float64"].includes(cell.type))
+                return String(cell.value ?? "NULL");
+            return `'${String(cell.value ?? "").replace(/'/g, "''")}'`;
+        })
+        .join(", ");
+    return `INSERT INTO "${schema}"."${table}" (${cols}) VALUES (${vals});`;
+}
+
+function rowToJSON(columns: ResultColumn[], row: CellValue[]): string {
+    const obj = Object.fromEntries(
+        columns.map((col, i) => {
+            const cell = row[i] ?? { type: "Null" as const };
+            if (cell.type === "Null") return [col.name, null];
+            if (["Bool", "Int16", "Int32", "Int64", "Float32", "Float64"].includes(cell.type))
+                return [col.name, cell.value];
+            if (cell.type === "Json") return [col.name, cell.value];
+            return [col.name, formatCellValue(cell)];
+        })
+    );
+    return JSON.stringify(obj, null, 2);
+}
+
+// ── Filter types & helpers ────────────────────────────────────────────────
+
+const NULL_OPS = ["IS NULL", "IS NOT NULL"] as const;
+
+interface FilterConditionUI {
+    id: string;
+    column: string;
+    operator: string;
+    value: string;
+    logicalOp: "AND" | "OR";
+}
+
+interface OperatorOption { value: string; label: string }
+
+function getOperatorsForType(dataType: string): OperatorOption[] {
+    const t = dataType.toLowerCase();
+    const isNumeric =
+        ["int2", "int4", "int8", "float4", "float8", "numeric", "decimal", "real", "double"].some(
+            (x) => t.includes(x)
+        );
+    const isDate = ["date", "time", "timestamp", "interval"].some((x) => t.includes(x));
+    const isBool = t === "bool" || t === "boolean";
+    const isUuid = t === "uuid";
+
+    const cmpOps: OperatorOption[] = [
+        { value: "=", label: "= equals" },
+        { value: "!=", label: "≠ not equals" },
+        { value: ">", label: "> greater than" },
+        { value: ">=", label: "≥ greater or equal" },
+        { value: "<", label: "< less than" },
+        { value: "<=", label: "≤ less or equal" },
+    ];
+    const nullOps: OperatorOption[] = [
+        { value: "IS NULL", label: "is null" },
+        { value: "IS NOT NULL", label: "is not null" },
+    ];
+    const textOps: OperatorOption[] = [
+        { value: "=", label: "= equals" },
+        { value: "!=", label: "≠ not equals" },
+        { value: "ILIKE", label: "~ contains (ilike)" },
+        { value: "NOT ILIKE", label: "!~ not contains" },
+        { value: "LIKE", label: "LIKE (case sensitive)" },
+        { value: "NOT LIKE", label: "NOT LIKE" },
+    ];
+
+    if (isBool)  return [{ value: "=", label: "= equals" }, ...nullOps];
+    if (isUuid)  return [{ value: "=", label: "= equals" }, { value: "!=", label: "≠ not equals" }, ...nullOps];
+    if (isNumeric || isDate) return [...cmpOps, ...nullOps];
+    return [...textOps, ...nullOps];
+}
+
+function isNullOp(op: string) {
+    return (NULL_OPS as readonly string[]).includes(op);
+}
+
+// ── Cell / row helpers ────────────────────────────────────────────────────
 
 /** Convert a cell to a JSON-serializable value for JSON view (preserves null, number, boolean). */
 function cellToJsonValue(cell: CellValue): unknown {
@@ -154,6 +330,7 @@ export function DataTable() {
         selectedTable,
         previewSelection,
         eventTriggers,
+        refreshTrigger,
     } = useConnectionStore();
 
     // ── Core data ─────────────────────────────────────────────────────────────
@@ -161,10 +338,12 @@ export function DataTable() {
     const [isLoading, setIsLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
 
+    const { defaultPageSize } = useSettingsStore();
+
     // ── Scroll / pagination mode ──────────────────────────────────────────────
     const [scrollMode, setScrollMode] = useState<"infinite" | "pagination">("infinite");
     const [page, setPage] = useState(1);
-    const [pageSize, setPageSize] = useState(BATCH_SIZE);
+    const [pageSize, setPageSize] = useState<number>(() => defaultPageSize);
     const [sortColumn, setSortColumn] = useState<string | null>(null);
     const [sortDirection, setSortDirection] = useState<"ASC" | "DESC">("ASC");
     const [dataViewMode, setDataViewMode] = useState<"table" | "json">("table");
@@ -180,14 +359,84 @@ export function DataTable() {
     const sentinelRef = useRef<HTMLDivElement>(null);
     // Stable ref to fetchMore so observers never become stale
     const fetchMoreRef = useRef<() => void>(() => {});
+    // Prevents onBlur from saving after Enter/Escape are used
+    const preventBlurSaveRef = useRef(false);
 
-    // ── Editing state ─────────────────────────────────────────────────────────
+    // ── Column stats state ────────────────────────────────────────────────────
+    const [colStats, setColStats] = useState<ColumnStats | null>(null);
+    const [colStatsLoading, setColStatsLoading] = useState(false);
+    const [colStatsColumn, setColStatsColumn] = useState<string | null>(null);
+
+    const fetchColStats = useCallback(
+        async (colName: string) => {
+            if (!connectionId || !selectedSchema || !selectedTable) return;
+            setColStatsColumn(colName);
+            setColStats(null);
+            setColStatsLoading(true);
+            try {
+                const stats = await dbGetColumnStats(
+                    connectionId,
+                    selectedSchema,
+                    selectedTable,
+                    colName
+                );
+                setColStats(stats);
+            } catch {
+                setColStats(null);
+            } finally {
+                setColStatsLoading(false);
+            }
+        },
+        [connectionId, selectedSchema, selectedTable]
+    );
+
+    // ── Filter state ──────────────────────────────────────────────────────────
+    const [filterBarOpen, setFilterBarOpen] = useState(false);
+    const [filterConditions, setFilterConditions] = useState<FilterConditionUI[]>([]);
+    // Debounced version — only updates 400 ms after last keystroke
+    const [debouncedConditions, setDebouncedConditions] = useState<FilterConditionUI[]>([]);
+
+    // ── Editing state (cell-level) ────────────────────────────────────────────
     const [tableColumns, setTableColumns] = useState<ColumnInfo[] | null>(null);
     const [selectedRowKeys, setSelectedRowKeys] = useState<Set<string>>(new Set());
-    const [editingRowKey, setEditingRowKey] = useState<string | null>(null);
-    const [editingDraft, setEditingDraft] = useState<Record<string, string>>({});
-    const [validationErrors, setValidationErrors] = useState<Record<string, string>>({});
+    // The single cell currently being edited
+    const [editingCell, setEditingCell] = useState<{
+        rowKey: string;
+        colName: string;
+        originalValue: string;
+    } | null>(null);
+    const [editingValue, setEditingValue] = useState<string>("");
+    const [cellError, setCellError] = useState<string | null>(null);
     const [isSaving, setIsSaving] = useState(false);
+    const [isDeleting, setIsDeleting] = useState(false);
+    const [insertDialogOpen, setInsertDialogOpen] = useState(false);
+
+    // ── Live Watch mode ───────────────────────────────────────────────────────
+    const [watchMode, setWatchMode] = useState(false);
+    const [watchConnecting, setWatchConnecting] = useState(false);
+    // Tracks animation state per row-key: "new" | "updated" | "deleted" | undefined
+    const [watchAnimState, setWatchAnimState] = useState<Map<string, "new" | "updated" | "deleted">>(new Map());
+    const watchUnlistenRef = useRef<(() => void) | null>(null);
+
+    // ── Debounce filter conditions ────────────────────────────────────────────
+    useEffect(() => {
+        if (filterConditions.length === 0) {
+            setDebouncedConditions([]);
+            return;
+        }
+        const timer = setTimeout(() => setDebouncedConditions(filterConditions), 400);
+        return () => clearTimeout(timer);
+    }, [filterConditions]);
+
+    // Conditions that are complete enough to actually query
+    const activeConditions = useMemo(
+        () =>
+            debouncedConditions.filter(
+                (c) => c.column && c.operator && (isNullOp(c.operator) || c.value.trim() !== "")
+            ),
+        [debouncedConditions]
+    );
+    const hasActiveFilters = activeConditions.length > 0;
 
     // ── Display rows (unified) ────────────────────────────────────────────────
     const displayRows = useMemo(
@@ -206,10 +455,23 @@ export function DataTable() {
         try {
             const batchSize = scrollMode === "infinite" ? BATCH_SIZE : pageSize;
             const p = scrollMode === "infinite" ? 1 : page;
-            const data = await dbGetTableData(
-                connectionId, selectedSchema, selectedTable,
-                p, batchSize, sortColumn ?? undefined, sortDirection
-            );
+
+            const data = activeConditions.length > 0
+                ? await dbSearchTableDataMulti(
+                    connectionId, selectedSchema, selectedTable,
+                    activeConditions.map((c) => ({
+                        column: c.column,
+                        operator: c.operator,
+                        value: isNullOp(c.operator) ? null : (c.value.trim() || null),
+                        logical_op: c.logicalOp,
+                    })),
+                    batchSize, p, sortColumn ?? undefined, sortDirection
+                )
+                : await dbGetTableData(
+                    connectionId, selectedSchema, selectedTable,
+                    p, batchSize, sortColumn ?? undefined, sortDirection
+                );
+
             setResult(data);
             if (scrollMode === "infinite") {
                 setAccumulatedRows(data.rows);
@@ -223,7 +485,7 @@ export function DataTable() {
         } finally {
             setIsLoading(false);
         }
-    }, [connectionId, selectedSchema, selectedTable, page, pageSize, sortColumn, sortDirection, scrollMode]);
+    }, [connectionId, selectedSchema, selectedTable, page, pageSize, sortColumn, sortDirection, scrollMode, activeConditions]);
 
     // ── Incremental fetch for infinite scroll ─────────────────────────────────
     const fetchMore = useCallback(async () => {
@@ -231,10 +493,21 @@ export function DataTable() {
         if (!hasMore || isLoadingMore || isLoading) return;
         setIsLoadingMore(true);
         try {
-            const data = await dbGetTableData(
-                connectionId, selectedSchema, selectedTable,
-                nextFetchPage, BATCH_SIZE, sortColumn ?? undefined, sortDirection
-            );
+            const data = activeConditions.length > 0
+                ? await dbSearchTableDataMulti(
+                    connectionId, selectedSchema, selectedTable,
+                    activeConditions.map((c) => ({
+                        column: c.column,
+                        operator: c.operator,
+                        value: isNullOp(c.operator) ? null : (c.value.trim() || null),
+                        logical_op: c.logicalOp,
+                    })),
+                    BATCH_SIZE, nextFetchPage, sortColumn ?? undefined, sortDirection
+                )
+                : await dbGetTableData(
+                    connectionId, selectedSchema, selectedTable,
+                    nextFetchPage, BATCH_SIZE, sortColumn ?? undefined, sortDirection
+                );
             if (data.rows.length === 0) { setHasMore(false); return; }
             setAccumulatedRows((prev) => {
                 const merged = [...prev, ...data.rows];
@@ -247,7 +520,7 @@ export function DataTable() {
         } finally {
             setIsLoadingMore(false);
         }
-    }, [connectionId, selectedSchema, selectedTable, hasMore, isLoadingMore, isLoading, nextFetchPage, sortColumn, sortDirection]);
+    }, [connectionId, selectedSchema, selectedTable, hasMore, isLoadingMore, isLoading, nextFetchPage, sortColumn, sortDirection, activeConditions]);
 
     // Keep the ref in sync with the latest fetchMore closure
     useEffect(() => { fetchMoreRef.current = fetchMore; }, [fetchMore]);
@@ -286,15 +559,17 @@ export function DataTable() {
         setError(null);
         setTableColumns(null);
         setSelectedRowKeys(new Set());
-        setEditingRowKey(null);
-        setEditingDraft({});
-        setValidationErrors({});
+        setEditingCell(null);
+        setEditingValue("");
+        setCellError(null);
         setAccumulatedRows([]);
         setHasMore(false);
         setNextFetchPage(2);
+        setFilterConditions([]);
+        setDebouncedConditions([]);
     }, [selectedTable, selectedSchema]);
 
-    useEffect(() => { fetchData(); }, [fetchData]);
+    useEffect(() => { fetchData(); }, [fetchData, refreshTrigger]);
 
     // ── Column metadata for edit/delete ───────────────────────────────────────
     const isTableNotView =
@@ -307,7 +582,7 @@ export function DataTable() {
         dbGetColumns(connectionId, selectedSchema, selectedTable)
             .then(setTableColumns)
             .catch(() => setTableColumns(null));
-    }, [connectionId, selectedSchema, selectedTable, isTableNotView]);
+    }, [connectionId, selectedSchema, selectedTable, isTableNotView, refreshTrigger]);
 
     const pkColumnNames = useMemo(
         () => (tableColumns?.filter((c) => c.is_primary_key).map((c) => c.name) ?? []),
@@ -315,45 +590,181 @@ export function DataTable() {
     );
     const canEditDelete = isTableNotView && pkColumnNames.length > 0;
 
-    // ── Save edit ─────────────────────────────────────────────────────────────
-    const handleSaveEdit = useCallback(async () => {
-        if (!connectionId || !selectedSchema || !selectedTable || !result || !editingRowKey || !tableColumns) return;
-        const rowIdx = displayRows.findIndex(
-            (row) => getRowKey(row, result!.columns, pkColumnNames) === editingRowKey
-        );
-        if (rowIdx < 0) return;
-        const row = displayRows[rowIdx];
-        const colByName = Object.fromEntries(tableColumns.map((c) => [c.name, c]));
-        const updates: { column: string; value: string | null }[] = [];
-        const errs: Record<string, string> = {};
-        for (let i = 0; i < result.columns.length; i++) {
-            const col = result.columns[i];
-            const draftVal = editingDraft[col.name];
-            if (draftVal === undefined) continue;
-            const original = cellToEditValue(row[i] ?? { type: "Null" });
-            if (draftVal === original) continue;
-            const info = colByName[col.name];
-            const err = validateCell(draftVal, col.data_type, info?.is_nullable ?? true);
-            if (err) errs[col.name] = err;
-            else updates.push({ column: col.name, value: draftVal.trim() === "" ? null : draftVal.trim() });
+    // ── Save cell edit ────────────────────────────────────────────────────────
+    const saveCellEdit = useCallback(async (): Promise<void> => {
+        if (preventBlurSaveRef.current) return;
+        if (!editingCell || !connectionId || !selectedSchema || !selectedTable || !result || !tableColumns) {
+            setEditingCell(null);
+            return;
         }
-        if (Object.keys(errs).length > 0) { setValidationErrors(errs); return; }
-        if (updates.length === 0) { setEditingRowKey(null); setEditingDraft({}); return; }
-        setValidationErrors({});
+        const { rowKey, colName, originalValue } = editingCell;
+        // No change — dismiss silently
+        if (editingValue === originalValue) {
+            setEditingCell(null);
+            setCellError(null);
+            return;
+        }
+        // Validate
+        const col = result.columns.find((c) => c.name === colName);
+        const colInfo = tableColumns.find((c) => c.name === colName);
+        if (col) {
+            const err = validateCell(editingValue, col.data_type, colInfo?.is_nullable ?? true);
+            if (err) { setCellError(err); return; }
+        }
+        setCellError(null);
+        const row = displayRows.find((r) => getRowKey(r, result.columns, pkColumnNames) === rowKey);
+        if (!row) { setEditingCell(null); return; }
         setIsSaving(true);
         try {
             const pkValues = getRowPkValues(row, result.columns, pkColumnNames);
-            await dbUpdateTableRow(connectionId, selectedSchema, selectedTable, pkColumnNames, pkValues, updates);
-            setEditingRowKey(null);
-            setEditingDraft({});
-            toast.success("Row saved");
+            const value = editingValue.trim() === "" ? null : editingValue.trim();
+            await dbUpdateTableRow(
+                connectionId, selectedSchema, selectedTable,
+                pkColumnNames, pkValues,
+                [{ column: colName, value }]
+            );
+            setEditingCell(null);
+            toast.success(`${colName} updated`, { duration: 1500 });
             fetchData();
         } catch (e) {
             toast.error(String(e));
         } finally {
             setIsSaving(false);
         }
-    }, [connectionId, selectedSchema, selectedTable, result, editingRowKey, editingDraft, tableColumns, pkColumnNames, fetchData, displayRows]);
+    }, [editingCell, editingValue, connectionId, selectedSchema, selectedTable, result, tableColumns, pkColumnNames, displayRows, fetchData]);
+
+    // ── Cancel cell edit ──────────────────────────────────────────────────────
+    const cancelCellEdit = useCallback(() => {
+        preventBlurSaveRef.current = true;
+        setEditingCell(null);
+        setEditingValue("");
+        setCellError(null);
+        setTimeout(() => { preventBlurSaveRef.current = false; }, 50);
+    }, []);
+
+    // ── Watch mode helpers ────────────────────────────────────────────────────
+
+    /** Convert a plain JSON object (from pg row_to_json) to a CellValue[] matching result.columns. */
+    const jsonRowToCellValues = useCallback((
+        obj: Record<string, unknown>,
+        columns: { name: string }[]
+    ): CellValue[] => {
+        return columns.map((col) => {
+            const v = obj[col.name];
+            if (v === null || v === undefined) return { type: "Null" as const };
+            if (typeof v === "boolean") return { type: "Bool" as const, value: v };
+            if (typeof v === "number") {
+                return Number.isInteger(v)
+                    ? { type: "Int64" as const, value: v }
+                    : { type: "Float64" as const, value: v };
+            }
+            if (typeof v === "object") return { type: "Json" as const, value: v };
+            return { type: "String" as const, value: String(v) };
+        });
+    }, []);
+
+    /** Get a stable row key from a JSON row object using PK columns. */
+    const getPkKeyFromJsonRow = useCallback((
+        obj: Record<string, unknown>,
+        pkCols: string[]
+    ): string => {
+        return pkCols.map((pk) => String(obj[pk] ?? "")).join("\t");
+    }, []);
+
+    /** Toggle watch mode on/off. */
+    const toggleWatch = useCallback(async () => {
+        if (!connectionId || !selectedSchema || !selectedTable) return;
+        if (watchMode) {
+            // Stop watch
+            setWatchMode(false);
+            setWatchAnimState(new Map());
+            watchUnlistenRef.current?.();
+            watchUnlistenRef.current = null;
+            try { await dbUnwatchTable(connectionId, selectedSchema, selectedTable); } catch { /* ignore */ }
+            toast.info("Watch stopped", { duration: 1500 });
+        } else {
+            // Start watch
+            setWatchConnecting(true);
+            try {
+                await dbWatchTable(connectionId, selectedSchema, selectedTable);
+                const eventName = watchEventName(connectionId, selectedSchema, selectedTable);
+                const unlisten = await listen<TableWatchEvent>(eventName, (ev) => {
+                    const e = ev.payload;
+                    if (e.oversized) {
+                        // Row too large for pg_notify — do a silent full refresh
+                        fetchData();
+                        return;
+                    }
+                    if (e.op === "INSERT" && e.new_row) {
+                        setAccumulatedRows((prev) => {
+                            if (!result?.columns) return prev;
+                            const newRow = jsonRowToCellValues(e.new_row!, result.columns);
+                            return [newRow, ...prev];
+                        });
+                        // We need the key to animate — build it after state update
+                        if (result?.columns && pkColumnNames.length > 0) {
+                            const k = getPkKeyFromJsonRow(e.new_row, pkColumnNames);
+                            setWatchAnimState((m) => { const n = new Map(m); n.set(k, "new"); return n; });
+                            setTimeout(() => setWatchAnimState((m) => { const n = new Map(m); n.delete(k); return n; }), 2200);
+                        }
+                    } else if (e.op === "UPDATE" && e.new_row) {
+                        if (result?.columns && pkColumnNames.length > 0) {
+                            const matchKey = e.old_row
+                                ? getPkKeyFromJsonRow(e.old_row, pkColumnNames)
+                                : getPkKeyFromJsonRow(e.new_row, pkColumnNames);
+                            const updatedRow = jsonRowToCellValues(e.new_row, result.columns);
+                            setAccumulatedRows((prev) => prev.map((row) => {
+                                const k = getRowKey(row, result.columns, pkColumnNames);
+                                return k === matchKey ? updatedRow : row;
+                            }));
+                            setWatchAnimState((m) => { const n = new Map(m); n.set(matchKey, "updated"); return n; });
+                            setTimeout(() => setWatchAnimState((m) => { const n = new Map(m); n.delete(matchKey); return n; }), 2200);
+                        }
+                    } else if (e.op === "DELETE" && e.old_row) {
+                        if (result?.columns && pkColumnNames.length > 0) {
+                            const k = getPkKeyFromJsonRow(e.old_row, pkColumnNames);
+                            setWatchAnimState((m) => { const n = new Map(m); n.set(k, "deleted"); return n; });
+                            setTimeout(() => {
+                                setAccumulatedRows((prev) => prev.filter(
+                                    (row) => getRowKey(row, result!.columns, pkColumnNames) !== k
+                                ));
+                                setWatchAnimState((m) => { const n = new Map(m); n.delete(k); return n; });
+                            }, 560);
+                        }
+                    }
+                });
+                watchUnlistenRef.current = unlisten;
+                setWatchMode(true);
+                toast.success("Live Watch active", { description: "Listening for INSERT · UPDATE · DELETE", duration: 2000 });
+            } catch (err) {
+                toast.error(`Watch failed: ${String(err)}`);
+            } finally {
+                setWatchConnecting(false);
+            }
+        }
+    }, [watchMode, connectionId, selectedSchema, selectedTable, result, pkColumnNames,
+        jsonRowToCellValues, getPkKeyFromJsonRow, fetchData]);
+
+    // Stop watch when table/schema changes
+    useEffect(() => {
+        if (watchMode && watchUnlistenRef.current) {
+            watchUnlistenRef.current();
+            watchUnlistenRef.current = null;
+            setWatchMode(false);
+            setWatchAnimState(new Map());
+            if (connectionId && selectedSchema && selectedTable) {
+                dbUnwatchTable(connectionId, selectedSchema, selectedTable).catch(() => {});
+            }
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [selectedTable, selectedSchema]);
+
+    // Cleanup on unmount
+    useEffect(() => {
+        return () => {
+            watchUnlistenRef.current?.();
+        };
+    }, []);
 
     // ── Delete selected ───────────────────────────────────────────────────────
     const handleDeleteSelected = useCallback(async () => {
@@ -364,27 +775,21 @@ export function DataTable() {
         if (rowsToDelete.length === 0) return;
         if (!confirm(`Delete ${rowsToDelete.length} row(s)? This cannot be undone.`)) return;
         const rowsPkValues = rowsToDelete.map((row) => getRowPkValues(row, result!.columns, pkColumnNames));
+        setIsDeleting(true);
         try {
             const n = await dbDeleteTableRows(connectionId, selectedSchema, selectedTable, pkColumnNames, rowsPkValues);
             setSelectedRowKeys(new Set());
             toast.success(`${n} row(s) deleted`);
-            fetchData();
+            await fetchData();
         } catch (e) {
             toast.error(String(e));
+        } finally {
+            setIsDeleting(false);
         }
     }, [connectionId, selectedSchema, selectedTable, result, selectedRowKeys, pkColumnNames, fetchData, displayRows]);
 
-    // ── Cmd+Enter to save ─────────────────────────────────────────────────────
-    useEffect(() => {
-        const handler = (e: KeyboardEvent) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && editingRowKey && canEditDelete) {
-                e.preventDefault();
-                handleSaveEdit();
-            }
-        };
-        window.addEventListener("keydown", handler);
-        return () => window.removeEventListener("keydown", handler);
-    }, [editingRowKey, canEditDelete, handleSaveEdit]);
+    // ── Delete handler uses editingCell rowKey guard ──────────────────────────
+    // (no global keyboard handler needed; cells handle their own keys inline)
 
     const totalPages = result?.total_rows ? Math.ceil(result.total_rows / pageSize) : 1;
 
@@ -409,6 +814,25 @@ export function DataTable() {
     }, [result, displayRows]);
 
     const isTableView = previewSelection?.kind === "table" || previewSelection?.kind === "view";
+    const tableSchema = isTableView && previewSelection ? (previewSelection as { schema: string }).schema : "";
+    const tableNameForExport = isTableView && previewSelection ? (previewSelection as { name: string }).name : "";
+
+    const handleExport = useCallback(
+        (format: "csv" | "json") => {
+            if (!result) return;
+            const cols = result.columns;
+            const rows = displayRows;
+            const base = `${tableNameForExport || "table"}-${Date.now()}`;
+            if (format === "csv") {
+                downloadBlob(rowsToCSV(cols, rows), `${base}.csv`, "text/csv;charset=utf-8;");
+                toast.success("CSV downloaded", { duration: 1500 });
+            } else {
+                downloadBlob(rowsToJSON(cols, rows), `${base}.json`, "application/json");
+                toast.success("JSON downloaded", { duration: 1500 });
+            }
+        },
+        [result, displayRows, tableNameForExport]
+    );
 
     // ── Empty / non-table states ──────────────────────────────────────────────
     if (!previewSelection) {
@@ -439,18 +863,22 @@ export function DataTable() {
         );
     }
 
-    const tableSchema = previewSelection.kind === "table" || previewSelection.kind === "view" ? previewSelection.schema : "";
-    const tableName = previewSelection.kind === "table" || previewSelection.kind === "view" ? previewSelection.name : "";
-
     if (error && !isLoading) {
         return (
             <div className="flex h-full flex-col">
                 <TableToolbar
-                    schema={tableSchema} table={tableName} result={null}
+                    schema={tableSchema} table={tableNameForExport} result={null}
                     pageSize={pageSize} onPageSizeChange={(v) => { setPageSize(v); setPage(1); }}
                     onRefresh={fetchData} isLoading={false}
                     dataViewMode={dataViewMode} onDataViewModeChange={setDataViewMode}
                     scrollMode={scrollMode} onScrollModeChange={setScrollMode}
+                    filterCount={filterConditions.length}
+                    filterBarOpen={filterBarOpen}
+                    onToggleFilterBar={() => setFilterBarOpen((v) => !v)}
+                    hasRows={false}
+                    watchMode={watchMode}
+                    watchConnecting={watchConnecting}
+                    onToggleWatch={isTableNotView ? toggleWatch : undefined}
                 />
                 <div className="flex-1 flex items-center justify-center p-8">
                     <div className="max-w-md w-full rounded-xl bg-destructive/10 border border-destructive/20 p-6">
@@ -477,47 +905,86 @@ export function DataTable() {
     return (
         <div className="flex h-full flex-col">
             <TableToolbar
-                schema={tableSchema} table={tableName} result={result}
+                schema={tableSchema} table={tableNameForExport} result={result}
                 pageSize={pageSize} onPageSizeChange={(v) => { setPageSize(v); setPage(1); }}
                 onRefresh={fetchData} isLoading={isLoading}
                 dataViewMode={dataViewMode} onDataViewModeChange={setDataViewMode}
                 scrollMode={scrollMode} onScrollModeChange={setScrollMode}
                 rowsLoaded={scrollMode === "infinite" ? accumulatedRows.length : undefined}
+                onAddRow={canEditDelete ? () => setInsertDialogOpen(true) : undefined}
+                filterCount={filterConditions.length}
+                filterBarOpen={filterBarOpen}
+                onToggleFilterBar={() => setFilterBarOpen((v) => !v)}
+                onExport={handleExport}
+                hasRows={displayRows.length > 0}
+                watchMode={watchMode}
+                watchConnecting={watchConnecting}
+                onToggleWatch={isTableNotView ? toggleWatch : undefined}
             />
+            {/* Live watch banner */}
+            {watchMode && (
+                <div className="flex items-center gap-2 px-4 py-1 border-b border-rose-500/20 bg-rose-500/5 shrink-0">
+                    <span className="relative flex h-2 w-2">
+                        <span className="animate-ping absolute inline-flex h-full w-full rounded-full bg-rose-400 opacity-75" />
+                        <span className="relative inline-flex rounded-full h-2 w-2 bg-rose-500" />
+                    </span>
+                    <span className="text-[11px] font-medium text-rose-400">LIVE</span>
+                    <span className="text-[10px] text-rose-400/60">streaming INSERT · UPDATE · DELETE via LISTEN/NOTIFY</span>
+                </div>
+            )}
 
-            {/* Unsaved changes bar */}
-            {canEditDelete && editingRowKey && dataViewMode === "table" && (() => {
-                const rowIdx = displayRows.findIndex(
-                    (row) => getRowKey(row, result!.columns, pkColumnNames) === editingRowKey
-                );
-                const hasChanges = rowIdx >= 0 && result?.columns.some((col, colIdx) => {
-                    const draft = editingDraft[col.name];
-                    if (draft === undefined) return false;
-                    return draft !== cellToEditValue(displayRows[rowIdx]?.[colIdx] ?? { type: "Null" });
-                });
-                if (!hasChanges) return null;
-                return (
-                    <div className="flex items-center justify-between px-4 py-2 border-b border-emerald-500/30 bg-emerald-500/5 shrink-0">
-                        <span className="text-xs text-emerald-600 dark:text-emerald-400">Unsaved changes</span>
-                        <div className="flex gap-2">
-                            <Button variant="ghost" size="sm" className="h-7 text-xs"
-                                onClick={() => { setEditingRowKey(null); setEditingDraft({}); setValidationErrors({}); }}>
-                                Cancel
-                            </Button>
-                            <Button size="sm" className="h-7 text-xs gap-1.5" onClick={handleSaveEdit} disabled={isSaving}>
-                                <Save className="h-3 w-3" />Save (⌘↵)
-                            </Button>
-                        </div>
-                    </div>
-                );
-            })()}
+            {/* Filter bar */}
+            {filterBarOpen && (
+                <FilterBar
+                    columns={result?.columns ?? tableColumns?.map((c) => ({ name: c.name, data_type: c.data_type })) ?? []}
+                    conditions={filterConditions}
+                    onConditionsChange={(conds) => {
+                        setFilterConditions(conds);
+                        setPage(1);
+                        setAccumulatedRows([]);
+                        setHasMore(false);
+                        setNextFetchPage(2);
+                    }}
+                    hasActiveFilters={hasActiveFilters}
+                    resultCount={result?.total_rows ?? null}
+                    isLoading={isLoading}
+                />
+            )}
+
+            {previewSelection?.kind === "table" && (
+                <InsertRowDialog
+                    open={insertDialogOpen}
+                    onOpenChange={setInsertDialogOpen}
+                    connectionId={connectionId}
+                    schema={selectedSchema ?? ""}
+                    table={selectedTable ?? ""}
+                    columns={tableColumns ?? []}
+                    onSuccess={fetchData}
+                />
+            )}
+
+            {/* Saving indicator */}
+            {isSaving && (
+                <div className="flex items-center gap-2 px-4 py-1.5 border-b border-emerald-500/20 bg-emerald-500/5 shrink-0">
+                    <Loader2 className="h-3 w-3 animate-spin text-emerald-500" />
+                    <span className="text-xs text-emerald-600 dark:text-emerald-400">Saving…</span>
+                </div>
+            )}
 
             {/* Delete bar */}
             {canEditDelete && selectedRowKeys.size > 0 && dataViewMode === "table" && (
                 <div className="flex items-center justify-between px-4 py-2 border-b border-destructive/20 bg-destructive/5 shrink-0">
                     <span className="text-xs text-destructive/90">{selectedRowKeys.size} row(s) selected</span>
-                    <Button variant="destructive" size="sm" className="h-7 text-xs gap-1.5" onClick={handleDeleteSelected}>
-                        <Trash2 className="h-3 w-3" />Delete
+                    <Button
+                        type="button"
+                        variant="destructive"
+                        size="sm"
+                        className="h-7 text-xs gap-1.5"
+                        disabled={isDeleting}
+                        onClick={handleDeleteSelected}
+                    >
+                        {isDeleting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                        {isDeleting ? "Deleting…" : "Delete"}
                     </Button>
                 </div>
             )}
@@ -577,19 +1044,49 @@ export function DataTable() {
                                             {result.columns.map((col) => (
                                                 <TableHead
                                                     key={col.name}
-                                                    className="cursor-pointer select-none group whitespace-nowrap px-3 py-2"
-                                                    onClick={() => handleSort(col.name)}
+                                                    className="select-none group whitespace-nowrap px-3 py-2"
                                                 >
-                                                    <div className="flex items-center gap-1.5">
-                                                        <span className="text-xs font-semibold text-foreground/80">{col.name}</span>
-                                                        <span className="text-[9px] font-mono text-muted-foreground/30 hidden group-hover:inline">{col.data_type}</span>
-                                                        {sortColumn === col.name ? (
-                                                            sortDirection === "ASC"
-                                                                ? <ArrowUp className="h-3 w-3 text-emerald-400 shrink-0" />
-                                                                : <ArrowDown className="h-3 w-3 text-emerald-400 shrink-0" />
-                                                        ) : (
-                                                            <ArrowUpDown className="h-3 w-3 opacity-0 group-hover:opacity-25 transition-opacity shrink-0" />
-                                                        )}
+                                                    <div className="flex items-center gap-1">
+                                                        {/* Sort clickable area */}
+                                                        <button
+                                                            className="flex items-center gap-1.5 cursor-pointer flex-1 text-left"
+                                                            onClick={() => handleSort(col.name)}
+                                                        >
+                                                            <span className="text-xs font-semibold text-foreground/80">{col.name}</span>
+                                                            <span className="text-[9px] font-mono text-muted-foreground/30 hidden group-hover:inline">{col.data_type}</span>
+                                                            {sortColumn === col.name ? (
+                                                                sortDirection === "ASC"
+                                                                    ? <ArrowUp className="h-3 w-3 text-emerald-400 shrink-0" />
+                                                                    : <ArrowDown className="h-3 w-3 text-emerald-400 shrink-0" />
+                                                            ) : (
+                                                                <ArrowUpDown className="h-3 w-3 opacity-0 group-hover:opacity-25 transition-opacity shrink-0" />
+                                                            )}
+                                                        </button>
+                                                        {/* Column stats popover */}
+                                                        <Popover
+                                                            onOpenChange={(open) => {
+                                                                if (open) fetchColStats(col.name);
+                                                                else { setColStats(null); setColStatsColumn(null); }
+                                                            }}
+                                                        >
+                                                            <PopoverTrigger asChild>
+                                                                <button
+                                                                    className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-muted/60"
+                                                                    title={`Stats for ${col.name}`}
+                                                                    onClick={(e) => e.stopPropagation()}
+                                                                >
+                                                                    <BarChart2 className="h-3 w-3 text-muted-foreground" />
+                                                                </button>
+                                                            </PopoverTrigger>
+                                                            <PopoverContent className="w-72 p-0" align="start">
+                                                                <ColumnStatsPanel
+                                                                    colName={col.name}
+                                                                    dataType={col.data_type}
+                                                                    stats={colStatsColumn === col.name ? colStats : null}
+                                                                    loading={colStatsColumn === col.name && colStatsLoading}
+                                                                />
+                                                            </PopoverContent>
+                                                        </Popover>
                                                     </div>
                                                 </TableHead>
                                             ))}
@@ -598,30 +1095,31 @@ export function DataTable() {
                                     <TableBody>
                                         {displayRows.map((row, rowIdx) => {
                                             const rowKey = getRowKey(row, result.columns, pkColumnNames);
-                                            const isEditing = canEditDelete && editingRowKey === rowKey;
                                             const isSelected = selectedRowKeys.has(rowKey);
+                                            const isRowEditing = canEditDelete && editingCell?.rowKey === rowKey;
                                             const rowNumber = scrollMode === "infinite"
                                                 ? rowIdx + 1
                                                 : (page - 1) * pageSize + rowIdx + 1;
-                                            const startEdit = () => {
-                                                if (!canEditDelete) return;
-                                                setEditingRowKey(rowKey);
-                                                const draft: Record<string, string> = {};
-                                                result.columns.forEach((col, i) => { draft[col.name] = cellToEditValue(row[i] ?? { type: "Null" }); });
-                                                setEditingDraft(draft);
-                                                setValidationErrors({});
-                                            };
+                                            const watchAnim = watchAnimState.get(rowKey);
+
                                             return (
+                                                <ContextMenu key={rowKey || rowIdx}>
+                                                <ContextMenuTrigger asChild>
                                                 <TableRow
-                                                    key={rowKey || rowIdx}
                                                     className={cn(
                                                         "border-border/10 transition-colors group",
-                                                        isEditing && "bg-primary/5 ring-1 ring-primary/20",
-                                                        !isEditing && "hover:bg-accent/20"
+                                                        isRowEditing ? "bg-primary/5" : "hover:bg-accent/20",
+                                                        isSelected && "bg-accent/10",
+                                                        watchAnim === "new" && "watch-row-insert",
+                                                        watchAnim === "updated" && "watch-row-update",
+                                                        watchAnim === "deleted" && "watch-row-delete",
                                                     )}
                                                 >
                                                     {canEditDelete && (
-                                                        <TableCell className="px-2 sticky left-0 bg-background group-hover:bg-accent/20 z-10" onClick={(e) => e.stopPropagation()}>
+                                                        <TableCell
+                                                            className="px-2 sticky left-0 bg-background group-hover:bg-accent/20 z-10"
+                                                            onClick={(e) => e.stopPropagation()}
+                                                        >
                                                             <input
                                                                 type="checkbox"
                                                                 className="h-3.5 w-3.5 rounded border-border"
@@ -637,50 +1135,177 @@ export function DataTable() {
                                                             />
                                                         </TableCell>
                                                     )}
-                                                    <TableCell className={cn("text-center text-[10px] font-mono text-muted-foreground/25 px-2 sticky bg-background group-hover:bg-accent/20 transition-colors z-10", canEditDelete ? "left-9" : "left-0")}>
+                                                    <TableCell className={cn(
+                                                        "text-center text-[10px] font-mono text-muted-foreground/25 px-2 sticky bg-background group-hover:bg-accent/20 transition-colors z-10",
+                                                        canEditDelete ? "left-9" : "left-0"
+                                                    )}>
                                                         {rowNumber}
                                                     </TableCell>
+
                                                     {row.map((cell, colIdx) => {
                                                         const col = result.columns[colIdx];
                                                         const colInfo = tableColumns?.find((c) => c.name === col.name);
-                                                        if (isEditing) {
-                                                            const val = editingDraft[col.name] ?? cellToEditValue(cell);
-                                                            const err = validationErrors[col.name];
+                                                        const isThisCellEditing =
+                                                            canEditDelete &&
+                                                            editingCell?.rowKey === rowKey &&
+                                                            editingCell?.colName === col.name;
+
+                                                        // ── Editing cell ──────────────────────────────────
+                                                        if (isThisCellEditing) {
                                                             return (
-                                                                <TableCell key={colIdx} className="p-1 align-top" onClick={(e) => e.stopPropagation()}>
-                                                                    <Input
-                                                                        value={val}
-                                                                        onChange={(e) => {
-                                                                            setEditingDraft((d) => ({ ...d, [col.name]: e.target.value }));
-                                                                            if (validationErrors[col.name]) setValidationErrors((v) => { const n = { ...v }; delete n[col.name]; return n; });
-                                                                        }}
-                                                                        onBlur={() => {
-                                                                            const e2 = validateCell(val, col.data_type, colInfo?.is_nullable ?? true);
-                                                                            setValidationErrors((v) => (e2 ? { ...v, [col.name]: e2 } : (() => { const n = { ...v }; delete n[col.name]; return n; })()));
-                                                                        }}
-                                                                        className={cn("h-7 text-xs font-mono", err && "border-destructive")}
-                                                                    />
-                                                                    {err && <p className="text-[10px] text-destructive mt-0.5">{err}</p>}
+                                                                <TableCell
+                                                                    key={colIdx}
+                                                                    className="p-1 align-middle min-w-[120px]"
+                                                                    onClick={(e) => e.stopPropagation()}
+                                                                >
+                                                                    <div className="flex items-center gap-1">
+                                                                        <div className="flex-1 min-w-0">
+                                                                            <Input
+                                                                                autoFocus
+                                                                                value={editingValue}
+                                                                                onChange={(e) => {
+                                                                                    setEditingValue(e.target.value);
+                                                                                    if (cellError) setCellError(null);
+                                                                                }}
+                                                                                onKeyDown={(e) => {
+                                                                                    if (e.key === "Enter") {
+                                                                                        e.preventDefault();
+                                                                                        preventBlurSaveRef.current = true;
+                                                                                        saveCellEdit().finally(() => {
+                                                                                            preventBlurSaveRef.current = false;
+                                                                                        });
+                                                                                    }
+                                                                                    if (e.key === "Escape") {
+                                                                                        e.preventDefault();
+                                                                                        cancelCellEdit();
+                                                                                    }
+                                                                                }}
+                                                                                onBlur={saveCellEdit}
+                                                                                className={cn(
+                                                                                    "h-7 text-xs font-mono w-full",
+                                                                                    cellError && "border-destructive focus-visible:ring-destructive"
+                                                                                )}
+                                                                            />
+                                                                            {cellError && (
+                                                                                <p className="text-[10px] text-destructive mt-0.5 px-0.5">{cellError}</p>
+                                                                            )}
+                                                                        </div>
+                                                                        {/* Cancel button — onMouseDown prevents input blur */}
+                                                                        <button
+                                                                            onMouseDown={(e) => {
+                                                                                e.preventDefault();
+                                                                                cancelCellEdit();
+                                                                            }}
+                                                                            className="shrink-0 p-0.5 rounded text-muted-foreground/40 hover:text-muted-foreground hover:bg-muted/60 transition-colors"
+                                                                            title="Cancel (Esc)"
+                                                                        >
+                                                                            <X className="h-3 w-3" />
+                                                                        </button>
+                                                                    </div>
                                                                 </TableCell>
                                                             );
                                                         }
+
+                                                        // ── Read-only cell ────────────────────────────────
                                                         const formatted = formatCellValue(cell);
                                                         const isNull = cell.type === "Null";
                                                         return (
                                                             <TableCell
                                                                 key={colIdx}
-                                                                className={cn("text-xs font-mono max-w-[280px] truncate px-3 py-1.5 cursor-default", isNull && "text-muted-foreground/25 italic")}
+                                                                className={cn(
+                                                                    "text-xs font-mono max-w-[280px] truncate px-3 py-1.5 cursor-default group/cell",
+                                                                    isNull && "text-muted-foreground/25 italic"
+                                                                )}
                                                                 title={isNull ? "NULL" : formatted}
-                                                                onClick={(e) => {
-                                                                    if (canEditDelete && !(e.target as HTMLElement).closest("input")) startEdit();
-                                                                    else if (!isNull) copyCell(formatted);
+                                                                onClick={() => {
+                                                                    if (!canEditDelete && !isNull) copyCell(formatted);
+                                                                }}
+                                                                onDoubleClick={() => {
+                                                                    if (canEditDelete) {
+                                                                        preventBlurSaveRef.current = false;
+                                                                        setEditingCell({
+                                                                            rowKey,
+                                                                            colName: col.name,
+                                                                            originalValue: cellToEditValue(cell),
+                                                                        });
+                                                                        setEditingValue(cellToEditValue(cell));
+                                                                        setCellError(null);
+                                                                    } else if (!isNull) {
+                                                                        copyCell(formatted);
+                                                                    }
                                                                 }}
                                                             >
-                                                                {formatted}
+                                                                <div className="flex items-center gap-1 min-w-0">
+                                                                    <span className="truncate flex-1">{formatted}</span>
+                                                                    {/* Pencil icon — only for editable cells, only on hover */}
+                                                                    {canEditDelete && !isNull && (
+                                                                        <button
+                                                                            className="shrink-0 opacity-0 group-hover/cell:opacity-100 transition-opacity p-0.5 rounded hover:bg-muted/60 ml-0.5"
+                                                                            onMouseDown={(e) => {
+                                                                                e.preventDefault();
+                                                                                e.stopPropagation();
+                                                                            }}
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                preventBlurSaveRef.current = false;
+                                                                                setEditingCell({
+                                                                                    rowKey,
+                                                                                    colName: col.name,
+                                                                                    originalValue: cellToEditValue(cell),
+                                                                                });
+                                                                                setEditingValue(cellToEditValue(cell));
+                                                                                setCellError(null);
+                                                                            }}
+                                                                            title={`Edit ${col.name}`}
+                                                                        >
+                                                                            <Pencil className="h-2.5 w-2.5 text-muted-foreground/50" />
+                                                                        </button>
+                                                                    )}
+                                                                </div>
                                                             </TableCell>
                                                         );
                                                     })}
                                                 </TableRow>
+                                                </ContextMenuTrigger>
+                                                <ContextMenuContent className="w-52">
+                                                    <ContextMenuLabel className="text-[10px] text-muted-foreground/50 font-normal">
+                                                        Row {rowNumber}
+                                                    </ContextMenuLabel>
+                                                    <ContextMenuSeparator />
+                                                    <ContextMenuItem
+                                                        className="gap-2 text-xs"
+                                                        onClick={() => {
+                                                            const sql = rowToInsertSQL(tableSchema, tableNameForExport, result.columns, row);
+                                                            navigator.clipboard.writeText(sql);
+                                                            toast.success("INSERT SQL copied", { duration: 1500 });
+                                                        }}
+                                                    >
+                                                        <Copy className="h-3.5 w-3.5" />
+                                                        Copy as INSERT SQL
+                                                    </ContextMenuItem>
+                                                    <ContextMenuItem
+                                                        className="gap-2 text-xs"
+                                                        onClick={() => {
+                                                            navigator.clipboard.writeText(rowToJSON(result.columns, row));
+                                                            toast.success("Copied as JSON", { duration: 1500 });
+                                                        }}
+                                                    >
+                                                        <Braces className="h-3.5 w-3.5" />
+                                                        Copy as JSON
+                                                    </ContextMenuItem>
+                                                    <ContextMenuItem
+                                                        className="gap-2 text-xs"
+                                                        onClick={() => {
+                                                            const line = row.map((c) => formatCellValue(c)).join(",");
+                                                            navigator.clipboard.writeText(line);
+                                                            toast.success("Copied as CSV row", { duration: 1500 });
+                                                        }}
+                                                    >
+                                                        <FileText className="h-3.5 w-3.5" />
+                                                        Copy as CSV row
+                                                    </ContextMenuItem>
+                                                </ContextMenuContent>
+                                                </ContextMenu>
                                             );
                                         })}
                                     </TableBody>
@@ -792,6 +1417,15 @@ function TableToolbar({
     scrollMode,
     onScrollModeChange,
     rowsLoaded,
+    onAddRow,
+    filterCount,
+    filterBarOpen,
+    onToggleFilterBar,
+    onExport,
+    hasRows,
+    watchMode,
+    watchConnecting,
+    onToggleWatch,
 }: {
     schema: string;
     table: string;
@@ -804,7 +1438,16 @@ function TableToolbar({
     onDataViewModeChange: (v: "table" | "json") => void;
     scrollMode: "infinite" | "pagination";
     onScrollModeChange: (v: "infinite" | "pagination") => void;
+    hasRows?: boolean;
     rowsLoaded?: number;
+    onAddRow?: () => void;
+    filterCount?: number;
+    filterBarOpen?: boolean;
+    onToggleFilterBar?: () => void;
+    onExport?: (format: "csv" | "json") => void;
+    watchMode?: boolean;
+    watchConnecting?: boolean;
+    onToggleWatch?: () => void;
 }) {
     const totalRows = result?.total_rows;
     const rowCountLabel = scrollMode === "infinite" && rowsLoaded !== undefined && totalRows != null
@@ -836,6 +1479,84 @@ function TableToolbar({
             </div>
 
             <div className="flex items-center gap-2 shrink-0">
+                {/* Watch mode toggle */}
+                {onToggleWatch && (
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                className={cn(
+                                    "h-7 gap-1.5 px-2.5 text-xs transition-all",
+                                    watchMode
+                                        ? "bg-rose-500/15 text-rose-400 hover:bg-rose-500/20 border border-rose-500/20"
+                                        : "text-muted-foreground hover:text-foreground"
+                                )}
+                                onClick={onToggleWatch}
+                                disabled={watchConnecting}
+                            >
+                                {watchConnecting ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : watchMode ? (
+                                    <RadioTower className="h-3.5 w-3.5 animate-pulse" />
+                                ) : (
+                                    <Radio className="h-3.5 w-3.5" />
+                                )}
+                                {watchMode ? "Live" : "Watch"}
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                            {watchMode
+                                ? "Watching — INSERT · UPDATE · DELETE events stream in real-time. Click to stop."
+                                : "Watch this table — stream live INSERT / UPDATE / DELETE changes via LISTEN/NOTIFY"}
+                        </TooltipContent>
+                    </Tooltip>
+                )}
+
+                {/* Filter toggle */}
+                {onToggleFilterBar && (
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                className={cn(
+                                    "h-7 gap-1.5 px-2.5 text-xs transition-colors",
+                                    filterBarOpen
+                                        ? "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/20"
+                                        : "text-muted-foreground hover:text-foreground"
+                                )}
+                                onClick={onToggleFilterBar}
+                            >
+                                <SlidersHorizontal className="h-3.5 w-3.5" />
+                                Filter
+                                {filterCount != null && filterCount > 0 && (
+                                    <span className="ml-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-500 px-1 text-[9px] font-bold text-white">
+                                        {filterCount}
+                                    </span>
+                                )}
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Toggle filter bar (multi-condition WHERE clause)</TooltipContent>
+                    </Tooltip>
+                )}
+
+                {onAddRow && (
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                variant="default"
+                                size="sm"
+                                className="h-7 gap-1.5 px-2.5 text-xs bg-emerald-600 hover:bg-emerald-700 text-white border-0"
+                                onClick={onAddRow}
+                            >
+                                <Plus className="h-3.5 w-3.5" />
+                                Add row
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Insert a new row into this table</TooltipContent>
+                    </Tooltip>
+                )}
                 {/* Scroll mode toggle */}
                 <div className="flex rounded-lg bg-muted/40 p-0.5 border border-border/20">
                     <Tooltip>
@@ -956,16 +1677,384 @@ function TableToolbar({
                                 const header = result.columns.map((c) => c.name).join("\t");
                                 const rows = result.rows.map((row) => row.map((cell) => formatCellValue(cell)).join("\t"));
                                 navigator.clipboard.writeText([header, ...rows].join("\n"));
-                                toast.success("Table data copied", { duration: 1500 });
+                                toast.success("Copied as TSV", { duration: 1500 });
                             }}
-                            disabled={!result || result.rows.length === 0}
+                            disabled={!hasRows}
                         >
                             <Copy className="h-3.5 w-3.5" />
                         </Button>
                     </TooltipTrigger>
                     <TooltipContent>Copy as TSV</TooltipContent>
                 </Tooltip>
+
+                {/* Export dropdown */}
+                {onExport && (
+                    <DropdownMenu>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <DropdownMenuTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-7 px-2 gap-1 text-muted-foreground hover:text-foreground text-xs"
+                                        disabled={!hasRows}
+                                    >
+                                        <Download className="h-3.5 w-3.5" />
+                                        <ChevronDown className="h-2.5 w-2.5" />
+                                    </Button>
+                                </DropdownMenuTrigger>
+                            </TooltipTrigger>
+                            <TooltipContent>Export data</TooltipContent>
+                        </Tooltip>
+                        <DropdownMenuContent align="end" className="w-44">
+                            <DropdownMenuItem onClick={() => onExport("csv")} className="gap-2 text-xs">
+                                <FileText className="h-3.5 w-3.5" />
+                                Download as CSV
+                            </DropdownMenuItem>
+                            <DropdownMenuItem onClick={() => onExport("json")} className="gap-2 text-xs">
+                                <Braces className="h-3.5 w-3.5" />
+                                Download as JSON
+                            </DropdownMenuItem>
+                        </DropdownMenuContent>
+                    </DropdownMenu>
+                )}
             </div>
+        </div>
+    );
+}
+
+// ── ColumnStatsPanel ──────────────────────────────────────────────────────
+
+function ColumnStatsPanel({
+    colName,
+    dataType,
+    stats,
+    loading,
+}: {
+    colName: string;
+    dataType: string;
+    stats: ColumnStats | null;
+    loading: boolean;
+}) {
+    return (
+        <div className="overflow-hidden rounded-lg">
+            {/* Header */}
+            <div className="flex items-center gap-2 px-3 py-2.5 border-b border-border/20 bg-muted/20">
+                <BarChart2 className="h-3.5 w-3.5 text-muted-foreground/60" />
+                <div>
+                    <p className="text-xs font-semibold leading-tight">{colName}</p>
+                    <p className="text-[10px] font-mono text-muted-foreground/50">{dataType}</p>
+                </div>
+            </div>
+
+            {loading && (
+                <div className="flex items-center justify-center py-8">
+                    <Loader2 className="h-4 w-4 animate-spin text-muted-foreground/40" />
+                </div>
+            )}
+
+            {!loading && !stats && (
+                <div className="flex items-center justify-center py-6">
+                    <p className="text-xs text-muted-foreground/40">No data</p>
+                </div>
+            )}
+
+            {!loading && stats && (
+                <div className="p-3 space-y-3">
+                    {/* Row counts */}
+                    <div className="grid grid-cols-2 gap-2">
+                        {[
+                            { label: "Total rows", value: stats.total_rows.toLocaleString(), icon: Database },
+                            { label: "Non-null", value: stats.non_null_count.toLocaleString(), icon: Hash },
+                            { label: "Null", value: stats.null_count.toLocaleString(), icon: Percent },
+                            { label: "Distinct", value: stats.distinct_count.toLocaleString(), icon: Layers },
+                        ].map(({ label, value, icon: Icon }) => (
+                            <div key={label} className="rounded-md bg-muted/30 px-2.5 py-2">
+                                <p className="text-[10px] text-muted-foreground/50 mb-0.5 flex items-center gap-1">
+                                    <Icon className="h-2.5 w-2.5" />
+                                    {label}
+                                </p>
+                                <p className="text-xs font-mono font-semibold">{value}</p>
+                            </div>
+                        ))}
+                    </div>
+
+                    {/* Null % bar */}
+                    <div>
+                        <div className="flex justify-between text-[10px] text-muted-foreground/50 mb-1">
+                            <span>Null %</span>
+                            <span className="font-mono">{stats.null_pct.toFixed(1)}%</span>
+                        </div>
+                        <div className="h-1.5 w-full rounded-full bg-muted/40 overflow-hidden">
+                            <div
+                                className="h-full rounded-full bg-amber-500/60 transition-all"
+                                style={{ width: `${Math.min(stats.null_pct, 100)}%` }}
+                            />
+                        </div>
+                    </div>
+
+                    {/* Min / Max / Avg */}
+                    {(stats.min_value !== null || stats.max_value !== null || stats.avg_value !== null) && (
+                        <div className="space-y-1">
+                            {stats.min_value !== null && (
+                                <div className="flex justify-between text-[11px]">
+                                    <span className="text-muted-foreground/50">Min</span>
+                                    <span className="font-mono truncate max-w-[160px]" title={stats.min_value}>{stats.min_value}</span>
+                                </div>
+                            )}
+                            {stats.max_value !== null && (
+                                <div className="flex justify-between text-[11px]">
+                                    <span className="text-muted-foreground/50">Max</span>
+                                    <span className="font-mono truncate max-w-[160px]" title={stats.max_value}>{stats.max_value}</span>
+                                </div>
+                            )}
+                            {stats.avg_value !== null && (
+                                <div className="flex justify-between text-[11px]">
+                                    <span className="text-muted-foreground/50">Avg</span>
+                                    <span className="font-mono">{stats.avg_value.toFixed(4)}</span>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {/* Top values */}
+                    {stats.top_values.length > 0 && (
+                        <div>
+                            <p className="text-[10px] text-muted-foreground/40 uppercase tracking-wider mb-1.5">
+                                Top values
+                            </p>
+                            <div className="space-y-1">
+                                {stats.top_values.map(([val, cnt]) => {
+                                    const pct = stats.non_null_count > 0
+                                        ? (cnt / stats.non_null_count) * 100
+                                        : 0;
+                                    return (
+                                        <div key={val} className="flex items-center gap-2">
+                                            <div className="flex-1 min-w-0">
+                                                <div className="flex justify-between text-[10px] mb-0.5">
+                                                    <span className="font-mono truncate max-w-[140px]" title={val}>
+                                                        {val}
+                                                    </span>
+                                                    <span className="text-muted-foreground/50 shrink-0">
+                                                        {cnt.toLocaleString()}
+                                                    </span>
+                                                </div>
+                                                <div className="h-1 w-full rounded-full bg-muted/30 overflow-hidden">
+                                                    <div
+                                                        className="h-full rounded-full bg-emerald-500/50"
+                                                        style={{ width: `${pct}%` }}
+                                                    />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
+        </div>
+    );
+}
+
+// ── FilterBar component ───────────────────────────────────────────────────
+
+function FilterBar({
+    columns,
+    conditions,
+    onConditionsChange,
+    hasActiveFilters,
+    resultCount,
+    isLoading,
+}: {
+    columns: { name: string; data_type: string }[];
+    conditions: FilterConditionUI[];
+    onConditionsChange: (c: FilterConditionUI[]) => void;
+    hasActiveFilters: boolean;
+    resultCount: number | null;
+    isLoading: boolean;
+}) {
+    const addCondition = () => {
+        const firstCol = columns[0]?.name ?? "";
+        const firstOps = columns[0] ? getOperatorsForType(columns[0].data_type) : [];
+        onConditionsChange([
+            ...conditions,
+            {
+                id: Math.random().toString(36).slice(2),
+                column: firstCol,
+                operator: firstOps[0]?.value ?? "=",
+                value: "",
+                logicalOp: "AND",
+            },
+        ]);
+    };
+
+    const remove = (id: string) =>
+        onConditionsChange(conditions.filter((c) => c.id !== id));
+
+    const update = (id: string, patch: Partial<FilterConditionUI>) =>
+        onConditionsChange(conditions.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+
+    return (
+        <div className="shrink-0 border-b border-border/20 bg-card/10 px-4 py-2.5">
+            {/* Header row */}
+            <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                    <SlidersHorizontal className="h-3.5 w-3.5 text-emerald-400" />
+                    <span className="text-xs font-medium text-foreground/70">Filters</span>
+                    {hasActiveFilters && !isLoading && resultCount !== null && (
+                        <span className="text-[10px] font-mono text-muted-foreground/50">
+                            — {resultCount.toLocaleString()} row{resultCount !== 1 ? "s" : ""} match
+                        </span>
+                    )}
+                    {isLoading && hasActiveFilters && (
+                        <Loader2 className="h-3 w-3 animate-spin text-muted-foreground/40" />
+                    )}
+                </div>
+                <div className="flex items-center gap-1">
+                    <Button
+                        size="sm"
+                        variant="ghost"
+                        className="h-6 px-2 text-[10px] gap-1 text-muted-foreground hover:text-foreground"
+                        onClick={addCondition}
+                        disabled={columns.length === 0}
+                    >
+                        <Plus className="h-3 w-3" />
+                        Add condition
+                    </Button>
+                    {conditions.length > 0 && (
+                        <Button
+                            size="sm"
+                            variant="ghost"
+                            className="h-6 px-2 text-[10px] gap-1 text-muted-foreground hover:text-destructive"
+                            onClick={() => onConditionsChange([])}
+                        >
+                            <X className="h-3 w-3" />
+                            Clear all
+                        </Button>
+                    )}
+                </div>
+            </div>
+
+            {/* Condition rows */}
+            {conditions.length === 0 ? (
+                <p className="text-[11px] text-muted-foreground/40 pl-0.5">
+                    No conditions — click &ldquo;Add condition&rdquo; to filter rows.
+                </p>
+            ) : (
+                <div className="space-y-1.5">
+                    {conditions.map((cond, idx) => {
+                        const colType =
+                            columns.find((c) => c.name === cond.column)?.data_type ?? "text";
+                        const ops = getOperatorsForType(colType);
+                        const noValue = isNullOp(cond.operator);
+
+                        return (
+                            <div key={cond.id} className="flex items-center gap-1.5 group/row">
+                                {/* Connector / WHERE label */}
+                                <div className="w-12 flex justify-end shrink-0">
+                                    {idx === 0 ? (
+                                        <span className="text-[10px] font-mono text-muted-foreground/40 pr-1">
+                                            WHERE
+                                        </span>
+                                    ) : (
+                                        <button
+                                            className={cn(
+                                                "text-[10px] font-bold font-mono px-1.5 py-0.5 rounded uppercase transition-colors border",
+                                                cond.logicalOp === "AND"
+                                                    ? "bg-blue-500/10 text-blue-400 border-blue-500/25 hover:bg-blue-500/20"
+                                                    : "bg-amber-500/10 text-amber-400 border-amber-500/25 hover:bg-amber-500/20"
+                                            )}
+                                            onClick={() =>
+                                                update(cond.id, {
+                                                    logicalOp: cond.logicalOp === "AND" ? "OR" : "AND",
+                                                })
+                                            }
+                                            title="Click to toggle AND / OR"
+                                        >
+                                            {cond.logicalOp}
+                                        </button>
+                                    )}
+                                </div>
+
+                                {/* Column selector */}
+                                <div className="relative">
+                                    <select
+                                        value={cond.column}
+                                        onChange={(e) => {
+                                            const newCol = e.target.value;
+                                            const newOps = getOperatorsForType(
+                                                columns.find((c) => c.name === newCol)?.data_type ?? "text"
+                                            );
+                                            update(cond.id, {
+                                                column: newCol,
+                                                operator: newOps[0]?.value ?? "=",
+                                            });
+                                        }}
+                                        className="h-7 appearance-none text-[11px] font-mono bg-background/60 border border-border/40 rounded-md pl-2 pr-6 text-foreground/90 focus:outline-none focus:ring-1 focus:ring-emerald-500/50 cursor-pointer hover:border-border/60 transition-colors min-w-[100px] max-w-[160px] truncate"
+                                    >
+                                        {columns.map((col) => (
+                                            <option key={col.name} value={col.name}>
+                                                {col.name}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground/50" />
+                                </div>
+
+                                {/* Operator selector */}
+                                <div className="relative">
+                                    <select
+                                        value={cond.operator}
+                                        onChange={(e) => update(cond.id, { operator: e.target.value })}
+                                        className="h-7 appearance-none text-[11px] bg-background/60 border border-border/40 rounded-md pl-2 pr-6 text-foreground/90 focus:outline-none focus:ring-1 focus:ring-emerald-500/50 cursor-pointer hover:border-border/60 transition-colors min-w-[80px] max-w-[180px]"
+                                    >
+                                        {ops.map((op) => (
+                                            <option key={op.value} value={op.value}>
+                                                {op.label}
+                                            </option>
+                                        ))}
+                                    </select>
+                                    <ChevronDown className="pointer-events-none absolute right-1.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground/50" />
+                                </div>
+
+                                {/* Value input */}
+                                {!noValue && (
+                                    <Input
+                                        value={cond.value}
+                                        onChange={(e) => update(cond.id, { value: e.target.value })}
+                                        placeholder={
+                                            ["LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE"].includes(
+                                                cond.operator
+                                            )
+                                                ? "use % for wildcards…"
+                                                : `${cond.column}…`
+                                        }
+                                        className="h-7 text-[11px] font-mono w-48 bg-background/60 border-border/40 focus-visible:ring-emerald-500/50"
+                                        autoComplete="off"
+                                        spellCheck={false}
+                                    />
+                                )}
+                                {noValue && (
+                                    <span className="text-[10px] text-muted-foreground/40 italic px-1">
+                                        (no value needed)
+                                    </span>
+                                )}
+
+                                {/* Remove */}
+                                <button
+                                    onClick={() => remove(cond.id)}
+                                    className="opacity-0 group-hover/row:opacity-100 transition-opacity p-1 rounded text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10"
+                                    title="Remove condition"
+                                >
+                                    <X className="h-3.5 w-3.5" />
+                                </button>
+                            </div>
+                        );
+                    })}
+                </div>
+            )}
         </div>
     );
 }
@@ -1134,15 +2223,30 @@ function TypePreview({
     const [loading, setLoading] = useState(true);
     const [err, setErr] = useState<string | null>(null);
 
-    useEffect(() => {
+    const fetchDetail = useCallback(() => {
         if (!connectionId) return;
         setLoading(true);
         setErr(null);
         dbGetTypeDefinition(connectionId, schema, name)
-            .then((d) => setDetail(d ?? null))
+            .then((d) => {
+                setDetail(d ?? null);
+                if (d == null) setErr("Type not found or not supported.");
+            })
             .catch((e) => setErr(String(e)))
             .finally(() => setLoading(false));
     }, [connectionId, schema, name]);
+
+    useEffect(() => {
+        fetchDetail();
+    }, [fetchDetail]);
+
+    const hasContent =
+        detail &&
+        ((detail.enum_labels && detail.enum_labels.length > 0) ||
+            (detail.composite_attrs && detail.composite_attrs.length > 0) ||
+            detail.domain_base_type != null ||
+            detail.domain_check != null ||
+            detail.range_subtype != null);
 
     if (loading) {
         return (
@@ -1172,8 +2276,11 @@ function TypePreview({
             </div>
             <div className="flex-1 overflow-auto p-4">
                 {err && (
-                    <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-4 text-xs text-destructive">
-                        {err}
+                    <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-4 text-xs text-destructive flex flex-col gap-2">
+                        <span>{err}</span>
+                        <Button size="sm" variant="outline" className="w-fit h-7 text-xs border-destructive/30" onClick={fetchDetail}>
+                            <RefreshCw className="h-3 w-3 mr-1" /> Retry
+                        </Button>
                     </div>
                 )}
                 {detail && !err && (
@@ -1189,6 +2296,12 @@ function TypePreview({
                                             </Badge>
                                         ))}
                                     </dd>
+                                </div>
+                            )}
+                            {detail.enum_labels && detail.enum_labels.length === 0 && detail.kind === "enum" && (
+                                <div>
+                                    <dt className="text-muted-foreground/70 font-medium mb-1">Values</dt>
+                                    <dd className="text-muted-foreground/60 font-mono">Empty enum (no labels)</dd>
                                 </div>
                             )}
                             {detail.composite_attrs && detail.composite_attrs.length > 0 && (
@@ -1231,6 +2344,11 @@ function TypePreview({
                                 !detail.domain_base_type &&
                                 !detail.range_subtype && (
                                 <p className="text-muted-foreground/60">Multirange type (no extra details)</p>
+                            )}
+                            {!hasContent && (
+                                <p className="text-muted-foreground/60">
+                                    No values or attributes for this type.
+                                </p>
                             )}
                         </dl>
                     </div>

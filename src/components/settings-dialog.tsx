@@ -1,0 +1,656 @@
+"use client";
+
+import { useState } from "react";
+import { useTheme } from "next-themes";
+import {
+    useSettingsStore,
+    type AppTheme,
+    type UIDensity,
+    type EditorTabSize,
+    type DefaultPageSize,
+    type NullDisplay,
+} from "@/stores/settings-store";
+import {
+    Dialog,
+    DialogContent,
+    DialogTitle,
+} from "@/components/ui/dialog";
+import { Switch } from "@/components/ui/switch";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
+import { APP_NAME, APP_VERSION } from "@/lib/app-config";
+import {
+    Sun,
+    Moon,
+    Monitor,
+    Palette,
+    Code2,
+    Table2,
+    Terminal,
+    Keyboard,
+    Info,
+    RotateCcw,
+    Check,
+    Minus,
+    Plus,
+    Database,
+    Zap,
+} from "lucide-react";
+import { toast } from "sonner";
+
+// ── Section Types ────────────────────────────────────────────────────────────
+
+type SettingsSection =
+    | "appearance"
+    | "editor"
+    | "data"
+    | "query"
+    | "shortcuts"
+    | "about";
+
+const SECTIONS: { id: SettingsSection; label: string; icon: React.ReactNode }[] = [
+    { id: "appearance", label: "Appearance", icon: <Palette className="h-3.5 w-3.5" /> },
+    { id: "editor", label: "Editor", icon: <Code2 className="h-3.5 w-3.5" /> },
+    { id: "data", label: "Data", icon: <Table2 className="h-3.5 w-3.5" /> },
+    { id: "query", label: "Query", icon: <Terminal className="h-3.5 w-3.5" /> },
+    { id: "shortcuts", label: "Shortcuts", icon: <Keyboard className="h-3.5 w-3.5" /> },
+    { id: "about", label: "About", icon: <Info className="h-3.5 w-3.5" /> },
+];
+
+// ── Sub-components ────────────────────────────────────────────────────────────
+
+function SettingRow({
+    label,
+    description,
+    children,
+}: {
+    label: string;
+    description?: string;
+    children: React.ReactNode;
+}) {
+    return (
+        <div className="flex items-center justify-between gap-6 py-3">
+            <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-foreground/90">{label}</p>
+                {description && (
+                    <p className="text-xs text-muted-foreground/60 mt-0.5 leading-relaxed">
+                        {description}
+                    </p>
+                )}
+            </div>
+            <div className="shrink-0">{children}</div>
+        </div>
+    );
+}
+
+function SettingSection({ title, children }: { title: string; children: React.ReactNode }) {
+    return (
+        <div className="space-y-0">
+            <h3 className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/50 mb-1 px-1">
+                {title}
+            </h3>
+            <div className="rounded-lg border border-border/30 bg-card/30 divide-y divide-border/20 px-4">
+                {children}
+            </div>
+        </div>
+    );
+}
+
+function StepInput({
+    value,
+    min,
+    max,
+    step = 1,
+    onChange,
+    format,
+}: {
+    value: number;
+    min: number;
+    max: number;
+    step?: number;
+    onChange: (v: number) => void;
+    format?: (v: number) => string;
+}) {
+    return (
+        <div className="flex items-center gap-1.5">
+            <button
+                type="button"
+                onClick={() => onChange(Math.max(min, value - step))}
+                disabled={value <= min}
+                className="flex h-7 w-7 items-center justify-center rounded-md border border-border/40 bg-muted/30 text-muted-foreground hover:bg-muted/60 hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+                <Minus className="h-3 w-3" />
+            </button>
+            <span className="w-10 text-center text-sm font-mono text-foreground/90">
+                {format ? format(value) : value}
+            </span>
+            <button
+                type="button"
+                onClick={() => onChange(Math.min(max, value + step))}
+                disabled={value >= max}
+                className="flex h-7 w-7 items-center justify-center rounded-md border border-border/40 bg-muted/30 text-muted-foreground hover:bg-muted/60 hover:text-foreground disabled:opacity-30 disabled:cursor-not-allowed transition-colors"
+            >
+                <Plus className="h-3 w-3" />
+            </button>
+        </div>
+    );
+}
+
+function SegmentedControl<T extends string | number>({
+    value,
+    options,
+    onChange,
+}: {
+    value: T;
+    options: { value: T; label: string; icon?: React.ReactNode }[];
+    onChange: (v: T) => void;
+}) {
+    return (
+        <div className="flex items-center rounded-lg bg-muted/40 p-0.5 gap-0.5">
+            {options.map((opt) => (
+                <button
+                    key={String(opt.value)}
+                    type="button"
+                    onClick={() => onChange(opt.value)}
+                    className={cn(
+                        "flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-all",
+                        value === opt.value
+                            ? "bg-background text-foreground shadow-sm"
+                            : "text-muted-foreground hover:text-foreground"
+                    )}
+                >
+                    {opt.icon}
+                    {opt.label}
+                </button>
+            ))}
+        </div>
+    );
+}
+
+// ── Sections ──────────────────────────────────────────────────────────────────
+
+function AppearanceSection() {
+    const { theme: nextTheme, setTheme } = useTheme();
+    const { uiDensity, reducedMotion, updateSettings } = useSettingsStore();
+
+    const currentTheme = (nextTheme as AppTheme) ?? "dark";
+
+    const themeOptions: { value: AppTheme; label: string; icon: React.ReactNode }[] = [
+        { value: "light", label: "Light", icon: <Sun className="h-3 w-3" /> },
+        { value: "dark", label: "Dark", icon: <Moon className="h-3 w-3" /> },
+        { value: "system", label: "System", icon: <Monitor className="h-3 w-3" /> },
+    ];
+
+    const densityOptions: { value: UIDensity; label: string }[] = [
+        { value: "compact", label: "Compact" },
+        { value: "comfortable", label: "Comfortable" },
+    ];
+
+    return (
+        <div className="space-y-5">
+            <SettingSection title="Theme">
+                <SettingRow
+                    label="Color scheme"
+                    description="Choose between light, dark, or follow your system setting."
+                >
+                    <SegmentedControl
+                        value={currentTheme}
+                        options={themeOptions}
+                        onChange={(v) => setTheme(v)}
+                    />
+                </SettingRow>
+            </SettingSection>
+
+            <SettingSection title="Layout">
+                <SettingRow
+                    label="UI density"
+                    description="Adjusts padding and spacing throughout the interface."
+                >
+                    <SegmentedControl
+                        value={uiDensity}
+                        options={densityOptions}
+                        onChange={(v) => updateSettings({ uiDensity: v as UIDensity })}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Reduce motion"
+                    description="Minimize animations and transitions."
+                >
+                    <Switch
+                        checked={reducedMotion}
+                        onCheckedChange={(v) => updateSettings({ reducedMotion: v })}
+                    />
+                </SettingRow>
+            </SettingSection>
+        </div>
+    );
+}
+
+function EditorSection() {
+    const {
+        editorFontSize,
+        editorTabSize,
+        editorWordWrap,
+        editorMinimap,
+        editorLineNumbers,
+        editorFontLigatures,
+        updateSettings,
+    } = useSettingsStore();
+
+    const tabSizeOptions: { value: EditorTabSize; label: string }[] = [
+        { value: 2, label: "2 spaces" },
+        { value: 4, label: "4 spaces" },
+    ];
+
+    return (
+        <div className="space-y-5">
+            <SettingSection title="Typography">
+                <SettingRow
+                    label="Font size"
+                    description="Size of the monospace font in the SQL editor."
+                >
+                    <StepInput
+                        value={editorFontSize}
+                        min={10}
+                        max={20}
+                        onChange={(v) => updateSettings({ editorFontSize: v })}
+                        format={(v) => `${v}px`}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Font ligatures"
+                    description="Render ligature glyphs in supported monospace fonts."
+                >
+                    <Switch
+                        checked={editorFontLigatures}
+                        onCheckedChange={(v) => updateSettings({ editorFontLigatures: v })}
+                    />
+                </SettingRow>
+            </SettingSection>
+
+            <SettingSection title="Formatting">
+                <SettingRow
+                    label="Tab size"
+                    description="Number of spaces per indentation level."
+                >
+                    <SegmentedControl
+                        value={editorTabSize}
+                        options={tabSizeOptions}
+                        onChange={(v) => updateSettings({ editorTabSize: v as EditorTabSize })}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Word wrap"
+                    description="Wrap long lines instead of showing a horizontal scrollbar."
+                >
+                    <Switch
+                        checked={editorWordWrap}
+                        onCheckedChange={(v) => updateSettings({ editorWordWrap: v })}
+                    />
+                </SettingRow>
+            </SettingSection>
+
+            <SettingSection title="Display">
+                <SettingRow
+                    label="Line numbers"
+                    description="Show line numbers in the gutter."
+                >
+                    <Switch
+                        checked={editorLineNumbers}
+                        onCheckedChange={(v) => updateSettings({ editorLineNumbers: v })}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Minimap"
+                    description="Show the code minimap scrollbar on the right side."
+                >
+                    <Switch
+                        checked={editorMinimap}
+                        onCheckedChange={(v) => updateSettings({ editorMinimap: v })}
+                    />
+                </SettingRow>
+            </SettingSection>
+        </div>
+    );
+}
+
+function DataSection() {
+    const {
+        defaultPageSize,
+        nullDisplay,
+        showRowNumbers,
+        wrapCellContent,
+        updateSettings,
+    } = useSettingsStore();
+
+    const pageSizeOptions: { value: DefaultPageSize; label: string }[] = [
+        { value: 50, label: "50" },
+        { value: 100, label: "100" },
+        { value: 200, label: "200" },
+        { value: 500, label: "500" },
+    ];
+
+    const nullOptions: { value: NullDisplay; label: string }[] = [
+        { value: "NULL", label: "NULL" },
+        { value: "–", label: "–" },
+        { value: "", label: "blank" },
+    ];
+
+    return (
+        <div className="space-y-5">
+            <SettingSection title="Pagination">
+                <SettingRow
+                    label="Rows per page"
+                    description="Default number of rows fetched per page in the data browser."
+                >
+                    <SegmentedControl
+                        value={defaultPageSize}
+                        options={pageSizeOptions}
+                        onChange={(v) => updateSettings({ defaultPageSize: v as DefaultPageSize })}
+                    />
+                </SettingRow>
+            </SettingSection>
+
+            <SettingSection title="Display">
+                <SettingRow
+                    label="Row numbers"
+                    description="Show a row number column on the left of the data table."
+                >
+                    <Switch
+                        checked={showRowNumbers}
+                        onCheckedChange={(v) => updateSettings({ showRowNumbers: v })}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Wrap cell content"
+                    description="Allow cell text to wrap instead of being truncated."
+                >
+                    <Switch
+                        checked={wrapCellContent}
+                        onCheckedChange={(v) => updateSettings({ wrapCellContent: v })}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="NULL display"
+                    description="How to render NULL values in the data table."
+                >
+                    <SegmentedControl
+                        value={nullDisplay}
+                        options={nullOptions}
+                        onChange={(v) => updateSettings({ nullDisplay: v as NullDisplay })}
+                    />
+                </SettingRow>
+            </SettingSection>
+        </div>
+    );
+}
+
+function QuerySection() {
+    const {
+        autoFormatOnExecute,
+        confirmDangerousQueries,
+        queryTimeoutSeconds,
+        updateSettings,
+    } = useSettingsStore();
+
+    return (
+        <div className="space-y-5">
+            <SettingSection title="Execution">
+                <SettingRow
+                    label="Auto-format on execute"
+                    description="Automatically format SQL before running it."
+                >
+                    <Switch
+                        checked={autoFormatOnExecute}
+                        onCheckedChange={(v) => updateSettings({ autoFormatOnExecute: v })}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Confirm dangerous queries"
+                    description="Show a confirmation dialog before running DROP, TRUNCATE, or DELETE without WHERE."
+                >
+                    <Switch
+                        checked={confirmDangerousQueries}
+                        onCheckedChange={(v) => updateSettings({ confirmDangerousQueries: v })}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Query timeout"
+                    description="Automatically cancel queries that exceed this duration."
+                >
+                    <StepInput
+                        value={queryTimeoutSeconds}
+                        min={5}
+                        max={300}
+                        step={5}
+                        onChange={(v) => updateSettings({ queryTimeoutSeconds: v })}
+                        format={(v) => `${v}s`}
+                    />
+                </SettingRow>
+            </SettingSection>
+        </div>
+    );
+}
+
+const SHORTCUTS = [
+    { keys: ["⌘", "K"], description: "Open command palette / search" },
+    { keys: ["⌘", "R"], description: "Refresh schemas and current table" },
+    { keys: ["⌘", "Enter"], description: "Execute query in editor" },
+    { keys: ["⇧", "⌥", "F"], description: "Format SQL in editor" },
+    { keys: ["⌘", "⇧", "H"], description: "Toggle query history panel" },
+    { keys: ["⌘", "⇧", "P"], description: "Open editor command palette" },
+    { keys: ["⌘", ","], description: "Open settings" },
+];
+
+function ShortcutsSection() {
+    return (
+        <div className="space-y-5">
+            <SettingSection title="Keyboard shortcuts">
+                {SHORTCUTS.map((s, i) => (
+                    <div
+                        key={i}
+                        className="flex items-center justify-between gap-4 py-2.5"
+                    >
+                        <span className="text-sm text-foreground/80">{s.description}</span>
+                        <div className="flex items-center gap-1">
+                            {s.keys.map((key, ki) => (
+                                <kbd
+                                    key={ki}
+                                    className="inline-flex h-6 min-w-6 items-center justify-center rounded border border-border/50 bg-muted/50 px-1.5 font-mono text-[11px] text-foreground/70"
+                                >
+                                    {key}
+                                </kbd>
+                            ))}
+                        </div>
+                    </div>
+                ))}
+            </SettingSection>
+        </div>
+    );
+}
+
+function AboutSection() {
+    const [copied, setCopied] = useState(false);
+
+    const info = [
+        { label: "Version", value: APP_VERSION },
+        { label: "Framework", value: "Next.js 16 + Tauri 2" },
+        { label: "Runtime", value: "Rust + React 19" },
+        { label: "Database", value: "PostgreSQL" },
+    ];
+
+    return (
+        <div className="space-y-5">
+            <SettingSection title="Application">
+                <div className="py-4 flex items-start gap-4">
+                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-gradient-to-br from-emerald-500 to-cyan-500 shadow-md shadow-emerald-500/20 shrink-0">
+                        <Database className="h-5 w-5 text-white" />
+                    </div>
+                    <div>
+                        <p className="font-semibold text-foreground">
+                            {APP_NAME}
+                        </p>
+                        <p className="text-xs text-muted-foreground/60 mt-0.5">
+                            A blazing-fast, modern PostgreSQL admin panel
+                        </p>
+                    </div>
+                </div>
+                {info.map(({ label, value }) => (
+                    <div
+                        key={label}
+                        className="flex items-center justify-between py-2.5"
+                    >
+                        <span className="text-sm text-muted-foreground/70">{label}</span>
+                        <Badge variant="secondary" className="font-mono text-xs">
+                            {value}
+                        </Badge>
+                    </div>
+                ))}
+                <div className="flex items-center justify-between py-2.5">
+                    <span className="text-sm text-muted-foreground/70">Build info</span>
+                    <button
+                        type="button"
+                        onClick={() => {
+                            const info = `${APP_NAME} v${APP_VERSION} — Next.js 16 + Tauri 2`;
+                            navigator.clipboard.writeText(info);
+                            setCopied(true);
+                            setTimeout(() => setCopied(false), 2000);
+                        }}
+                        className="flex items-center gap-1.5 text-xs text-muted-foreground/50 hover:text-foreground transition-colors"
+                    >
+                        {copied ? (
+                            <Check className="h-3 w-3 text-emerald-400" />
+                        ) : (
+                            <span className="font-mono">Copy</span>
+                        )}
+                    </button>
+                </div>
+            </SettingSection>
+
+            <SettingSection title="Performance">
+                <SettingRow
+                    label="Connection pooling"
+                    description="Connections are pooled via sqlx for optimal performance."
+                >
+                    <div className="flex items-center gap-1.5">
+                        <div className="h-1.5 w-1.5 rounded-full bg-emerald-500" />
+                        <span className="text-xs text-emerald-400 font-medium">Active</span>
+                    </div>
+                </SettingRow>
+                <SettingRow
+                    label="Query cache"
+                    description="Schema metadata is cached in-memory for fast sidebar navigation."
+                >
+                    <div className="flex items-center gap-1.5">
+                        <Zap className="h-3.5 w-3.5 text-amber-400" />
+                        <span className="text-xs text-amber-400 font-medium">Enabled</span>
+                    </div>
+                </SettingRow>
+            </SettingSection>
+        </div>
+    );
+}
+
+// ── Main Dialog ───────────────────────────────────────────────────────────────
+
+interface SettingsDialogProps {
+    open: boolean;
+    onOpenChange: (open: boolean) => void;
+}
+
+export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
+    const [activeSection, setActiveSection] = useState<SettingsSection>("appearance");
+    const { resetSettings } = useSettingsStore();
+    const { setTheme } = useTheme();
+
+    const handleReset = () => {
+        resetSettings();
+        setTheme("dark");
+        toast.success("Settings reset to defaults", { duration: 2000 });
+    };
+
+    const renderSection = () => {
+        switch (activeSection) {
+            case "appearance": return <AppearanceSection />;
+            case "editor": return <EditorSection />;
+            case "data": return <DataSection />;
+            case "query": return <QuerySection />;
+            case "shortcuts": return <ShortcutsSection />;
+            case "about": return <AboutSection />;
+        }
+    };
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent  className={cn(
+                    "max-w-[65vw] sm:max-w-7xl w-full h-[43vh] flex flex-col p-0 gap-0 overflow-hidden",
+                    "rounded-xl border-border/40 shadow-2xl"
+                )}>
+                <DialogTitle className="sr-only">Settings</DialogTitle>
+
+                <div className="flex h-[520px]">
+                    {/* Sidebar nav */}
+                    <div className="w-44 shrink-0 border-r border-border/20 bg-muted/20 flex flex-col">
+                        <div className="px-4 pt-4 pb-3 border-b border-border/20">
+                            <p className="text-sm font-semibold text-foreground/90">Settings</p>
+                        </div>
+                        <nav className="flex-1 p-2 space-y-0.5">
+                            {SECTIONS.map((section) => (
+                                <button
+                                    key={section.id}
+                                    type="button"
+                                    onClick={() => setActiveSection(section.id)}
+                                    className={cn(
+                                        "w-full flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-all text-left",
+                                        activeSection === section.id
+                                            ? "bg-background text-foreground shadow-sm font-medium"
+                                            : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
+                                    )}
+                                >
+                                    <span className={cn(
+                                        activeSection === section.id
+                                            ? "text-emerald-400"
+                                            : "text-muted-foreground/60"
+                                    )}>
+                                        {section.icon}
+                                    </span>
+                                    {section.label}
+                                </button>
+                            ))}
+                        </nav>
+                        <div className="p-2 border-t border-border/20">
+                            <button
+                                type="button"
+                                onClick={handleReset}
+                                className="w-full flex items-center gap-2 px-3 py-2 rounded-md text-xs text-muted-foreground/50 hover:text-muted-foreground hover:bg-muted/50 transition-all"
+                            >
+                                <RotateCcw className="h-3 w-3" />
+                                Reset defaults
+                            </button>
+                        </div>
+                    </div>
+
+                    {/* Content area */}
+
+                    <div className="flex-1 flex flex-col min-w-0">
+                        <div className="flex items-center gap-2 px-5 py-3.5 border-b border-border/20 shrink-0">
+                            <span className="text-emerald-400">
+                                {SECTIONS.find((s) => s.id === activeSection)?.icon}
+                            </span>
+                            <h2 className="text-sm font-semibold text-foreground/90 capitalize">
+                                {activeSection}
+                            </h2>
+                        </div>
+
+                        <ScrollArea className="flex-1 h-[calc(100%-52px)]">
+                            <div className="p-5 space-y-5">
+                                {renderSection()}
+                            </div>
+                        </ScrollArea>
+                    </div>
+                </div>
+            </DialogContent>
+        </Dialog>
+    );
+}

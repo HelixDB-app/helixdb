@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "helixDB",
+  "productName": "pgStudio",
   "version": "0.1.0",
-  "identifier": "com.helixdb.app",
+  "identifier": "com.pgstudio.app",
   "build": {
     "frontendDist": "../out",
     "devUrl": "http://localhost:3000",
@@ -12,7 +12,7 @@
   "app": {
     "windows": [
       {
-        "title": "HelixDB",
+        "title": "pgStudio",
         "width": 1400,
         "height": 900,
         "minWidth": 900,

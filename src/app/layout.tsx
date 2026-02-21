@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
+import { ThemeProvider } from "@/components/theme-provider";
+import { APP_NAME, APP_TAGLINE } from "@/lib/app-config";
 import "./globals.css";
 
 const inter = Inter({
@@ -15,7 +17,7 @@ const jetbrainsMono = JetBrains_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "HelixDB — Database Admin Panel",
+  title: `${APP_NAME} — ${APP_TAGLINE}`,
   description:
     "A blazing-fast, modern database admin panel powered by Rust and Next.js",
 };
@@ -26,14 +28,21 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" suppressHydrationWarning>
       <body
         className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased`}
       >
-        <TooltipProvider delayDuration={200}>
-          {children}
-        </TooltipProvider>
-        <Toaster />
+        <ThemeProvider
+          attribute="class"
+          defaultTheme="dark"
+          enableSystem
+          disableTransitionOnChange
+        >
+          <TooltipProvider delayDuration={200}>
+            {children}
+          </TooltipProvider>
+          <Toaster />
+        </ThemeProvider>
       </body>
     </html>
   );

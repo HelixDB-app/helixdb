@@ -15,6 +15,8 @@ import {
     dbListTables,
     dbRefreshCache,
     dbListDatabases,
+    dbCreateDatabase,
+    dbDropDatabase,
     dbListEventTriggers,
     dbListFunctions,
     dbListTypes,
@@ -111,15 +113,24 @@ interface ConnectionState {
     schemaTypes: Record<string, TypeInfo[]>;
     isLoadingSchemaObjects: boolean;
 
+    /** Incremented on refreshAll(); DataTable refetches when this changes. */
+    refreshTrigger: number;
+    isRefreshingAll: boolean;
+
     connect: (connectionString: string, savedConnectionId?: string) => Promise<void>;
     disconnect: () => Promise<void>;
     switchDatabase: (databaseName: string) => Promise<void>;
+    refreshDatabases: () => Promise<void>;
+    createDatabase: (name: string) => Promise<void>;
+    dropDatabase: (name: string) => Promise<void>;
     selectSchema: (schema: string) => Promise<void>;
     selectTable: (schema: string, table: string) => void;
     /** Select any object for preview (table, view, function, type, event trigger) */
     selectPreview: (selection: PreviewSelection | null) => void;
     toggleSchema: (schema: string) => void;
     refreshSchemas: () => Promise<void>;
+    /** Refresh schemas, databases, and trigger table data refetch (e.g. Cmd+R). */
+    refreshAll: () => Promise<void>;
     loadEventTriggers: () => Promise<void>;
     loadSchemaObjects: (schema: string) => Promise<void>;
     setConnectionString: (s: string) => void;
@@ -149,6 +160,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
     schemaFunctions: {},
     schemaTypes: {},
     isLoadingSchemaObjects: false,
+    refreshTrigger: 0,
+    isRefreshingAll: false,
 
     setConnectionString: (s) => set({ connectionString: s }),
     clearError: () => set({ connectionError: null }),
@@ -330,6 +343,34 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
         }
     },
 
+    refreshDatabases: async () => {
+        const { connectionId } = get();
+        if (!connectionId) return;
+        set({ isLoadingDatabases: true });
+        try {
+            const dbs = await dbListDatabases(connectionId);
+            set({ databases: dbs, isLoadingDatabases: false });
+        } catch {
+            set({ isLoadingDatabases: false });
+        }
+    },
+
+    createDatabase: async (name) => {
+        const { connectionId } = get();
+        if (!connectionId) throw new Error("Not connected");
+        await dbCreateDatabase(connectionId, name);
+        const dbs = await dbListDatabases(connectionId);
+        set({ databases: dbs });
+    },
+
+    dropDatabase: async (name) => {
+        const { connectionId } = get();
+        if (!connectionId) throw new Error("Not connected");
+        await dbDropDatabase(connectionId, name);
+        const dbs = await dbListDatabases(connectionId);
+        set({ databases: dbs });
+    },
+
     selectSchema: async (schema) => {
         const { connectionId } = get();
         if (!connectionId) return;
@@ -441,6 +482,17 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
             get().loadEventTriggers();
         } catch {
             set({ isLoadingSchemas: false });
+        }
+    },
+
+    refreshAll: async () => {
+        const { connectionId, refreshSchemas: doRefreshSchemas, refreshDatabases } = get();
+        if (!connectionId) return;
+        set({ isRefreshingAll: true, refreshTrigger: get().refreshTrigger + 1 });
+        try {
+            await Promise.all([doRefreshSchemas(), refreshDatabases()]);
+        } finally {
+            set({ isRefreshingAll: false });
         }
     },
 }));

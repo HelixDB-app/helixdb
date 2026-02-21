@@ -1,13 +1,19 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useConnectionStore } from "@/stores/connection-store";
+import { APP_NAME } from "@/lib/app-config";
 import { LandingConnections } from "@/components/landing-connections";
+import { WelcomeScreen } from "@/components/welcome-screen";
 import { ConnectionDialog } from "@/components/connection-dialog";
 import { Sidebar } from "@/components/sidebar";
 import { DataTable } from "@/components/data-table";
 import { QueryEditor } from "@/components/query-editor";
+import { SessionMonitor } from "@/components/session-monitor";
+import { IndexBuilder } from "@/components/index-builder";
 import { StatusBar } from "@/components/status-bar";
+import { CommandPalette } from "@/components/command-palette";
+import { SettingsDialog } from "@/components/settings-dialog";
 import {
     ResizableHandle,
     ResizablePanel,
@@ -20,18 +26,82 @@ import {
     TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Badge } from "@/components/ui/badge";
+import { cn } from "@/lib/utils";
 import {
+    Activity,
     Database,
+    Layers,
     PlugZap,
+    RefreshCw,
+    Search,
+    Settings,
     Table2,
     Terminal,
     Unplug,
 } from "lucide-react";
 
 export default function Home() {
-    const { isConnected, disconnect, databaseName, serverVersion } = useConnectionStore();
+    const {
+        isConnected,
+        disconnect,
+        databaseName,
+        serverVersion,
+        selectTable,
+        refreshAll,
+        isRefreshingAll,
+    } = useConnectionStore();
     const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-    const [activeView, setActiveView] = useState<"data" | "query">("data");
+    const [activeView, setActiveView] = useState<"data" | "query" | "sessions" | "indexes">("data");
+    const [searchOpen, setSearchOpen] = useState(false);
+    const [showWelcome, setShowWelcome] = useState(false);
+    const [settingsOpen, setSettingsOpen] = useState(false);
+
+    useEffect(() => {
+        if (typeof window !== "undefined" && !localStorage.getItem("helix_welcomed")) {
+            setShowWelcome(true);
+        }
+    }, []);
+
+    const handleWelcomeDismiss = () => {
+        localStorage.setItem("helix_welcomed", "1");
+        setShowWelcome(false);
+    };
+
+    // Global ⌘K / Ctrl+K shortcut
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+                e.preventDefault();
+                setSearchOpen(true);
+            }
+        };
+        window.addEventListener("keydown", handler);
+        return () => window.removeEventListener("keydown", handler);
+    }, []);
+
+    // Global ⌘, / Ctrl+, shortcut for settings
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === ",") {
+                e.preventDefault();
+                setSettingsOpen(true);
+            }
+        };
+        window.addEventListener("keydown", handler);
+        return () => window.removeEventListener("keydown", handler);
+    }, []);
+
+    // Global ⌘R / Ctrl+R — refresh all (schemas, databases, current table)
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "r") {
+                e.preventDefault();
+                if (isConnected) refreshAll();
+            }
+        };
+        window.addEventListener("keydown", handler);
+        return () => window.removeEventListener("keydown", handler);
+    }, [isConnected, refreshAll]);
 
     const pgVersion = serverVersion
         ? serverVersion.match(/PostgreSQL\s+([\d.]+)/i)?.[1] ?? ""
@@ -39,7 +109,12 @@ export default function Home() {
 
     // Landing: saved connections list + quick connect
     if (!isConnected) {
-        return <LandingConnections />;
+        return (
+            <>
+                {showWelcome && <WelcomeScreen onDismiss={handleWelcomeDismiss} />}
+                <LandingConnections />
+            </>
+        );
     }
 
     return (
@@ -56,7 +131,7 @@ export default function Home() {
                             <Database className="h-3.5 w-3.5 text-white" />
                         </div>
                         <span className="font-bold text-sm bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">
-                            HelixDB
+                            {APP_NAME}
                         </span>
                     </button>
 
@@ -83,6 +158,56 @@ export default function Home() {
 
                 {/* Right: View tabs + actions */}
                 <div className="flex items-center gap-1.5">
+                    {/* Refresh */}
+                    {isConnected && (
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 gap-1.5 px-2.5 text-xs text-muted-foreground/60 hover:text-foreground border border-border/20 hover:border-border/40 bg-muted/20 hover:bg-muted/40 transition-all"
+                                    onClick={() => refreshAll()}
+                                    disabled={isRefreshingAll}
+                                >
+                                    <RefreshCw
+                                        className={cn("h-3 w-3", isRefreshingAll && "animate-spin")}
+                                    />
+                                    <span className="hidden sm:inline">
+                                        {isRefreshingAll ? "Refreshing…" : "Refresh"}
+                                    </span>
+                                    <kbd className="hidden sm:inline-flex h-4 items-center rounded border border-border/30 bg-muted/40 px-1 font-mono text-[9px] text-muted-foreground/40 ml-0.5">
+                                        ⌘R
+                                    </kbd>
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                                Refresh current table and metadata (⌘R)
+                            </TooltipContent>
+                        </Tooltip>
+                    )}
+                    {/* Search button */}
+                    {isConnected && (
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 gap-1.5 px-2.5 text-xs text-muted-foreground/60 hover:text-foreground border border-border/20 hover:border-border/40 bg-muted/20 hover:bg-muted/40 transition-all"
+                                    onClick={() => setSearchOpen(true)}
+                                >
+                                    <Search className="h-3 w-3" />
+                                    <span className="hidden sm:inline">Search</span>
+                                    <kbd className="hidden sm:inline-flex h-4 items-center rounded border border-border/30 bg-muted/40 px-1 font-mono text-[9px] text-muted-foreground/40 ml-0.5">
+                                        ⌘K
+                                    </kbd>
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>
+                                Search tables, columns, run SQL (⌘K)
+                            </TooltipContent>
+                        </Tooltip>
+                    )}
+
                     {isConnected && (
                         <div className="flex items-center rounded-md bg-muted/40 p-0.5">
                             <button
@@ -104,6 +229,26 @@ export default function Home() {
                             >
                                 <Terminal className="h-3 w-3" />
                                 Query
+                            </button>
+                            <button
+                                className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-all ${activeView === "sessions"
+                                    ? "bg-background text-foreground shadow-sm"
+                                    : "text-muted-foreground hover:text-foreground"
+                                    }`}
+                                onClick={() => setActiveView("sessions")}
+                            >
+                                <Activity className="h-3 w-3" />
+                                Sessions
+                            </button>
+                            <button
+                                className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-all ${activeView === "indexes"
+                                    ? "bg-background text-foreground shadow-sm"
+                                    : "text-muted-foreground hover:text-foreground"
+                                    }`}
+                                onClick={() => setActiveView("indexes")}
+                            >
+                                <Layers className="h-3 w-3" />
+                                Indexes
                             </button>
                         </div>
                     )}
@@ -138,6 +283,20 @@ export default function Home() {
                             <TooltipContent>Connect to database</TooltipContent>
                         </Tooltip>
                     )}
+
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-muted-foreground/60 hover:text-foreground"
+                                onClick={() => setSettingsOpen(true)}
+                            >
+                                <Settings className="h-3.5 w-3.5" />
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Settings (⌘,)</TooltipContent>
+                    </Tooltip>
                 </div>
             </header>
 
@@ -146,14 +305,19 @@ export default function Home() {
                 {isConnected ? (
                     <ResizablePanelGroup orientation="horizontal">
                         <ResizablePanel defaultSize={20} minSize={14} maxSize={300}>
-                            <Sidebar />
+                            <Sidebar
+                                onSelectObject={() => setActiveView("data")}
+                            />
                         </ResizablePanel>
 
                         <ResizableHandle className="w-px bg-border/20 hover:bg-emerald-500/40 transition-colors data-[resize-handle-active]:bg-emerald-500/60" />
 
                         <ResizablePanel defaultSize={80}>
                             <div className="h-full">
-                                {activeView === "data" ? <DataTable /> : <QueryEditor />}
+                                {activeView === "data" && <DataTable />}
+                                {activeView === "query" && <QueryEditor />}
+                                {activeView === "sessions" && <SessionMonitor />}
+                                {activeView === "indexes" && <IndexBuilder />}
                             </div>
                         </ResizablePanel>
                     </ResizablePanelGroup>
@@ -166,6 +330,18 @@ export default function Home() {
                 open={showConnectionDialog}
                 onOpenChange={setShowConnectionDialog}
             />
+
+            <CommandPalette
+                open={searchOpen}
+                onOpenChange={setSearchOpen}
+                onNavigateToQuery={() => setActiveView("query")}
+                onNavigateToTable={(schema, table) => {
+                    setActiveView("data");
+                    selectTable(schema, table);
+                }}
+            />
+
+            <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
         </div>
     );
 }

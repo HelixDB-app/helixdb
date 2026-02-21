@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 const CONNECTIONS_FILE: &str = "connections.json";
-const SUBDIR: &str = "helixdb";
+const SUBDIR: &str = "pgstudio";
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedConnection {
