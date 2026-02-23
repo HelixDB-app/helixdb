@@ -9,6 +9,7 @@ import {
     type EditorTabSize,
     type DefaultPageSize,
     type NullDisplay,
+    type GeminiModelId,
 } from "@/stores/settings-store";
 import {
     Dialog,
@@ -36,6 +37,10 @@ import {
     Plus,
     Zap,
     Bell,
+    Sparkles,
+    Eye,
+    EyeOff,
+    ExternalLink,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -46,6 +51,7 @@ type SettingsSection =
     | "editor"
     | "data"
     | "query"
+    | "ai"
     | "shortcuts"
     | "about";
 
@@ -54,6 +60,7 @@ const SECTIONS: { id: SettingsSection; label: string; icon: React.ReactNode }[] 
     { id: "editor", label: "Editor", icon: <Code2 className="h-3.5 w-3.5" /> },
     { id: "data", label: "Data", icon: <Table2 className="h-3.5 w-3.5" /> },
     { id: "query", label: "Query", icon: <Terminal className="h-3.5 w-3.5" /> },
+    { id: "ai", label: "AI", icon: <Sparkles className="h-3.5 w-3.5" /> },
     { id: "shortcuts", label: "Shortcuts", icon: <Keyboard className="h-3.5 w-3.5" /> },
     { id: "about", label: "About", icon: <Info className="h-3.5 w-3.5" /> },
 ];
@@ -441,6 +448,7 @@ const SHORTCUTS = [
     { keys: ["⌘", "⇧", "H"], description: "Toggle query history panel" },
     { keys: ["⌘", "⇧", "P"], description: "Open editor command palette" },
     { keys: ["⌘", ","], description: "Open settings" },
+    { keys: ["⌘", "J"], description: "Open AI chat" },
 ];
 
 function ShortcutsSection() {
@@ -477,6 +485,73 @@ function NotificationsToggle() {
             checked={notificationsEnabled}
             onCheckedChange={(v) => updateSettings({ notificationsEnabled: v })}
         />
+    );
+}
+
+function AISection() {
+    const { geminiApiKey, defaultAiModel, updateSettings } = useSettingsStore();
+    const [showKey, setShowKey] = useState(false);
+
+    const modelOptions: { value: GeminiModelId; label: string }[] = [
+        { value: "gemini-2.5-flash", label: "Gemini Flash" },
+        { value: "gemini-2.5-pro", label: "Gemini Pro" },
+        { value: "gemma3-4b", label: "Gemma 3 4B" },
+        { value: "gemma3-12b", label: "Gemma 3 12B" },
+        { value: "gemma3-27b", label: "Gemma 3 27B" },
+        { value: "gemini-2.5-flash-lite", label: "Gemini Flash Lite" },
+        { value: "gemini-2.5-pro-lite", label: "Gemini Pro Lite" },
+    ];
+
+    return (
+        <div className="space-y-5">
+            <SettingSection title="API Configuration">
+                <SettingRow
+                    label="Gemini API Key"
+                    description="Your personal API key for Google Gemini."
+                >
+                    <div className="flex items-center gap-1.5">
+                        <input
+                            type={showKey ? "text" : "password"}
+                            value={geminiApiKey}
+                            onChange={(e) => updateSettings({ geminiApiKey: e.target.value })}
+                            placeholder="Enter API key"
+                            className="h-7 w-48 rounded-md border border-border/40 bg-muted/20 px-2 text-xs font-mono text-foreground/80 placeholder:text-muted-foreground/30 focus:outline-none focus:ring-1 focus:ring-emerald-500/40"
+                        />
+                        <button
+                            type="button"
+                            onClick={() => setShowKey(!showKey)}
+                            className="flex h-7 w-7 items-center justify-center rounded-md border border-border/40 bg-muted/20 text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-colors"
+                        >
+                            {showKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                        </button>
+                    </div>
+                </SettingRow>
+                <div className="py-2.5">
+                    <a
+                        href="https://aistudio.google.com/apikey"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-1.5 text-xs text-emerald-400/80 hover:text-emerald-400 transition-colors"
+                    >
+                        <ExternalLink className="h-3 w-3" />
+                        Get your free API key from Google AI Studio
+                    </a>
+                </div>
+            </SettingSection>
+
+            <SettingSection title="Model">
+                <SettingRow
+                    label="Default model"
+                    description="Choose the Gemini model for new conversations."
+                >
+                    <SegmentedControl
+                        value={defaultAiModel}
+                        options={modelOptions}
+                        onChange={(v) => updateSettings({ defaultAiModel: v as GeminiModelId })}
+                    />
+                </SettingRow>
+            </SettingSection>
+        </div>
     );
 }
 
@@ -593,6 +668,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             case "editor": return <EditorSection />;
             case "data": return <DataSection />;
             case "query": return <QuerySection />;
+            case "ai": return <AISection />;
             case "shortcuts": return <ShortcutsSection />;
             case "about": return <AboutSection />;
         }
@@ -600,10 +676,10 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent  className={cn(
-                    "max-w-[65vw] sm:max-w-7xl w-full h-[83vh] flex flex-col p-0 gap-0 overflow-hidden",
-                    "rounded-xl border-border/40 shadow-2xl"
-                )}>
+            <DialogContent className={cn(
+                "max-w-[65vw] sm:max-w-7xl w-full h-[83vh] flex flex-col p-0 gap-0 overflow-hidden",
+                "rounded-xl border-border/40 shadow-2xl"
+            )}>
                 <DialogTitle className="sr-only">Settings</DialogTitle>
 
                 <div className="flex h-[520px]">

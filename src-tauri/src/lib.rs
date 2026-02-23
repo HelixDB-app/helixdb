@@ -2,6 +2,7 @@ mod commands;
 mod connections_storage;
 mod db;
 mod local_postgres;
+mod notes_storage;
 
 use commands::AppState;
 
@@ -73,6 +74,10 @@ pub fn run() {
             commands::db_create_index,
             commands::db_drop_index,
             commands::db_get_index_build_progress,
+            commands::notes_load_all,
+            commands::notes_save,
+            commands::notes_delete,
+            commands::notes_search,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

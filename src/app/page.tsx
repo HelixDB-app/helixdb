@@ -12,6 +12,7 @@ import { QueryEditor } from "@/components/query-editor";
 import { SessionMonitor } from "@/components/session-monitor";
 import { IndexBuilder } from "@/components/index-builder";
 import { SchemaTopology } from "@/components/schema-topology";
+import { AIChatPanel } from "@/components/ai-chat-panel";
 import { StatusBar } from "@/components/status-bar";
 import { CommandPalette } from "@/components/command-palette";
 import { SettingsDialog } from "@/components/settings-dialog";
@@ -36,6 +37,7 @@ import {
     RefreshCw,
     Search,
     Settings,
+    Sparkles,
     Table2,
     Terminal,
     Unplug,
@@ -52,7 +54,7 @@ export default function Home() {
         isRefreshingAll,
     } = useConnectionStore();
     const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-    const [activeView, setActiveView] = useState<"data" | "query" | "sessions" | "indexes" | "topology">("data");
+    const [activeView, setActiveView] = useState<"data" | "query" | "sessions" | "indexes" | "topology" | "ai">("data");
     const [searchOpen, setSearchOpen] = useState(false);
     const [showWelcome, setShowWelcome] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
@@ -103,6 +105,18 @@ export default function Home() {
         window.addEventListener("keydown", handler);
         return () => window.removeEventListener("keydown", handler);
     }, [isConnected, refreshAll]);
+
+    // Global ⌘J / Ctrl+J — switch to AI tab
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => {
+            if ((e.metaKey || e.ctrlKey) && e.key === "j") {
+                e.preventDefault();
+                if (isConnected) setActiveView("ai");
+            }
+        };
+        window.addEventListener("keydown", handler);
+        return () => window.removeEventListener("keydown", handler);
+    }, [isConnected]);
 
     const pgVersion = serverVersion
         ? serverVersion.match(/PostgreSQL\s+([\d.]+)/i)?.[1] ?? ""
@@ -259,6 +273,16 @@ export default function Home() {
                                 <Network className="h-3 w-3" />
                                 Topology
                             </button>
+                            <button
+                                className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-all ${activeView === "ai"
+                                    ? "bg-background text-foreground shadow-sm"
+                                    : "text-muted-foreground hover:text-foreground"
+                                    }`}
+                                onClick={() => setActiveView("ai")}
+                            >
+                                <Sparkles className="h-3 w-3" />
+                                AI
+                            </button>
                         </div>
                     )}
 
@@ -330,6 +354,7 @@ export default function Home() {
                                 {activeView === "topology" && (
                                     <SchemaTopology onNavigateToTable={() => setActiveView("data")} />
                                 )}
+                                {activeView === "ai" && <AIChatPanel />}
                             </div>
                         </ResizablePanel>
                     </ResizablePanelGroup>

@@ -931,3 +931,50 @@ pub async fn db_get_index_build_progress(
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::get_index_build_progress(&pool, &index_name).await
 }
+
+// ─── Query Notes (persisted in app data dir) ──────────────────────────────
+
+#[tauri::command]
+pub async fn notes_load_all(app: AppHandle) -> Result<Vec<crate::notes_storage::QueryNote>, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    crate::notes_storage::load_all(Some(app_data_dir))
+}
+
+#[tauri::command]
+pub async fn notes_save(
+    app: AppHandle,
+    note: crate::notes_storage::QueryNote,
+) -> Result<Vec<crate::notes_storage::QueryNote>, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    crate::notes_storage::save_note(Some(app_data_dir), note)
+}
+
+#[tauri::command]
+pub async fn notes_delete(
+    app: AppHandle,
+    id: String,
+) -> Result<Vec<crate::notes_storage::QueryNote>, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    crate::notes_storage::delete_note(Some(app_data_dir), &id)
+}
+
+#[tauri::command]
+pub async fn notes_search(
+    app: AppHandle,
+    query: String,
+) -> Result<Vec<crate::notes_storage::QueryNote>, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    crate::notes_storage::search_notes(Some(app_data_dir), &query)
+}

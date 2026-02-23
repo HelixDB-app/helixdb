@@ -33,7 +33,7 @@ import {
     PopoverContent,
 } from "@/components/ui/popover";
 import { toast } from "sonner";
-import { Loader2, Network, RefreshCw, Search, Table2, Maximize2, Download, FileImage, FileType, FileText, List, Key, Link2 } from "lucide-react";
+import { Loader2, Network, RefreshCw, Search, Table2, Maximize2, Download, FileImage, FileType, FileText, List, Key, Link2, AlertTriangle, XCircle } from "lucide-react";
 
 // ── Layout Constants ─────────────────────────────────────────────────────────
 
@@ -153,8 +153,11 @@ function runLayeredLayout(
     }));
 
     let changed = true;
-    while (changed) {
+    const maxIterations = Math.max(nodes.length * edges.length, nodes.length * 2) + 1;
+    let iterations = 0;
+    while (changed && iterations < maxIterations) {
         changed = false;
+        iterations++;
         for (const { from, to } of edgeList) {
             const lTo = layer.get(to) ?? 0;
             const lFrom = layer.get(from) ?? 0;
@@ -610,25 +613,44 @@ export function SchemaTopology({
 
     // ── Data Fetching ────────────────────────────────────────────────────────
 
-    useEffect(() => {
-        if (!connectionId || !schema) {
-            setTopology(null);
-            setPositions(new Map());
-            return;
-        }
-        setLoading(true);
-        setError(null);
-        dbGetSchemaTopology(connectionId, schema)
-            .then((data) => {
-                setTopology(data);
-                setLoading(false);
-            })
-            .catch((err) => {
-                setError(String(err));
+    const abortRef = useRef<AbortController | null>(null);
+
+    const fetchTopology = useCallback(
+        (signal?: AbortSignal) => {
+            if (!connectionId || !schema) {
                 setTopology(null);
-                setLoading(false);
-            });
-    }, [connectionId, schema]);
+                setPositions(new Map());
+                return;
+            }
+            setLoading(true);
+            setError(null);
+            dbGetSchemaTopology(connectionId, schema)
+                .then((data) => {
+                    if (signal?.aborted) return;
+                    setTopology(data);
+                })
+                .catch((err) => {
+                    if (signal?.aborted) return;
+                    setError(String(err));
+                    setTopology(null);
+                })
+                .finally(() => {
+                    if (signal?.aborted) return;
+                    setLoading(false);
+                });
+        },
+        [connectionId, schema]
+    );
+
+    useEffect(() => {
+        abortRef.current?.abort();
+        const controller = new AbortController();
+        abortRef.current = controller;
+        fetchTopology(controller.signal);
+        return () => {
+            controller.abort();
+        };
+    }, [fetchTopology]);
 
     // ── Layout Computation ───────────────────────────────────────────────────
 
@@ -1008,17 +1030,47 @@ export function SchemaTopology({
 
     if (loading) {
         return (
-            <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground">
+            <div className="flex h-full flex-col items-center justify-center gap-4 text-muted-foreground">
                 <Loader2 className="h-8 w-8 animate-spin" />
                 <span className="text-sm">Loading topology…</span>
+                <Button
+                    variant="outline"
+                    size="sm"
+                    className="gap-1.5 text-xs"
+                    onClick={() => {
+                        abortRef.current?.abort();
+                        setLoading(false);
+                        setError("Topology loading was cancelled.");
+                    }}
+                >
+                    <XCircle className="h-3.5 w-3.5" />
+                    Cancel
+                </Button>
             </div>
         );
     }
 
     if (error) {
         return (
-            <div className="flex h-full flex-col items-center justify-center gap-3 text-destructive text-sm">
-                <span>{error}</span>
+            <div className="flex h-full flex-col items-center justify-center gap-4 p-8">
+                <div className="flex flex-col items-center gap-3 rounded-xl border border-destructive/20 bg-destructive/5 px-8 py-6 max-w-md text-center">
+                    <AlertTriangle className="h-8 w-8 text-destructive/80" />
+                    <p className="text-sm font-medium text-destructive">
+                        Failed to load topology
+                    </p>
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                        {error}
+                    </p>
+                    <Button
+                        variant="outline"
+                        size="sm"
+                        className="mt-2 gap-1.5 text-xs"
+                        onClick={() => fetchTopology()}
+                    >
+                        <RefreshCw className="h-3.5 w-3.5" />
+                        Retry
+                    </Button>
+                </div>
             </div>
         );
     }
@@ -1083,19 +1135,7 @@ export function SchemaTopology({
                     variant="ghost"
                     size="sm"
                     className="h-8 gap-1.5 text-xs shrink-0"
-                    onClick={() => {
-                        if (!connectionId || !schema) return;
-                        setLoading(true);
-                        dbGetSchemaTopology(connectionId, schema)
-                            .then((data) => {
-                                setTopology(data);
-                                setLoading(false);
-                            })
-                            .catch((err) => {
-                                setError(String(err));
-                                setLoading(false);
-                            });
-                    }}
+                    onClick={() => fetchTopology()}
                 >
                     <RefreshCw className="h-3 w-3" />
                     Refresh

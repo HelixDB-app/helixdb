@@ -20,6 +20,7 @@ import type {
     IndexImpactQuery,
     IndexBuildProgress,
     CreateIndexRequest,
+    QueryNote,
 } from "./types";
 
 /** Connect to a PostgreSQL database */
@@ -672,4 +673,26 @@ export async function dbGetIndexBuildProgress(
         connectionId,
         indexName,
     });
+}
+
+// ─── Query Notes (persisted via Rust core engine) ─────────────────────────
+
+/** Load all saved notes from disk */
+export async function notesLoadAll(): Promise<QueryNote[]> {
+    return invoke<QueryNote[]>("notes_load_all");
+}
+
+/** Save or update a note. Returns the full updated notes list. */
+export async function notesSave(note: QueryNote): Promise<QueryNote[]> {
+    return invoke<QueryNote[]>("notes_save", { note });
+}
+
+/** Delete a note by ID. Returns the full updated notes list. */
+export async function notesDelete(id: string): Promise<QueryNote[]> {
+    return invoke<QueryNote[]>("notes_delete", { id });
+}
+
+/** Search notes by keyword (case-insensitive on title + sql). */
+export async function notesSearch(query: string): Promise<QueryNote[]> {
+    return invoke<QueryNote[]>("notes_search", { query });
 }

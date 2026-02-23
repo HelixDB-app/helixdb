@@ -371,3 +371,15 @@ export interface TopologyData {
     nodes: TopologyNode[];
     edges: TopologyEdge[];
 }
+
+// ── Query Notes ────────────────────────────────────────────────────────────
+
+/** A saved SQL query note persisted via the Rust core engine */
+export interface QueryNote {
+    id: string;
+    title: string;
+    sql: string;
+    created_at: string;
+    updated_at: string;
+    tags: string[];
+}

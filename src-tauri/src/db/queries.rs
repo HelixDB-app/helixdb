@@ -1,6 +1,6 @@
 use deadpool_postgres::Pool;
 use std::sync::Arc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 use tokio_postgres::types::Type;
 use tokio_postgres::Row;
 
@@ -2566,146 +2566,165 @@ pub async fn get_index_build_progress(
 // ──────────────────────────────────────────────────────────────────────────────
 
 /// Fetch nodes (tables + row count + columns with types/PK) and edges (FKs) for a schema.
+/// Uses a 15-second timeout and runs all 4 queries concurrently for performance.
 pub async fn get_schema_topology(
     pool: &Arc<Pool>,
     schema: &str,
 ) -> Result<TopologyData, String> {
-    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    const TIMEOUT: Duration = Duration::from_secs(15);
 
-    // 1) Tables with estimated row count
-    let table_rows = client
-        .query(
-            "SELECT t.table_name, t.table_schema, t.table_type,
-                    COALESCE(
-                        (SELECT reltuples::bigint FROM pg_class c
-                         JOIN pg_namespace n ON n.oid = c.relnamespace
-                         WHERE c.relname = t.table_name AND n.nspname = t.table_schema),
-                        0
-                    ) AS estimated_row_count
-             FROM information_schema.tables t
-             WHERE t.table_schema = $1
-               AND t.table_type IN ('BASE TABLE', 'VIEW')
-             ORDER BY t.table_name",
-            &[&schema],
-        )
-        .await
-        .map_err(|e| format!("Topology tables query: {}", e))?;
+    let result = tokio::time::timeout(TIMEOUT, async {
+        let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
 
-    // 2) All columns for this schema with data_type and is_nullable
-    let col_rows = client
-        .query(
-            "SELECT table_schema, table_name, column_name, data_type,
-                    CASE WHEN is_nullable = 'YES' THEN true ELSE false END AS nullable
-             FROM information_schema.columns
-             WHERE table_schema = $1
-             ORDER BY table_name, ordinal_position",
-            &[&schema],
-        )
-        .await
-        .map_err(|e| format!("Topology columns query: {}", e))?;
-
-    // 3) Primary key columns for all tables in schema (one query)
-    let pk_rows = client
-        .query(
-            "SELECT kcu.table_name, kcu.column_name
-             FROM information_schema.table_constraints tc
-             JOIN information_schema.key_column_usage kcu
-               ON tc.constraint_name = kcu.constraint_name
-              AND tc.table_schema    = kcu.table_schema
-             WHERE tc.constraint_type = 'PRIMARY KEY'
-               AND tc.table_schema = $1",
-            &[&schema],
-        )
-        .await
-        .map_err(|e| format!("Topology PKs query: {}", e))?;
-
-    // Build a set of (table_name, column_name) that are primary keys
-    let mut pk_set: std::collections::HashSet<(String, String)> =
-        std::collections::HashSet::new();
-    for row in &pk_rows {
-        let t: String = row.get(0);
-        let c: String = row.get(1);
-        pk_set.insert((t, c));
-    }
-
-    // Build columns map: (schema, table) -> Vec<TopologyColumn>
-    let mut columns_by_table: std::collections::HashMap<(String, String), Vec<TopologyColumn>> =
-        std::collections::HashMap::new();
-    for row in &col_rows {
-        let s: String = row.get(0);
-        let t: String = row.get(1);
-        let col_name: String = row.get(2);
-        let data_type: String = row.get(3);
-        let nullable: bool = row.get(4);
-        let is_pk = pk_set.contains(&(t.clone(), col_name.clone()));
-        columns_by_table
-            .entry((s, t))
-            .or_default()
-            .push(TopologyColumn {
-                name: col_name,
-                data_type,
-                is_primary_key: is_pk,
-                is_nullable: nullable,
-            });
-    }
-
-    // 4) Foreign keys
-    let fk_rows = client
-        .query(
-            "SELECT tc.constraint_name,
-                    kcu.table_schema AS from_schema,
-                    kcu.table_name   AS from_table,
-                    kcu.column_name   AS from_column,
-                    ccu.table_schema  AS to_schema,
-                    ccu.table_name    AS to_table,
-                    ccu.column_name   AS to_column
-             FROM information_schema.table_constraints tc
-             JOIN information_schema.key_column_usage kcu
-               ON tc.constraint_name = kcu.constraint_name
-              AND tc.table_schema    = kcu.table_schema
-             JOIN information_schema.constraint_column_usage ccu
-               ON tc.constraint_name = ccu.constraint_name
-             WHERE tc.constraint_type = 'FOREIGN KEY'
-               AND kcu.table_schema = $1
-               AND ccu.table_schema = $1
-             ORDER BY tc.constraint_name",
-            &[&schema],
-        )
-        .await
-        .map_err(|e| format!("Topology FKs query: {}", e))?;
-
-    let nodes: Vec<TopologyNode> = table_rows
-        .iter()
-        .map(|row| {
-            let schema_name: String = row.get(1);
-            let table_name: String = row.get(0);
-            let row_count: i64 = row.get(3);
-            let columns = columns_by_table
-                .remove(&(schema_name.clone(), table_name.clone()))
-                .unwrap_or_default();
-            TopologyNode {
-                schema: schema_name,
-                table_name,
-                row_count,
-                columns,
+        // Run all 4 queries concurrently for faster execution
+        let (table_rows, col_rows, pk_rows, fk_rows) = tokio::try_join!(
+            // 1) Tables with estimated row count
+            async {
+                client
+                    .query(
+                        "SELECT t.table_name, t.table_schema, t.table_type,
+                                COALESCE(
+                                    (SELECT reltuples::bigint FROM pg_class c
+                                     JOIN pg_namespace n ON n.oid = c.relnamespace
+                                     WHERE c.relname = t.table_name AND n.nspname = t.table_schema),
+                                    0
+                                ) AS estimated_row_count
+                         FROM information_schema.tables t
+                         WHERE t.table_schema = $1
+                           AND t.table_type IN ('BASE TABLE', 'VIEW')
+                         ORDER BY t.table_name",
+                        &[&schema],
+                    )
+                    .await
+                    .map_err(|e| format!("Topology tables query: {}", e))
+            },
+            // 2) All columns for this schema with data_type and is_nullable
+            async {
+                client
+                    .query(
+                        "SELECT table_schema, table_name, column_name, data_type,
+                                CASE WHEN is_nullable = 'YES' THEN true ELSE false END AS nullable
+                         FROM information_schema.columns
+                         WHERE table_schema = $1
+                         ORDER BY table_name, ordinal_position",
+                        &[&schema],
+                    )
+                    .await
+                    .map_err(|e| format!("Topology columns query: {}", e))
+            },
+            // 3) Primary key columns for all tables in schema
+            async {
+                client
+                    .query(
+                        "SELECT kcu.table_name, kcu.column_name
+                         FROM information_schema.table_constraints tc
+                         JOIN information_schema.key_column_usage kcu
+                           ON tc.constraint_name = kcu.constraint_name
+                          AND tc.table_schema    = kcu.table_schema
+                         WHERE tc.constraint_type = 'PRIMARY KEY'
+                           AND tc.table_schema = $1",
+                        &[&schema],
+                    )
+                    .await
+                    .map_err(|e| format!("Topology PKs query: {}", e))
+            },
+            // 4) Foreign keys
+            async {
+                client
+                    .query(
+                        "SELECT tc.constraint_name,
+                                kcu.table_schema AS from_schema,
+                                kcu.table_name   AS from_table,
+                                kcu.column_name   AS from_column,
+                                ccu.table_schema  AS to_schema,
+                                ccu.table_name    AS to_table,
+                                ccu.column_name   AS to_column
+                         FROM information_schema.table_constraints tc
+                         JOIN information_schema.key_column_usage kcu
+                           ON tc.constraint_name = kcu.constraint_name
+                          AND tc.table_schema    = kcu.table_schema
+                         JOIN information_schema.constraint_column_usage ccu
+                           ON tc.constraint_name = ccu.constraint_name
+                         WHERE tc.constraint_type = 'FOREIGN KEY'
+                           AND kcu.table_schema = $1
+                           AND ccu.table_schema = $1
+                         ORDER BY tc.constraint_name",
+                        &[&schema],
+                    )
+                    .await
+                    .map_err(|e| format!("Topology FKs query: {}", e))
             }
-        })
-        .collect();
+        )?;
 
-    let edges: Vec<TopologyEdge> = fk_rows
-        .iter()
-        .map(|row| TopologyEdge {
-            constraint_name: row.get(0),
-            from_schema: row.get(1),
-            from_table: row.get(2),
-            from_column: row.get(3),
-            to_schema: row.get(4),
-            to_table: row.get(5),
-            to_column: row.get(6),
-        })
-        .collect();
+        // Build a set of (table_name, column_name) that are primary keys
+        let mut pk_set: std::collections::HashSet<(String, String)> =
+            std::collections::HashSet::new();
+        for row in &pk_rows {
+            let t: String = row.get(0);
+            let c: String = row.get(1);
+            pk_set.insert((t, c));
+        }
 
-    Ok(TopologyData { nodes, edges })
+        // Build columns map: (schema, table) -> Vec<TopologyColumn>
+        let mut columns_by_table: std::collections::HashMap<(String, String), Vec<TopologyColumn>> =
+            std::collections::HashMap::new();
+        for row in &col_rows {
+            let s: String = row.get(0);
+            let t: String = row.get(1);
+            let col_name: String = row.get(2);
+            let data_type: String = row.get(3);
+            let nullable: bool = row.get(4);
+            let is_pk = pk_set.contains(&(t.clone(), col_name.clone()));
+            columns_by_table
+                .entry((s, t))
+                .or_default()
+                .push(TopologyColumn {
+                    name: col_name,
+                    data_type,
+                    is_primary_key: is_pk,
+                    is_nullable: nullable,
+                });
+        }
+
+        let nodes: Vec<TopologyNode> = table_rows
+            .iter()
+            .map(|row| {
+                let schema_name: String = row.get(1);
+                let table_name: String = row.get(0);
+                let row_count: i64 = row.get(3);
+                let columns = columns_by_table
+                    .remove(&(schema_name.clone(), table_name.clone()))
+                    .unwrap_or_default();
+                TopologyNode {
+                    schema: schema_name,
+                    table_name,
+                    row_count,
+                    columns,
+                }
+            })
+            .collect();
+
+        let edges: Vec<TopologyEdge> = fk_rows
+            .iter()
+            .map(|row| TopologyEdge {
+                constraint_name: row.get(0),
+                from_schema: row.get(1),
+                from_table: row.get(2),
+                from_column: row.get(3),
+                to_schema: row.get(4),
+                to_table: row.get(5),
+                to_column: row.get(6),
+            })
+            .collect();
+
+        Ok(TopologyData { nodes, edges })
+    })
+    .await;
+
+    match result {
+        Ok(inner) => inner,
+        Err(_) => Err("Topology query timed out after 15 seconds. The database may be slow or unreachable.".to_string()),
+    }
 }
 
 /// Simple identifier quoting for SQL safety

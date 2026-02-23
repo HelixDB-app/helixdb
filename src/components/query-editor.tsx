@@ -5,9 +5,11 @@ import { useQueryStore } from "@/stores/query-store";
 import type { QueryHistoryEntry } from "@/stores/query-store";
 import { useSandboxStore } from "@/stores/sandbox-store";
 import { useConnectionStore } from "@/stores/connection-store";
+import { useNotesStore } from "@/stores/notes-store";
 import { formatCellValue } from "@/lib/types";
 import type { QueryResult } from "@/lib/types";
 import { dbGetColumns, dbExplainQuery, dbExecuteQuery } from "@/lib/tauri";
+import { NotesPanel } from "@/components/notes-panel";
 import { QueryPlanViewer } from "@/components/query-plan-viewer";
 import { SandboxDiffViewer } from "@/components/sandbox-diff-viewer";
 import { DataCanvas } from "@/components/data-canvas";
@@ -19,8 +21,11 @@ import { Badge } from "@/components/ui/badge";
 import {
     Dialog,
     DialogContent,
+    DialogHeader,
     DialogTitle,
+    DialogFooter,
 } from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import {
     Table,
@@ -69,6 +74,8 @@ import {
     ShieldCheck,
     ShieldOff,
     LayoutDashboard,
+    StickyNote,
+    Save,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -568,7 +575,14 @@ export function QueryEditor() {
     const activeTab = tabs.find((t) => t.id === activeTabId);
     const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
     const [historyOpen, setHistoryOpen] = useState(false);
+    const [notesOpen, setNotesOpen] = useState(false);
+    const [saveNoteOpen, setSaveNoteOpen] = useState(false);
+    const [saveNoteTitle, setSaveNoteTitle] = useState("");
+    const [saveNoteLoading, setSaveNoteLoading] = useState(false);
     const historyPanelRef = useRef<HTMLDivElement>(null);
+
+    // Notes store
+    const { saveNote: storeNoteSave } = useNotesStore();
 
     // Plan state: keyed by tab id so each tab has its own plan
     const [planData, setPlanData] = useState<Record<string, string>>({});
@@ -632,7 +646,7 @@ export function QueryEditor() {
 
         load();
         return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
+        // eslint-disable-next-line react-hooks/exhaustive-deps
     }, [connectionId, tables]);
 
     // Lazily fetch columns on-demand (e.g. "tableName." typed) — keeps cache warm
@@ -724,6 +738,10 @@ export function QueryEditor() {
             if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "H") {
                 e.preventDefault();
                 setHistoryOpen((o) => !o);
+            }
+            if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "N") {
+                e.preventDefault();
+                setNotesOpen((o) => !o);
             }
         };
         window.addEventListener("keydown", onKey);
@@ -935,6 +953,26 @@ export function QueryEditor() {
                         <TooltipContent>Query history (⌘⇧H)</TooltipContent>
                     </Tooltip>
 
+                    {/* Notes toggle */}
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                variant="ghost"
+                                size="icon"
+                                className={cn(
+                                    "h-7 w-7 transition-colors",
+                                    notesOpen
+                                        ? "bg-amber-500/15 text-amber-400 hover:bg-amber-500/20"
+                                        : "text-muted-foreground hover:text-foreground"
+                                )}
+                                onClick={() => setNotesOpen((o) => !o)}
+                            >
+                                <StickyNote className="h-3.5 w-3.5" />
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Notes (⌘⇧N)</TooltipContent>
+                    </Tooltip>
+
                     {/* Sandbox toggle */}
                     <Tooltip>
                         <TooltipTrigger asChild>
@@ -985,8 +1023,8 @@ export function QueryEditor() {
                         {isSandboxReviewing
                             ? "— Review the diff below, then Commit or Rollback"
                             : isSandboxBusy
-                            ? "— Processing…"
-                            : "— Queries run inside an automatic transaction. Nothing is committed until you approve."}
+                                ? "— Processing…"
+                                : "— Queries run inside an automatic transaction. Nothing is committed until you approve."}
                     </span>
                     {isSandboxReviewing && sandboxElapsed > 0 && (
                         <span className="ml-auto text-[10px] font-mono text-emerald-400/40">
@@ -1013,6 +1051,27 @@ export function QueryEditor() {
                 </div>
             )}
 
+            {/* Notes panel */}
+            {notesOpen && (
+                <div
+                    className="shrink-0 border-b border-border/20 overflow-hidden flex flex-col"
+                    style={{ height: "min(22rem, 40vh)" }}
+                >
+                    <NotesPanel
+                        onInsertSql={(sql) => {
+                            if (activeTabId) {
+                                updateSql(activeTabId, sql);
+                                setNotesOpen(false);
+                            } else {
+                                addTab("From Note", sql);
+                                setNotesOpen(false);
+                            }
+                        }}
+                        onClose={() => setNotesOpen(false)}
+                    />
+                </div>
+            )}
+
             {/* Editor area */}
             {activeTab && (
                 <>
@@ -1029,6 +1088,24 @@ export function QueryEditor() {
                             className="rounded-none border-0"
                         />
                         <div className="absolute bottom-2 right-2 flex items-center gap-2 z-10">
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-8 gap-1.5 text-xs text-muted-foreground/50 hover:text-amber-400 px-2"
+                                        onClick={() => {
+                                            setSaveNoteTitle("");
+                                            setSaveNoteOpen(true);
+                                        }}
+                                        disabled={!activeTab.sql.trim() || activeTab.isExecuting}
+                                    >
+                                        <StickyNote className="h-3 w-3" />
+                                        Note
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Save as note</TooltipContent>
+                            </Tooltip>
                             <Tooltip>
                                 <TooltipTrigger asChild>
                                     <Button
@@ -1094,6 +1171,98 @@ export function QueryEditor() {
                                 {isSandboxMode ? "Run in Sandbox" : "Run"}
                             </Button>
                         </div>
+
+                        {/* Save Note Dialog */}
+                        <Dialog open={saveNoteOpen} onOpenChange={setSaveNoteOpen}>
+                            <DialogContent className="sm:max-w-md">
+                                <DialogHeader>
+                                    <DialogTitle className="text-sm font-medium flex items-center gap-2">
+                                        <StickyNote className="h-4 w-4 text-amber-400" />
+                                        Save Note
+                                    </DialogTitle>
+                                </DialogHeader>
+                                <div className="space-y-3 py-2">
+                                    <div>
+                                        <label className="text-xs text-muted-foreground mb-1 block">Title</label>
+                                        <Input
+                                            value={saveNoteTitle}
+                                            onChange={(e) => setSaveNoteTitle(e.target.value)}
+                                            placeholder="e.g. User activity report…"
+                                            className="h-8 text-sm"
+                                            autoFocus
+                                            onKeyDown={(e) => {
+                                                if (e.key === "Enter" && saveNoteTitle.trim()) {
+                                                    e.preventDefault();
+                                                    (async () => {
+                                                        setSaveNoteLoading(true);
+                                                        try {
+                                                            const now = new Date().toISOString();
+                                                            await storeNoteSave({
+                                                                id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                                                                title: saveNoteTitle.trim(),
+                                                                sql: activeTab?.sql ?? "",
+                                                                created_at: now,
+                                                                updated_at: now,
+                                                                tags: [],
+                                                            });
+                                                            setSaveNoteOpen(false);
+                                                            toast.success("Note saved", { duration: 1500 });
+                                                        } catch {
+                                                            toast.error("Failed to save note", { duration: 2000 });
+                                                        } finally {
+                                                            setSaveNoteLoading(false);
+                                                        }
+                                                    })();
+                                                }
+                                            }}
+                                        />
+                                    </div>
+                                    <div className="rounded-md border border-border/30 bg-muted/20 p-2">
+                                        <p className="text-[10px] text-muted-foreground/50 mb-1">SQL content</p>
+                                        <p className="text-xs font-mono text-foreground/70 truncate">
+                                            {(activeTab?.sql ?? "").replace(/\s+/g, " ").slice(0, 200) || "(empty)"}
+                                        </p>
+                                    </div>
+                                </div>
+                                <DialogFooter>
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        onClick={() => setSaveNoteOpen(false)}
+                                    >
+                                        Cancel
+                                    </Button>
+                                    <Button
+                                        size="sm"
+                                        className="bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white"
+                                        disabled={!saveNoteTitle.trim() || saveNoteLoading}
+                                        onClick={async () => {
+                                            setSaveNoteLoading(true);
+                                            try {
+                                                const now = new Date().toISOString();
+                                                await storeNoteSave({
+                                                    id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+                                                    title: saveNoteTitle.trim(),
+                                                    sql: activeTab?.sql ?? "",
+                                                    created_at: now,
+                                                    updated_at: now,
+                                                    tags: [],
+                                                });
+                                                setSaveNoteOpen(false);
+                                                toast.success("Note saved", { duration: 1500 });
+                                            } catch {
+                                                toast.error("Failed to save note", { duration: 2000 });
+                                            } finally {
+                                                setSaveNoteLoading(false);
+                                            }
+                                        }}
+                                    >
+                                        {saveNoteLoading && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
+                                        Save Note
+                                    </Button>
+                                </DialogFooter>
+                            </DialogContent>
+                        </Dialog>
                     </div>
 
                     {/* Results */}
@@ -1124,8 +1293,8 @@ export function QueryEditor() {
                                         {sandboxStatus === "executing"
                                             ? "Running in sandbox transaction…"
                                             : sandboxStatus === "committing"
-                                            ? "Committing changes…"
-                                            : "Rolling back changes…"}
+                                                ? "Committing changes…"
+                                                : "Rolling back changes…"}
                                     </span>
                                 </div>
                             </div>
@@ -1217,7 +1386,7 @@ export function QueryEditor() {
                                     message={activeTab.result.error_message ?? "Unknown error"}
                                 />
                             ) : (
-                                <div className="flex h-full flex-col">
+                                <div className="flex h-full min-h-0 flex-col">
                                     {/* Slow query banner */}
                                     {activeTab.result.execution_time_ms > 500 && activeResultView === "results" && (
                                         <div className="flex items-center justify-between gap-3 px-4 py-2 bg-orange-500/8 border-b border-orange-500/20 shrink-0">
@@ -1331,65 +1500,68 @@ export function QueryEditor() {
                                             </p>
                                         </div>
                                     ) : (
-                                        <ScrollArea className="flex-1">
-                                            <Table>
-                                                <TableHeader>
-                                                    <TableRow className="hover:bg-transparent border-border/30">
-                                                        <TableHead className="w-12 text-center text-[10px] font-mono text-muted-foreground/50">
-                                                            #
-                                                        </TableHead>
-                                                        {activeTab.result.columns.map((col) => (
-                                                            <TableHead key={col.name} className="whitespace-nowrap">
-                                                                <div className="flex items-center gap-1.5">
-                                                                    <span className="text-xs font-semibold">
-                                                                        {col.name}
-                                                                    </span>
-                                                                    <span className="text-[10px] font-mono text-muted-foreground/40">
-                                                                        {col.data_type}
-                                                                    </span>
-                                                                </div>
+                                        <div className="flex-1 min-h-0 overflow-hidden">
+                                            <ScrollArea className="h-full w-full">
+                                                <Table>
+                                                    <TableHeader>
+                                                        <TableRow className="hover:bg-transparent border-border/30">
+                                                            <TableHead className="w-12 text-center text-[10px] font-mono text-muted-foreground/50 sticky top-0 bg-background z-10">
+                                                                #
                                                             </TableHead>
-                                                        ))}
-                                                    </TableRow>
-                                                </TableHeader>
-                                                <TableBody>
-                                                    {activeTab.result.rows.map((row, rowIdx) => (
-                                                        <TableRow
-                                                            key={rowIdx}
-                                                            className="border-border/20 hover:bg-accent/30 transition-colors"
-                                                        >
-                                                            <TableCell className="text-center text-[10px] font-mono text-muted-foreground/40">
-                                                                {rowIdx + 1}
-                                                            </TableCell>
-                                                            {row.map((cell, colIdx) => (
-                                                                <TableCell
-                                                                    key={colIdx}
-                                                                    className={cn(
-                                                                        "text-xs font-mono max-w-xs truncate cursor-pointer hover:bg-accent/30 transition-colors",
-                                                                        cell.type === "Null" &&
-                                                                        "text-muted-foreground/30 italic"
-                                                                    )}
-                                                                    title={formatCellValue(cell)}
-                                                                    onClick={() => {
-                                                                        if (cell.type !== "Null") {
-                                                                            navigator.clipboard.writeText(
-                                                                                formatCellValue(cell)
-                                                                            );
-                                                                            toast.success("Copied", {
-                                                                                duration: 1200,
-                                                                            });
-                                                                        }
-                                                                    }}
-                                                                >
-                                                                    {formatCellValue(cell)}
-                                                                </TableCell>
+                                                            {activeTab.result.columns.map((col) => (
+                                                                <TableHead key={col.name} className="whitespace-nowrap sticky top-0 bg-background z-10">
+                                                                    <div className="flex items-center gap-1.5">
+                                                                        <span className="text-xs font-semibold">
+                                                                            {col.name}
+                                                                        </span>
+                                                                        <span className="text-[10px] font-mono text-muted-foreground/40">
+                                                                            {col.data_type}
+                                                                        </span>
+                                                                    </div>
+                                                                </TableHead>
                                                             ))}
                                                         </TableRow>
-                                                    ))}
-                                                </TableBody>
-                                            </Table>
-                                            <ScrollBar orientation="horizontal" />
-                                        </ScrollArea>
+                                                    </TableHeader>
+                                                    <TableBody>
+                                                        {activeTab.result.rows.map((row, rowIdx) => (
+                                                            <TableRow
+                                                                key={rowIdx}
+                                                                className="border-border/20 hover:bg-accent/30 transition-colors"
+                                                            >
+                                                                <TableCell className="text-center text-[10px] font-mono text-muted-foreground/40">
+                                                                    {rowIdx + 1}
+                                                                </TableCell>
+                                                                {row.map((cell, colIdx) => (
+                                                                    <TableCell
+                                                                        key={colIdx}
+                                                                        className={cn(
+                                                                            "text-xs font-mono max-w-xs truncate cursor-pointer hover:bg-accent/30 transition-colors",
+                                                                            cell.type === "Null" &&
+                                                                            "text-muted-foreground/30 italic"
+                                                                        )}
+                                                                        title={formatCellValue(cell)}
+                                                                        onClick={() => {
+                                                                            if (cell.type !== "Null") {
+                                                                                navigator.clipboard.writeText(
+                                                                                    formatCellValue(cell)
+                                                                                );
+                                                                                toast.success("Copied", {
+                                                                                    duration: 1200,
+                                                                                });
+                                                                            }
+                                                                        }}
+                                                                    >
+                                                                        {formatCellValue(cell)}
+                                                                    </TableCell>
+                                                                ))}
+                                                            </TableRow>
+                                                        ))}
+                                                    </TableBody>
+                                                </Table>
+                                                <ScrollBar orientation="horizontal" />
+                                                <ScrollBar orientation="vertical" />
+                                            </ScrollArea>
+                                        </div>
                                     )}
                                 </div>
                             )
