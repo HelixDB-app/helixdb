@@ -8,7 +8,7 @@ use crate::db::{
     connection::ConnectionManager,
     queries,
     sandbox::{SandboxManager, SandboxResult},
-    types::{TableDetails, TypeDefinitionDetail, *},
+    types::{TableDetails, TopologyData, TypeDefinitionDetail, *},
     watcher::WatchManager,
 };
 
@@ -105,6 +105,17 @@ pub async fn db_list_tables(
         .cache
         .set_tables(&connection_id, &schema, tables.clone());
     Ok(tables)
+}
+
+/// Get schema topology (nodes + FK edges) for ER diagram. Not cached.
+#[tauri::command]
+pub async fn db_get_schema_topology(
+    state: State<'_, AppState>,
+    connection_id: String,
+    schema: String,
+) -> Result<TopologyData, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::get_schema_topology(&pool, &schema).await
 }
 
 /// Get columns for a table (with caching)
@@ -281,6 +292,33 @@ pub async fn db_get_type_definition(
 ) -> Result<Option<TypeDefinitionDetail>, String> {
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::get_type_definition(&pool, &schema, &name).await
+}
+
+/// Create a new enum type. Values must be non-empty.
+#[tauri::command]
+pub async fn db_create_enum(
+    state: State<'_, AppState>,
+    connection_id: String,
+    schema: String,
+    name: String,
+    values: Vec<String>,
+) -> Result<(), String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::create_enum(&pool, &schema, &name, &values).await
+}
+
+/// Alter enum: rename values and/or add new values. Single transaction.
+#[tauri::command]
+pub async fn db_alter_enum_values(
+    state: State<'_, AppState>,
+    connection_id: String,
+    schema: String,
+    name: String,
+    renames: Vec<(String, String)>,
+    additions: Vec<(String, Option<String>)>,
+) -> Result<(), String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::alter_enum_values(&pool, &schema, &name, &renames, &additions).await
 }
 
 #[derive(serde::Deserialize)]

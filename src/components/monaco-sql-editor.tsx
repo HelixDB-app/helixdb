@@ -43,6 +43,8 @@ export interface MonacoSqlEditorProps {
     schemaContext?: SchemaContext;
     disabled?: boolean;
     className?: string;
+    /** Editor height in px; default 200 */
+    editorHeight?: number;
 }
 
 export function MonacoSqlEditor({
@@ -55,6 +57,7 @@ export function MonacoSqlEditor({
     schemaContext,
     disabled,
     className,
+    editorHeight = EDITOR_HEIGHT,
 }: MonacoSqlEditorProps) {
     const { resolvedTheme } = useTheme();
     const {
@@ -451,7 +454,7 @@ export function MonacoSqlEditor({
                 style={{ borderColor: "var(--monaco-editor-border, rgba(255,255,255,0.12))" }}
             >
                 <Editor
-                    height={EDITOR_HEIGHT}
+                    height={editorHeight}
                     defaultLanguage="sql"
                     language="sql"
                     value={value}

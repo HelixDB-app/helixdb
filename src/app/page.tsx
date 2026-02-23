@@ -11,6 +11,7 @@ import { DataTable } from "@/components/data-table";
 import { QueryEditor } from "@/components/query-editor";
 import { SessionMonitor } from "@/components/session-monitor";
 import { IndexBuilder } from "@/components/index-builder";
+import { SchemaTopology } from "@/components/schema-topology";
 import { StatusBar } from "@/components/status-bar";
 import { CommandPalette } from "@/components/command-palette";
 import { SettingsDialog } from "@/components/settings-dialog";
@@ -30,6 +31,7 @@ import { cn } from "@/lib/utils";
 import {
     Activity,
     Layers,
+    Network,
     PlugZap,
     RefreshCw,
     Search,
@@ -50,7 +52,7 @@ export default function Home() {
         isRefreshingAll,
     } = useConnectionStore();
     const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-    const [activeView, setActiveView] = useState<"data" | "query" | "sessions" | "indexes">("data");
+    const [activeView, setActiveView] = useState<"data" | "query" | "sessions" | "indexes" | "topology">("data");
     const [searchOpen, setSearchOpen] = useState(false);
     const [showWelcome, setShowWelcome] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
@@ -247,6 +249,16 @@ export default function Home() {
                                 <Layers className="h-3 w-3" />
                                 Indexes
                             </button>
+                            <button
+                                className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-all ${activeView === "topology"
+                                    ? "bg-background text-foreground shadow-sm"
+                                    : "text-muted-foreground hover:text-foreground"
+                                    }`}
+                                onClick={() => setActiveView("topology")}
+                            >
+                                <Network className="h-3 w-3" />
+                                Topology
+                            </button>
                         </div>
                     )}
 
@@ -315,6 +327,9 @@ export default function Home() {
                                 {activeView === "query" && <QueryEditor />}
                                 {activeView === "sessions" && <SessionMonitor />}
                                 {activeView === "indexes" && <IndexBuilder />}
+                                {activeView === "topology" && (
+                                    <SchemaTopology onNavigateToTable={() => setActiveView("data")} />
+                                )}
                             </div>
                         </ResizablePanel>
                     </ResizablePanelGroup>

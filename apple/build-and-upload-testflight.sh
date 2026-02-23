@@ -14,7 +14,7 @@ set -e
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="pgStudio"
 PKG_NAME="pgStudio.pkg"
-ENTITLEMENTS="$REPO_ROOT/src-tauri/Entitlements.plist"
+ENTITLEMENTS_SRC="$REPO_ROOT/src-tauri/Entitlements.plist"
 
 # Optional: load apple/.env if present
 if [[ -f "$REPO_ROOT/apple/.env" ]]; then
@@ -51,8 +51,27 @@ if [[ "$INSTALL_ID" == *"Apple Development"* ]]; then
   echo "Set INSTALLER_IDENTITY in apple/.env to the '3rd Party Mac Developer Installer' line."
   exit 1
 fi
+if [[ "$INSTALL_ID" == *"Apple Distribution"* ]]; then
+  echo "Error: INSTALLER_IDENTITY must be '3rd Party Mac Developer Installer: ...', not 'Apple Distribution'."
+  echo "The .pkg needs an installer cert; the app uses Apple Distribution. Run: security find-identity -v -p codesigning"
+  echo "Set INSTALLER_IDENTITY to the line that says '3rd Party Mac Developer Installer'. See apple/INSTALLER-CERT-SETUP.md to create it."
+  exit 1
+fi
 
 cd "$REPO_ROOT"
+
+# Resolve TEAM_ID for entitlements (must match provisioning profile)
+TEAM_ID="${APPLE_TEAM_ID:-}"
+[[ -z "$TEAM_ID" ]] && TEAM_ID=$(echo "$SIGN_ID" | sed -n 's/.*(\([^)]*\)).*/\1/p')
+if [[ -z "$TEAM_ID" ]]; then
+  echo "Could not get Team ID. Set APPLE_TEAM_ID in apple/.env (e.g. V9G53UFKD3) or use SIGNING_IDENTITY that contains (TEAM_ID)."
+  exit 1
+fi
+ENTITLEMENTS=$(mktemp)
+sed "s/TEAM_ID/$TEAM_ID/g" "$ENTITLEMENTS_SRC" > "$ENTITLEMENTS"
+grep -q 'TEAM_ID' "$ENTITLEMENTS" && { echo "ERROR: entitlements still contain literal TEAM_ID (sed failed or plist changed)"; exit 1; }
+trap "rm -f '$ENTITLEMENTS'" EXIT
+echo "Using Team ID: $TEAM_ID"
 
 echo "=== 1. Build ==="
 unset CI
@@ -68,6 +87,11 @@ if [[ ! -d "$APP_PATH" ]]; then
 fi
 
 echo "=== 2. Sign app ==="
+# Sign main binary first so entitlements (with real Team ID) are on the executable; then the bundle
+BINARY="$APP_PATH/Contents/MacOS/pgstudio"
+if [[ -f "$BINARY" ]]; then
+  codesign --force --sign "$SIGN_ID" --entitlements "$ENTITLEMENTS" "$BINARY"
+fi
 codesign --deep --force --verify --verbose \
   --sign "$SIGN_ID" \
   --entitlements "$ENTITLEMENTS" \
@@ -80,10 +104,16 @@ xcrun productbuild --sign "$INSTALL_ID" \
   "$PKG_PATH"
 
 echo "=== 4. Upload to TestFlight ==="
+# altool looks for the key by filename in repo/private_keys, ~/private_keys, etc. Copy there so it finds it.
+KEY_NAME=$(basename "$KEY_PATH")
+ALTOOL_KEY_DIR="$REPO_ROOT/private_keys"
+mkdir -p "$ALTOOL_KEY_DIR"
+ALTOOL_KEY_PATH="$ALTOOL_KEY_DIR/$KEY_NAME"
+cp -f "$KEY_PATH" "$ALTOOL_KEY_PATH"
 xcrun altool --upload-app --type macos --file "$PKG_PATH" \
   --apiKey "$KEY_ID" \
   --apiIssuer "$ISSUER" \
-  --apiKeyPath "$KEY_PATH"
+  --apiKeyPath "$ALTOOL_KEY_PATH"
 
 echo ""
 echo "Done. Build will appear in App Store Connect → pgStudio → TestFlight (5–15 min)."

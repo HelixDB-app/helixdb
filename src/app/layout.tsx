@@ -3,6 +3,9 @@ import { Inter, JetBrains_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
+import { FirebaseProvider } from "@/components/firebase-provider";
+import { NotificationProvider } from "@/components/notification-provider";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { APP_NAME, APP_TAGLINE } from "@/lib/app-config";
 import "./globals.css";
 
@@ -40,7 +43,13 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           <TooltipProvider delayDuration={200}>
-            {children}
+            <FirebaseProvider>
+              <NotificationProvider>
+                <ErrorBoundary>
+                  {children}
+                </ErrorBoundary>
+              </NotificationProvider>
+            </FirebaseProvider>
           </TooltipProvider>
           <Toaster />
         </ThemeProvider>

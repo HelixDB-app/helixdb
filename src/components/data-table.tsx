@@ -8,6 +8,7 @@ import {
     dbGetTableData,
     dbGetFunctionDefinition,
     dbGetTypeDefinition,
+    dbAlterEnumValues,
     dbGetColumns,
     dbUpdateTableRow,
     dbDeleteTableRows,
@@ -113,6 +114,7 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { InsertRowDialog } from "@/components/insert-row-dialog";
+import { FunctionEditInline } from "@/components/function-edit-dialog";
 
 // ── Export / copy helpers ────────────────────────────────────────────────
 
@@ -2148,6 +2150,8 @@ function FunctionPreview({
     const [definition, setDefinition] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [err, setErr] = useState<string | null>(null);
+    const [editing, setEditing] = useState(false);
+    const [refreshTrigger, setRefreshTrigger] = useState(0);
 
     useEffect(() => {
         if (!connectionId) return;
@@ -2159,7 +2163,7 @@ function FunctionPreview({
             })
             .catch((e) => setErr(String(e)))
             .finally(() => setLoading(false));
-    }, [connectionId, schema, name, args]);
+    }, [connectionId, schema, name, args, refreshTrigger]);
 
     const copy = () => {
         if (definition) {
@@ -2169,7 +2173,7 @@ function FunctionPreview({
     };
 
     return (
-        <div className="flex h-full flex-col">
+        <div className="flex h-full flex-col min-h-0">
             <div className="shrink-0 border-b border-border/20 bg-card/30 px-4 py-2.5 flex items-center justify-between">
                 <div className="flex items-center gap-2 min-w-0">
                     <Code2 className="h-3.5 w-3.5 text-violet-400 shrink-0" />
@@ -2180,30 +2184,61 @@ function FunctionPreview({
                         Function
                     </Badge>
                 </div>
-                <Button variant="ghost" size="sm" className="h-7 text-xs shrink-0" onClick={copy} disabled={!definition}>
-                    <Copy className="h-3 w-3 mr-1" />
-                    Copy
-                </Button>
+                <div className="flex items-center gap-1 shrink-0">
+                    {editing ? (
+                        <Button variant="ghost" size="sm" className="h-7 text-xs text-muted-foreground" onClick={() => setEditing(false)}>
+                            <Pencil className="h-3 w-3 mr-1" />
+                            View
+                        </Button>
+                    ) : (
+                        <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={() => setEditing(true)} disabled={!definition || !connectionId}>
+                            <Pencil className="h-3 w-3 mr-1" />
+                            Edit
+                        </Button>
+                    )}
+                    <Button variant="ghost" size="sm" className="h-7 text-xs" onClick={copy} disabled={!definition}>
+                        <Copy className="h-3 w-3 mr-1" />
+                        Copy
+                    </Button>
+                </div>
             </div>
-            <div className="flex-1 overflow-auto p-4">
-                {loading && (
-                    <div className="space-y-2">
-                        <Skeleton className="h-4 w-full rounded" />
-                        <Skeleton className="h-4 w-3/4 rounded" />
-                        <Skeleton className="h-4 w-5/6 rounded" />
-                    </div>
-                )}
-                {err && (
-                    <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-4 text-xs text-destructive">
-                        {err}
-                    </div>
-                )}
-                {!loading && !err && definition && (
-                    <ScrollArea className="rounded-xl border border-border/30 bg-muted/20">
-                        <pre className="p-4 text-[11px] font-mono text-foreground/90 whitespace-pre overflow-x-auto">
-                            <code>{definition}</code>
-                        </pre>
-                    </ScrollArea>
+            <div className={cn("flex-1 min-h-0 p-4", editing ? "flex flex-col" : "overflow-auto")}>
+                {editing && definition != null && connectionId ? (
+                    <FunctionEditInline
+                        connectionId={connectionId}
+                        schema={schema}
+                        name={name}
+                        arguments={args}
+                        initialDefinition={definition}
+                        onSaved={() => {
+                            setRefreshTrigger((t) => t + 1);
+                            setEditing(false);
+                        }}
+                        onCancel={() => setEditing(false)}
+                        className="flex-1 min-h-0"
+                    />
+                ) : (
+                    <>
+                        {loading && (
+                            <div className="space-y-2">
+                                <Skeleton className="h-4 w-full rounded" />
+                                <Skeleton className="h-4 w-3/4 rounded" />
+                                <Skeleton className="h-4 w-5/6 rounded" />
+                            </div>
+                        )}
+                        {err && (
+                            <div className="rounded-lg border border-destructive/20 bg-destructive/5 p-4 text-xs text-destructive">
+                                {err}
+                            </div>
+                        )}
+                        {!loading && !err && definition && (
+                            <ScrollArea className="rounded-lg border border-border/30 bg-muted/20">
+                                <pre className="p-4 text-[11px] font-mono text-foreground/90 whitespace-pre overflow-x-auto">
+                                    <code>{definition}</code>
+                                </pre>
+                            </ScrollArea>
+                        )}
+                    </>
                 )}
             </div>
         </div>
@@ -2219,18 +2254,25 @@ function TypePreview({
     schema: string;
     name: string;
 }) {
+    const loadSchemaObjects = useConnectionStore((s) => s.loadSchemaObjects);
     const [detail, setDetail] = useState<TypeDefinitionDetail | null>(null);
     const [loading, setLoading] = useState(true);
     const [err, setErr] = useState<string | null>(null);
+    const [editingValues, setEditingValues] = useState<string[]>([]);
+    const [saving, setSaving] = useState(false);
+    const [saveError, setSaveError] = useState<string | null>(null);
 
     const fetchDetail = useCallback(() => {
         if (!connectionId) return;
         setLoading(true);
         setErr(null);
+        setSaveError(null);
         dbGetTypeDefinition(connectionId, schema, name)
             .then((d) => {
                 setDetail(d ?? null);
                 if (d == null) setErr("Type not found or not supported.");
+                else if (d.kind === "enum")
+                    setEditingValues(d.enum_labels?.slice() ?? []);
             })
             .catch((e) => setErr(String(e)))
             .finally(() => setLoading(false));
@@ -2240,6 +2282,42 @@ function TypePreview({
         fetchDetail();
     }, [fetchDetail]);
 
+    useEffect(() => {
+        if (detail?.kind === "enum" && detail.enum_labels)
+            setEditingValues(detail.enum_labels.slice());
+    }, [detail?.kind, detail?.enum_labels?.length]);
+
+    const handleSaveEnum = useCallback(async () => {
+        if (!connectionId || detail?.kind !== "enum") return;
+        const original = detail.enum_labels ?? [];
+        const current = editingValues.map((v) => v.trim()).filter(Boolean);
+        const uniq = new Set(current);
+        if (uniq.size !== current.length) {
+            setSaveError("Duplicate values are not allowed.");
+            return;
+        }
+        setSaveError(null);
+        setSaving(true);
+        try {
+            const renames: [string, string][] = [];
+            for (let i = 0; i < Math.min(original.length, current.length); i++) {
+                if (original[i] !== current[i]) renames.push([original[i], current[i]]);
+            }
+            const additions: [string, string | null][] = current
+                .slice(original.length)
+                .map((v) => [v, null]);
+            if (renames.length > 0 || additions.length > 0) {
+                await dbAlterEnumValues(connectionId, schema, name, renames, additions);
+                loadSchemaObjects(schema);
+                fetchDetail();
+            }
+        } catch (e) {
+            setSaveError(String(e));
+        } finally {
+            setSaving(false);
+        }
+    }, [connectionId, schema, name, detail?.kind, detail?.enum_labels, editingValues, fetchDetail, loadSchemaObjects]);
+
     const hasContent =
         detail &&
         ((detail.enum_labels && detail.enum_labels.length > 0) ||
@@ -2247,6 +2325,14 @@ function TypePreview({
             detail.domain_base_type != null ||
             detail.domain_check != null ||
             detail.range_subtype != null);
+
+    const enumDirty =
+        detail?.kind === "enum" &&
+        (() => {
+            const orig = detail.enum_labels ?? [];
+            if (editingValues.length !== orig.length) return true;
+            return editingValues.some((v, i) => (orig[i] ?? "") !== v);
+        })();
 
     if (loading) {
         return (
@@ -2283,10 +2369,58 @@ function TypePreview({
                         </Button>
                     </div>
                 )}
+                {saveError && (
+                    <div className="rounded-xl border border-destructive/20 bg-destructive/5 p-3 text-xs text-destructive mb-3">
+                        {saveError}
+                    </div>
+                )}
                 {detail && !err && (
                     <div className="rounded-xl border border-border/30 bg-card/20 overflow-hidden">
                         <dl className="p-4 space-y-3 text-xs">
-                            {detail.enum_labels && detail.enum_labels.length > 0 && (
+                            {detail.kind === "enum" && (
+                                <div>
+                                    <dt className="text-muted-foreground/70 font-medium mb-1.5">Values</dt>
+                                    <dd className="space-y-1.5">
+                                        {editingValues.map((label, i) => (
+                                            <div key={i} className="flex items-center gap-1.5">
+                                                <Input
+                                                    value={label}
+                                                    onChange={(e) =>
+                                                        setEditingValues((prev) => {
+                                                            const next = [...prev];
+                                                            next[i] = e.target.value;
+                                                            return next;
+                                                        })
+                                                    }
+                                                    className="h-7 text-[11px] font-mono"
+                                                    placeholder="Value"
+                                                />
+                                            </div>
+                                        ))}
+                                        <Button
+                                            type="button"
+                                            variant="ghost"
+                                            size="sm"
+                                            className="h-7 text-[11px] text-muted-foreground hover:text-foreground"
+                                            onClick={() => setEditingValues((prev) => [...prev, ""])}
+                                        >
+                                            + Add value
+                                        </Button>
+                                        {enumDirty && (
+                                            <Button
+                                                size="sm"
+                                                className="h-7 mt-2 text-xs"
+                                                disabled={saving}
+                                                onClick={handleSaveEnum}
+                                            >
+                                                {saving ? <Loader2 className="h-3 w-3 animate-spin mr-1" /> : null}
+                                                Save
+                                            </Button>
+                                        )}
+                                    </dd>
+                                </div>
+                            )}
+                            {detail.enum_labels && detail.enum_labels.length > 0 && detail.kind !== "enum" && (
                                 <div>
                                     <dt className="text-muted-foreground/70 font-medium mb-1.5">Values</dt>
                                     <dd className="font-mono flex flex-wrap gap-1.5">
@@ -2296,12 +2430,6 @@ function TypePreview({
                                             </Badge>
                                         ))}
                                     </dd>
-                                </div>
-                            )}
-                            {detail.enum_labels && detail.enum_labels.length === 0 && detail.kind === "enum" && (
-                                <div>
-                                    <dt className="text-muted-foreground/70 font-medium mb-1">Values</dt>
-                                    <dd className="text-muted-foreground/60 font-mono">Empty enum (no labels)</dd>
                                 </div>
                             )}
                             {detail.composite_attrs && detail.composite_attrs.length > 0 && (
@@ -2345,7 +2473,7 @@ function TypePreview({
                                 !detail.range_subtype && (
                                 <p className="text-muted-foreground/60">Multirange type (no extra details)</p>
                             )}
-                            {!hasContent && (
+                            {!hasContent && detail.kind !== "enum" && (
                                 <p className="text-muted-foreground/60">
                                     No values or attributes for this type.
                                 </p>

@@ -23,6 +23,7 @@ import {
 } from "@/components/ui/context-menu";
 import { TableManagerDialog } from "@/components/table-manager-dialog";
 import { CreateTableDialog } from "@/components/create-table-dialog";
+import { CreateEnumDialog } from "@/components/create-enum-dialog";
 import { CreateDatabaseDialog } from "@/components/create-database-dialog";
 import {
     ChevronRight,
@@ -454,6 +455,7 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
     } | null>(null);
 
     const [createTableSchema, setCreateTableSchema] = useState<string | null>(null);
+    const [createEnumSchema, setCreateEnumSchema] = useState<string | null>(null);
 
     useEffect(() => {
         function handler(e: MouseEvent) {
@@ -551,6 +553,18 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
                 onCreated={(_schema, _table) => {
                     refreshSchemas();
                     setCreateTableSchema(null);
+                }}
+            />
+        )}
+        {createEnumSchema !== null && (
+            <CreateEnumDialog
+                open={true}
+                onClose={() => setCreateEnumSchema(null)}
+                defaultSchema={createEnumSchema}
+                schemas={schemas.map((s) => s.name)}
+                onCreated={() => {
+                    refreshSchemas();
+                    setCreateEnumSchema(null);
                 }}
             />
         )}
@@ -972,13 +986,14 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
                                                         )}
 
                                                         {/* Types */}
-                                                        {typeList.length > 0 && (
-                                                            <>
+                                                        <>
                                                                 <SchemaSectionHeader
                                                                     icon={Type}
                                                                     label="Types"
                                                                     count={typeList.length}
                                                                     iconColor="text-rose-400/60"
+                                                                    onAdd={() => setCreateEnumSchema(schema.name)}
+                                                                    addTitle="Create new enum"
                                                                 />
                                                                 {typeList.map((ty) => (
                                                                     <ObjectLeaf
@@ -996,8 +1011,7 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
                                                                         }}
                                                                     />
                                                                 ))}
-                                                            </>
-                                                        )}
+                                                        </>
 
                                                         {tableList.length === 0 &&
                                                             viewList.length === 0 &&

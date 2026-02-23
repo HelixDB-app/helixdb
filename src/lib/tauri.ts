@@ -3,6 +3,7 @@ import type {
     ConnectionResponse,
     SchemaInfo,
     TableInfo,
+    TopologyData,
     ColumnInfo,
     QueryResult,
     SavedConnection,
@@ -48,6 +49,17 @@ export async function dbListTables(
     schema: string
 ): Promise<TableInfo[]> {
     return invoke<TableInfo[]>("db_list_tables", { connectionId, schema });
+}
+
+/** Get schema topology (nodes + FK edges) for ER diagram */
+export async function dbGetSchemaTopology(
+    connectionId: string,
+    schema: string
+): Promise<TopologyData> {
+    return invoke<TopologyData>("db_get_schema_topology", {
+        connectionId,
+        schema,
+    });
 }
 
 /** Get columns for a table */
@@ -175,6 +187,34 @@ export async function dbGetTypeDefinition(
         connectionId,
         schema,
         name,
+    });
+}
+
+/** Create a new enum type. Values must be non-empty. */
+export async function dbCreateEnum(
+    connectionId: string,
+    schema: string,
+    name: string,
+    values: string[]
+): Promise<void> {
+    return invoke("db_create_enum", { connectionId, schema, name, values });
+}
+
+/** Alter enum: renames and additions in one transaction. */
+export async function dbAlterEnumValues(
+    connectionId: string,
+    schema: string,
+    name: string,
+    renames: [string, string][],
+    additions: [string, string | null][]
+): Promise<void> {
+    const additionsPayload = additions.map(([v, after]) => [v, after ?? null] as [string, string | null]);
+    return invoke("db_alter_enum_values", {
+        connectionId,
+        schema,
+        name,
+        renames,
+        additions: additionsPayload,
     });
 }
 

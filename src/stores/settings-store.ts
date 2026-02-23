@@ -32,6 +32,9 @@ export interface AppSettings {
     autoFormatOnExecute: boolean;
     confirmDangerousQueries: boolean;
     queryTimeoutSeconds: number;
+
+    // Notifications
+    notificationsEnabled: boolean;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -51,6 +54,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     autoFormatOnExecute: false,
     confirmDangerousQueries: true,
     queryTimeoutSeconds: 30,
+    notificationsEnabled: true,
 };
 
 interface SettingsStore extends AppSettings {
@@ -67,7 +71,7 @@ export const useSettingsStore = create<SettingsStore>()(
         }),
         {
             name: "helix-settings",
-            version: 1,
+            version: 2,
         }
     )
 );

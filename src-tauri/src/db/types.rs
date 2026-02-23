@@ -333,3 +333,40 @@ pub struct TypeDefinitionDetail {
     /// Range: subtype name
     pub range_subtype: Option<String>,
 }
+
+/// Single column within a topology node (includes type + key info)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopologyColumn {
+    pub name: String,
+    pub data_type: String,
+    pub is_primary_key: bool,
+    pub is_nullable: bool,
+}
+
+/// Single table node for schema topology (ER diagram)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopologyNode {
+    pub schema: String,
+    pub table_name: String,
+    pub row_count: i64,
+    pub columns: Vec<TopologyColumn>,
+}
+
+/// Foreign key edge for schema topology
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopologyEdge {
+    pub constraint_name: String,
+    pub from_schema: String,
+    pub from_table: String,
+    pub from_column: String,
+    pub to_schema: String,
+    pub to_table: String,
+    pub to_column: String,
+}
+
+/// Full topology payload: nodes + edges for one schema
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TopologyData {
+    pub nodes: Vec<TopologyNode>,
+    pub edges: Vec<TopologyEdge>,
+}

@@ -10,11 +10,13 @@ pub fn run() {
     tauri::Builder::default()
         .manage(AppState::new())
         .plugin(tauri_plugin_log::Builder::default().build())
+        .plugin(tauri_plugin_notification::init())
         .invoke_handler(tauri::generate_handler![
             commands::db_connect,
             commands::db_disconnect,
             commands::db_list_schemas,
             commands::db_list_tables,
+            commands::db_get_schema_topology,
             commands::db_get_columns,
             commands::db_get_table_data,
             commands::db_execute_query,
@@ -28,6 +30,8 @@ pub fn run() {
             commands::db_get_pg_version,
             commands::db_get_function_definition,
             commands::db_get_type_definition,
+            commands::db_create_enum,
+            commands::db_alter_enum_values,
             commands::db_search_table_data,
             commands::db_insert_table_row,
             commands::db_update_table_row,

@@ -147,7 +147,7 @@ export function InsertRowDialog({
 
     return (
         <Dialog open={open} onOpenChange={handleOpenChange}>
-            <DialogContent className="max-w-lg max-h-[85vh] flex flex-col gap-0 p-0">
+            <DialogContent className="max-w-2xl w-[90vw] max-h-[85vh] flex flex-col gap-0 p-0 overflow-hidden">
                 <DialogHeader className="px-6 pt-6 pb-2 shrink-0">
                     <DialogTitle className="flex items-center gap-2 text-base">
                         <div className="flex h-8 w-8 items-center justify-center rounded-lg bg-emerald-500/10">
@@ -161,7 +161,7 @@ export function InsertRowDialog({
                     </DialogDescription>
                 </DialogHeader>
 
-                <ScrollArea className="flex-1 px-6 min-h-0 max-h-[50vh]">
+                <ScrollArea className="flex-1 min-h-0 px-6">
                     <div className="space-y-4 py-4 pr-4">
                         {columns.map((col) => (
                             <div key={col.name} className="space-y-1.5">

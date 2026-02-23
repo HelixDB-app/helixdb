@@ -35,6 +35,7 @@ import {
     Minus,
     Plus,
     Zap,
+    Bell,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -469,6 +470,16 @@ function ShortcutsSection() {
     );
 }
 
+function NotificationsToggle() {
+    const { notificationsEnabled, updateSettings } = useSettingsStore();
+    return (
+        <Switch
+            checked={notificationsEnabled}
+            onCheckedChange={(v) => updateSettings({ notificationsEnabled: v })}
+        />
+    );
+}
+
 function AboutSection() {
     const [copied, setCopied] = useState(false);
 
@@ -523,6 +534,15 @@ function AboutSection() {
                         )}
                     </button>
                 </div>
+            </SettingSection>
+
+            <SettingSection title="Notifications">
+                <SettingRow
+                    label="Enable notifications"
+                    description="Show system notifications for alerts and updates."
+                >
+                    <NotificationsToggle />
+                </SettingRow>
             </SettingSection>
 
             <SettingSection title="Performance">
@@ -581,7 +601,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent  className={cn(
-                    "max-w-[65vw] sm:max-w-7xl w-full h-[43vh] flex flex-col p-0 gap-0 overflow-hidden",
+                    "max-w-[65vw] sm:max-w-7xl w-full h-[83vh] flex flex-col p-0 gap-0 overflow-hidden",
                     "rounded-xl border-border/40 shadow-2xl"
                 )}>
                 <DialogTitle className="sr-only">Settings</DialogTitle>

@@ -77,7 +77,7 @@ mv "$TMP_DMG" "$SHAREABLE_DMG"
 echo "=== 4. Sign DMG (with secure timestamp) ==="
 codesign --force --timestamp --sign "$SIGN_ID" "$SHAREABLE_DMG"
 
-echo "=== 5. Notarize (submit, then poll to avoid timeout) ==="
+echo "=== 5. Notarize (submit to Apple; they process on their servers) ==="
 SUBMIT_OUT=$(mktemp)
 if ! xcrun notarytool submit "$SHAREABLE_DMG" \
   --key "$KEY_PATH" --key-id "$KEY_ID" --issuer "$ISSUER" 2>&1 | tee "$SUBMIT_OUT"; then
@@ -92,26 +92,35 @@ if [[ -z "$SUB_ID" ]]; then
   exit 1
 fi
 echo "Submission ID: $SUB_ID"
-echo "Polling for result (every 30s, max 15 min)..."
-MAX_ATTEMPTS=30
+
+# Submit-only: don't wait; staple later with ./apple/check-and-staple.sh <id>
+if [[ -n "${NOTARY_SUBMIT_ONLY:-}" ]]; then
+  echo ""
+  echo "Submitted. To staple when ready (usually 1–5 min):"
+  echo "  ./apple/check-and-staple.sh $SUB_ID"
+  echo "  DMG: $SHAREABLE_DMG"
+  exit 0
+fi
+
+echo "Waiting for Apple (typically 1–3 min). Polling every 8s..."
+MAX_ATTEMPTS=60
 for i in $(seq 1 "$MAX_ATTEMPTS"); do
-  sleep 30
-  LOG=$(xcrun notarytool log "$SUB_ID" --key "$KEY_PATH" --key-id "$KEY_ID" --issuer "$ISSUER" 2>/dev/null || true)
-  if echo "$LOG" | grep -q '"status": "Accepted"'; then
+  sleep 8
+  INFO=$(xcrun notarytool info "$SUB_ID" --key "$KEY_PATH" --key-id "$KEY_ID" --issuer "$ISSUER" 2>/dev/null || true)
+  if echo "$INFO" | grep -q "status: Accepted"; then
     echo "Notarization Accepted."
     break
   fi
-  if echo "$LOG" | grep -q '"status": "Invalid"'; then
+  if echo "$INFO" | grep -q "status: Invalid"; then
     echo ""
-    echo "Notarization Invalid:"
-    echo "$LOG"
+    echo "Notarization Invalid. Full log:"
+    xcrun notarytool log "$SUB_ID" --key "$KEY_PATH" --key-id "$KEY_ID" --issuer "$ISSUER" 2>/dev/null || true
     echo "Fix the issues above, then re-run this script."
     exit 1
   fi
-  echo "  attempt $i/$MAX_ATTEMPTS: still in progress..."
+  echo "  attempt $i/$MAX_ATTEMPTS: in progress..."
   if [[ $i -eq $MAX_ATTEMPTS ]]; then
-    echo "Timed out. Check later: xcrun notarytool log $SUB_ID --key \"$KEY_PATH\" --key-id $KEY_ID --issuer $ISSUER"
-    echo "If Accepted, run: xcrun stapler staple \"$SHAREABLE_DMG\""
+    echo "Timed out. Staple later when accepted: ./apple/check-and-staple.sh $SUB_ID"
     exit 1
   fi
 done

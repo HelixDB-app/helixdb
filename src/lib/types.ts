@@ -338,3 +338,36 @@ export interface CreateIndexRequest {
     is_unique: boolean;
     where_clause: string | null;
 }
+
+/** Single column within a topology node (includes type + key info) */
+export interface TopologyColumn {
+    name: string;
+    data_type: string;
+    is_primary_key: boolean;
+    is_nullable: boolean;
+}
+
+/** Table node for schema topology (ER diagram) */
+export interface TopologyNode {
+    schema: string;
+    table_name: string;
+    row_count: number;
+    columns: TopologyColumn[];
+}
+
+/** Foreign key edge for schema topology */
+export interface TopologyEdge {
+    constraint_name: string;
+    from_schema: string;
+    from_table: string;
+    from_column: string;
+    to_schema: string;
+    to_table: string;
+    to_column: string;
+}
+
+/** Full topology: nodes + edges for one schema */
+export interface TopologyData {
+    nodes: TopologyNode[];
+    edges: TopologyEdge[];
+}
