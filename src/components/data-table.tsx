@@ -107,6 +107,14 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+    Dialog,
+    DialogContent,
+    DialogDescription,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
+import {
     Popover,
     PopoverContent,
     PopoverTrigger,
@@ -411,6 +419,7 @@ export function DataTable() {
     const [cellError, setCellError] = useState<string | null>(null);
     const [isSaving, setIsSaving] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
+    const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [insertDialogOpen, setInsertDialogOpen] = useState(false);
 
     // ── Live Watch mode ───────────────────────────────────────────────────────
@@ -768,23 +777,36 @@ export function DataTable() {
         };
     }, []);
 
-    // ── Delete selected ───────────────────────────────────────────────────────
-    const handleDeleteSelected = useCallback(async () => {
+    // ── Delete selected: open confirmation dialog ───────────────────────────────
+    const openDeleteConfirm = useCallback(() => {
+        if (!result || selectedRowKeys.size === 0) return;
+        setDeleteConfirmOpen(true);
+    }, [result, selectedRowKeys.size]);
+
+    // ── Delete confirmed: run DB delete (cascade handled by DB FK rules) ─────────
+    const handleConfirmDelete = useCallback(async () => {
         if (!connectionId || !selectedSchema || !selectedTable || !result) return;
         const rowsToDelete = displayRows.filter((row) =>
             selectedRowKeys.has(getRowKey(row, result!.columns, pkColumnNames))
         );
-        if (rowsToDelete.length === 0) return;
-        if (!confirm(`Delete ${rowsToDelete.length} row(s)? This cannot be undone.`)) return;
+        if (rowsToDelete.length === 0) {
+            setDeleteConfirmOpen(false);
+            return;
+        }
         const rowsPkValues = rowsToDelete.map((row) => getRowPkValues(row, result!.columns, pkColumnNames));
         setIsDeleting(true);
+        setDeleteConfirmOpen(false);
         try {
             const n = await dbDeleteTableRows(connectionId, selectedSchema, selectedTable, pkColumnNames, rowsPkValues);
             setSelectedRowKeys(new Set());
-            toast.success(`${n} row(s) deleted`);
+            if (n === 0) {
+                toast.error("No rows were deleted. The row may have been modified or removed.");
+            } else {
+                toast.success(`${n} row(s) deleted`);
+            }
             await fetchData();
         } catch (e) {
-            toast.error(String(e));
+            toast.error(e instanceof Error ? e.message : String(e));
         } finally {
             setIsDeleting(false);
         }
@@ -983,13 +1005,35 @@ export function DataTable() {
                         size="sm"
                         className="h-7 text-xs gap-1.5"
                         disabled={isDeleting}
-                        onClick={handleDeleteSelected}
+                        onClick={openDeleteConfirm}
                     >
                         {isDeleting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
                         {isDeleting ? "Deleting…" : "Delete"}
                     </Button>
                 </div>
             )}
+
+            {/* Delete confirmation dialog */}
+            <Dialog open={deleteConfirmOpen} onOpenChange={setDeleteConfirmOpen}>
+                <DialogContent className="sm:max-w-md" showCloseButton={true}>
+                    <DialogHeader>
+                        <DialogTitle>Delete row(s)?</DialogTitle>
+                        <DialogDescription>
+                            This will permanently delete {selectedRowKeys.size} row(s) from the database.
+                            Rows in other tables that reference these (via foreign keys with ON DELETE CASCADE) will also be removed. This cannot be undone.
+                        </DialogDescription>
+                    </DialogHeader>
+                    <DialogFooter className="gap-2 sm:gap-0">
+                        <Button variant="outline" onClick={() => setDeleteConfirmOpen(false)}>
+                            No, cancel
+                        </Button>
+                        <Button variant="destructive" onClick={handleConfirmDelete} disabled={isDeleting}>
+                            {isDeleting ? <Loader2 className="h-3 w-3 animate-spin mr-1.5" /> : null}
+                            Yes, delete
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
 
             {/* Body */}
             <div className="flex-1 overflow-hidden relative">

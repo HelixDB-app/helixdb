@@ -2,6 +2,7 @@
  * Cross-platform push notifications: Firebase Cloud Messaging (foreground) +
  * system notifications via Tauri plugin or Web Notification API.
  * Lazy-loads FCM; respects notificationsEnabled from settings.
+ * Guards against unsupported browsers to avoid Firebase messaging/unsupported-browser errors.
  */
 
 import { getFirebaseConfig } from "@/lib/firebase";
@@ -17,9 +18,38 @@ export interface NotificationPayload {
 }
 
 let fcmUnsubscribe: (() => void) | null = null;
+let messagingSupportPromise: Promise<boolean> | null = null;
+
+/** FCM requires secure context and Service Worker support; avoid loading SDK in unsupported envs. */
+function isMessagingSupportedByBrowser(): boolean {
+  if (typeof window === "undefined") return false;
+  if (isTauri()) return false;
+  if (!window.isSecureContext) return false;
+  if (!("Notification" in window)) return false;
+  if (!("PushManager" in window)) return false;
+  if (!("indexedDB" in window)) return false;
+  if (!("serviceWorker" in navigator)) return false;
+  return true;
+}
 
 function isTauri(): boolean {
   return typeof window !== "undefined" && !!(window as unknown as { __TAURI__?: unknown }).__TAURI__;
+}
+
+async function isMessagingRuntimeSupported(): Promise<boolean> {
+  if (!isMessagingSupportedByBrowser()) return false;
+  if (messagingSupportPromise) return messagingSupportPromise;
+
+  messagingSupportPromise = (async () => {
+    try {
+      const { isSupported } = await import("firebase/messaging");
+      return await isSupported();
+    } catch {
+      return false;
+    }
+  })();
+
+  return messagingSupportPromise;
 }
 
 /**
@@ -28,9 +58,10 @@ function isTauri(): boolean {
 export async function showSystemNotification(
   title: string,
   body: string,
-  _imageUrl?: string | null
+  imageUrl?: string | null
 ): Promise<void> {
   if (typeof window === "undefined") return;
+  void imageUrl;
   const finalTitle = title || DEFAULT_TITLE;
   try {
     if (isTauri()) {
@@ -75,21 +106,24 @@ export async function requestNotificationPermission(): Promise<boolean> {
 }
 
 /**
- * Whether FCM can be used (config present and in supported environment).
+ * Whether FCM can be used (config present and browser supports required APIs).
  */
 export function isFCMAvailable(): boolean {
+  if (!isMessagingSupportedByBrowser()) return false;
   const config = getFirebaseConfig();
   if (!config?.messagingSenderId || !config?.appId) return false;
   const vapid = process.env.NEXT_PUBLIC_FIREBASE_VAPID_KEY;
-  return Boolean(vapid && typeof window !== "undefined");
+  return Boolean(vapid);
 }
 
 /**
  * Get FCM token for this device (for optional backend registration).
+ * Returns null if FCM is unavailable or browser is unsupported; never throws.
  */
 export async function getFCMToken(): Promise<string | null> {
   if (!isFCMAvailable()) return null;
   try {
+    if (!(await isMessagingRuntimeSupported())) return null;
     const firebaseApp = await import("firebase/app");
     const { getMessaging, getToken } = await import("firebase/messaging");
     const config = getFirebaseConfig();
@@ -136,11 +170,12 @@ export function onFCMMessage(
     fcmUnsubscribe();
     fcmUnsubscribe = null;
   }
-  if (!isFCMAvailable()) return () => {};
+  if (!isFCMAvailable() || !isMessagingSupportedByBrowser()) return () => {};
 
   let cancelled = false;
-  (async () => {
+  void (async () => {
     try {
+      if (cancelled || !(await isMessagingRuntimeSupported())) return;
       const firebaseApp = await import("firebase/app");
       const { getMessaging, onMessage } = await import("firebase/messaging");
       const config = getFirebaseConfig();
@@ -152,6 +187,7 @@ export function onFCMMessage(
         app = firebaseApp.initializeApp(config);
       }
       const messaging = getMessaging(app);
+      if (cancelled) return;
       const unsub = onMessage(messaging, (payload) => {
         if (cancelled || !getNotificationsEnabled()) return;
         const { title, body, image } = normalizePayload(payload as Parameters<typeof normalizePayload>[0]);
@@ -161,7 +197,7 @@ export function onFCMMessage(
       });
       if (!cancelled) fcmUnsubscribe = unsub;
     } catch {
-      // FCM not available or already initialized elsewhere
+      // messaging/unsupported-browser or other FCM init failure; no-op
     }
   })();
 

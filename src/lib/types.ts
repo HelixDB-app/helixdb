@@ -304,6 +304,13 @@ export interface IndexStats {
     stats_reset: string | null;
 }
 
+/** Sample query from pg_stat_statements for a table (AI index optimization context) */
+export interface QuerySample {
+    query: string;
+    calls: number;
+    mean_exec_time_ms: number;
+}
+
 /** A query from pg_stat_statements that would benefit from a proposed index */
 export interface IndexImpactQuery {
     query: string;
@@ -382,4 +389,72 @@ export interface QueryNote {
     created_at: string;
     updated_at: string;
     tags: string[];
+}
+
+// ── Schema Designer ────────────────────────────────────────────────────────
+
+export interface ForeignKeyRef {
+    target_table_id: string;
+    target_column_id: string;
+}
+
+export interface SchemaDesignerColumn {
+    id: string;
+    name: string;
+    data_type: string;
+    nullable: boolean;
+    default_value: string | null;
+    is_primary_key: boolean;
+    foreign_key: ForeignKeyRef | null;
+    /** Column has UNIQUE constraint */
+    unique?: boolean;
+}
+
+export interface SchemaDesignerIndex {
+    id: string;
+    name: string;
+    columns: string[];
+    unique: boolean;
+    method: string;
+}
+
+export interface TablePosition {
+    x: number;
+    y: number;
+}
+
+export interface SchemaDesignerTable {
+    id: string;
+    name: string;
+    columns: SchemaDesignerColumn[];
+    indexes: SchemaDesignerIndex[];
+    position: TablePosition | null;
+}
+
+export interface SchemaSnapshot {
+    id: string;
+    label: string;
+    timestamp: string;
+    tables: SchemaDesignerTable[];
+}
+
+export interface SchemaProject {
+    id: string;
+    name: string;
+    app_type: string;
+    description: string;
+    tables: SchemaDesignerTable[];
+    version_history: SchemaSnapshot[];
+    created_at: string;
+    updated_at: string;
+}
+
+export interface AISchemaReport {
+    performance_score: number;
+    scalability_rating: string;
+    bottlenecks: string[];
+    index_suggestions: string[];
+    architecture_notes: string[];
+    estimated_load: string;
+    summary: string;
 }

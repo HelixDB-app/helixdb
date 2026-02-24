@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useEffect, useState } from "react";
 import { useConnectionStore } from "@/stores/connection-store";
 import { APP_NAME } from "@/lib/app-config";
@@ -37,6 +38,7 @@ import {
     RefreshCw,
     Search,
     Settings,
+    Bug,
     Sparkles,
     Table2,
     Terminal,
@@ -60,9 +62,9 @@ export default function Home() {
     const [settingsOpen, setSettingsOpen] = useState(false);
 
     useEffect(() => {
-        if (typeof window !== "undefined" && !localStorage.getItem("helix_welcomed")) {
-            setShowWelcome(true);
-        }
+        if (typeof window === "undefined" || localStorage.getItem("helix_welcomed")) return;
+        const rafId = window.requestAnimationFrame(() => setShowWelcome(true));
+        return () => window.cancelAnimationFrame(rafId);
     }, []);
 
     const handleWelcomeDismiss = () => {
@@ -316,6 +318,23 @@ export default function Home() {
                             <TooltipContent>Connect to database</TooltipContent>
                         </Tooltip>
                     )}
+
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                asChild
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 gap-1.5 px-2.5 text-xs text-muted-foreground/60 hover:text-foreground border border-border/20 hover:border-border/40 bg-muted/20 hover:bg-muted/40 transition-all"
+                            >
+                                <Link href="/bug-report">
+                                    <Bug className="h-3.5 w-3.5" />
+                                    <span className="hidden sm:inline">Report Bug</span>
+                                </Link>
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Submit feedback and bug reports</TooltipContent>
+                    </Tooltip>
 
                     <Tooltip>
                         <TooltipTrigger asChild>

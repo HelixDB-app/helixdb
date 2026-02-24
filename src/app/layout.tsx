@@ -5,6 +5,7 @@ import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
 import { FirebaseProvider } from "@/components/firebase-provider";
 import { NotificationProvider } from "@/components/notification-provider";
+import { NetworkStatusProvider } from "@/components/network-status-provider";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { APP_NAME, APP_TAGLINE } from "@/lib/app-config";
 import "./globals.css";
@@ -44,11 +45,13 @@ export default function RootLayout({
         >
           <TooltipProvider delayDuration={200}>
             <FirebaseProvider>
-              <NotificationProvider>
-                <ErrorBoundary>
-                  {children}
-                </ErrorBoundary>
-              </NotificationProvider>
+              <NetworkStatusProvider>
+                <NotificationProvider>
+                  <ErrorBoundary>
+                    {children}
+                  </ErrorBoundary>
+                </NotificationProvider>
+              </NetworkStatusProvider>
             </FirebaseProvider>
           </TooltipProvider>
           <Toaster />

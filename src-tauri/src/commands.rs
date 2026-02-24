@@ -871,14 +871,34 @@ pub async fn db_sandbox_elapsed(
 // ─── Visual Index Builder ──────────────────────────────────────────────────
 
 /// Get all indexes in a schema with live usage statistics from pg_stat_user_indexes.
+/// Wrapped in a timeout so the UI never hangs (e.g. slow pool or large catalogs).
 #[tauri::command]
 pub async fn db_get_indexes(
     state: State<'_, AppState>,
     connection_id: String,
     schema: String,
 ) -> Result<Vec<crate::db::types::IndexStats>, String> {
+    use tokio::time::{timeout, Duration};
     let pool = state.conn_manager.get_pool(&connection_id)?;
-    queries::get_indexes_with_stats(&pool, &schema).await
+    let result = timeout(
+        Duration::from_secs(20),
+        queries::get_indexes_with_stats(&pool, &schema),
+    )
+    .await
+    .map_err(|_| "Loading indexes timed out".to_string())?;
+    result
+}
+
+/// Get sample queries from pg_stat_statements that reference a table (for AI index optimization).
+#[tauri::command]
+pub async fn db_get_table_query_samples(
+    state: State<'_, AppState>,
+    connection_id: String,
+    schema: String,
+    table: String,
+) -> Result<Vec<crate::db::types::QuerySample>, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::get_table_query_samples(&pool, &schema, &table, 15).await
 }
 
 /// Analyze pg_stat_statements to find queries that would benefit from a proposed index.
@@ -977,4 +997,53 @@ pub async fn notes_search(
         .app_data_dir()
         .map_err(|e| e.to_string())?;
     crate::notes_storage::search_notes(Some(app_data_dir), &query)
+}
+
+// ─── Schema Designer (persisted in app data dir) ──────────────────────────
+
+#[tauri::command]
+pub async fn schema_designer_load_all(
+    app: AppHandle,
+) -> Result<Vec<crate::schema_designer_storage::SchemaProject>, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    crate::schema_designer_storage::load_all(Some(app_data_dir))
+}
+
+#[tauri::command]
+pub async fn schema_designer_get_project(
+    app: AppHandle,
+    id: String,
+) -> Result<Option<crate::schema_designer_storage::SchemaProject>, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    crate::schema_designer_storage::get_project(Some(app_data_dir), &id)
+}
+
+#[tauri::command]
+pub async fn schema_designer_save_project(
+    app: AppHandle,
+    project: crate::schema_designer_storage::SchemaProject,
+) -> Result<Vec<crate::schema_designer_storage::SchemaProject>, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    crate::schema_designer_storage::save_project(Some(app_data_dir), project)
+}
+
+#[tauri::command]
+pub async fn schema_designer_delete_project(
+    app: AppHandle,
+    id: String,
+) -> Result<Vec<crate::schema_designer_storage::SchemaProject>, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    crate::schema_designer_storage::delete_project(Some(app_data_dir), &id)
 }

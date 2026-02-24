@@ -11,6 +11,10 @@
 
 import type { ColumnInfo, TableDetails } from "@/lib/types";
 import { dbGetColumns, dbGetTableDetails } from "@/lib/tauri";
+import {
+    isNoInternetError,
+    notifyNoInternetDetected,
+} from "@/lib/network-errors";
 
 // ── Model Configuration ──────────────────────────────────────────────────────
 
@@ -235,6 +239,9 @@ export class AIError extends Error {
     }
 }
 
+const NO_INTERNET_AI_MESSAGE =
+    "No internet connection. Reconnect and try again.";
+
 function parseGeminiError(status: number, body: string): AIError {
     try {
         const parsed = JSON.parse(body);
@@ -292,11 +299,17 @@ function parseGeminiError(status: number, body: string): AIError {
     }
 }
 
+function mapNoInternetError(error: unknown): AIError | null {
+    if (!isNoInternetError(error)) return null;
+    notifyNoInternetDetected(error);
+    return new AIError(0, NO_INTERNET_AI_MESSAGE, NO_INTERNET_AI_MESSAGE, true);
+}
+
 /**
  * Streaming call to Gemini API with SSE parsing.
  * Calls onChunk for each text delta received.
  */
-async function callGeminiStream(
+export async function callGeminiStream(
     model: GeminiModelId,
     apiKey: string,
     messages: GeminiMessage[],
@@ -325,12 +338,19 @@ async function callGeminiStream(
         ],
     };
 
-    const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal,
-    });
+    let res: Response;
+    try {
+        res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal,
+        });
+    } catch (error) {
+        const noInternetError = mapNoInternetError(error);
+        if (noInternetError) throw noInternetError;
+        throw error;
+    }
 
     if (!res.ok) {
         const errorBody = await res.text();
@@ -385,13 +405,15 @@ async function callGeminiStream(
 
 /**
  * Non-streaming call to Gemini API for quick operations.
+ * Pass options.maxOutputTokens to allow longer responses (e.g. 8192 for full schema JSON).
  */
 export async function callGeminiSync(
     model: GeminiModelId,
     apiKey: string,
     messages: GeminiMessage[],
     systemPrompt: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    options?: { maxOutputTokens?: number }
 ): Promise<string> {
     const url = `${GEMINI_BASE_URL}/${model}:generateContent?key=${apiKey}`;
 
@@ -402,18 +424,25 @@ export async function callGeminiSync(
         contents: messages,
         generationConfig: {
             temperature: 0.3,
-            maxOutputTokens: 4096,
+            maxOutputTokens: options?.maxOutputTokens ?? 4096,
             topP: 0.95,
             topK: 40,
         },
     };
 
-    const res = await fetch(url, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(body),
-        signal,
-    });
+    let res: Response;
+    try {
+        res = await fetch(url, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify(body),
+            signal,
+        });
+    } catch (error) {
+        const noInternetError = mapNoInternetError(error);
+        if (noInternetError) throw noInternetError;
+        throw error;
+    }
 
     if (!res.ok) {
         const errorBody = await res.text();

@@ -22,6 +22,7 @@ import {
     dbListTypes,
     updateSavedConnectionDatabaseName,
 } from "@/lib/tauri";
+import { notifyNoInternetDetected } from "@/lib/network-errors";
 
 /** Replace the database name in a postgres URI */
 function replaceDatabase(connectionString: string, newDatabase: string): string {
@@ -62,6 +63,9 @@ export function parseConnectionError(raw: string): string {
     }
     if (msg.includes("timeout")) {
         return "Connection timed out. The server may be unreachable or too slow to respond.";
+    }
+    if (msg.includes("network is unreachable") || msg.includes("internet disconnected")) {
+        return "No internet connection. Reconnect and try again.";
     }
     if (msg.includes("no such host") || msg.includes("name or service not known") || msg.includes("nodename nor servname provided")) {
         return "Hostname not found. Check the host address in your connection string.";
@@ -216,6 +220,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => ({
                 get().loadSchemaObjects(defaultSchema);
             }
         } catch (error) {
+            notifyNoInternetDetected(error);
             set({
                 isConnecting: false,
                 isLoadingSchemas: false,

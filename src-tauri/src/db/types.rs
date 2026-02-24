@@ -274,6 +274,14 @@ pub struct IndexStats {
     pub stats_reset: Option<String>,
 }
 
+/// Sample query from pg_stat_statements for a table (for AI index optimization context)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct QuerySample {
+    pub query: String,
+    pub calls: i64,
+    pub mean_exec_time_ms: f64,
+}
+
 /// A query from pg_stat_statements that would benefit from a proposed index
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IndexImpactQuery {

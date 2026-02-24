@@ -1198,7 +1198,13 @@ pub async fn delete_table_rows(
         safe_schema, safe_table, pk_list, in_clause
     );
 
-    let params: Vec<Option<String>> = rows_pk_values.iter().flat_map(|r| r.iter().cloned()).collect();
+    // Trim PK values so whitespace from the UI does not prevent matching
+    let params: Vec<Option<String>> = rows_pk_values
+        .iter()
+        .flat_map(|r| {
+            r.iter().map(|v| v.as_ref().map(|s| s.trim().to_string()))
+        })
+        .collect();
     let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = params
         .iter()
         .map(|p| p as &(dyn tokio_postgres::types::ToSql + Sync))
@@ -2214,6 +2220,8 @@ pub async fn get_indexes_with_stats(
     schema: &str,
 ) -> Result<Vec<super::types::IndexStats>, String> {
     let client = pool.get().await.map_err(|e| e.to_string())?;
+    // Prevent this query from hanging (e.g. on very large catalogs).
+    let _ = client.execute("SET LOCAL statement_timeout = '20s'", &[]).await;
 
     // Use COALESCE for days_since_reset and stats_reset to avoid NULL/version issues.
     // Use COALESCE(array_agg(...), ARRAY[]::text[]) so columns is never NULL.
@@ -2296,6 +2304,53 @@ pub async fn get_indexes_with_stats(
         .collect();
 
     Ok(indexes)
+}
+
+/// Get sample queries from pg_stat_statements that reference the given table (for AI context).
+/// Returns empty vec if extension is not installed.
+pub async fn get_table_query_samples(
+    pool: &Pool,
+    schema: &str,
+    table: &str,
+    limit: i64,
+) -> Result<Vec<super::types::QuerySample>, String> {
+    let client = pool.get().await.map_err(|e| e.to_string())?;
+    let ext_check = client
+        .query_opt(
+            "SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements'",
+            &[],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    if ext_check.is_none() {
+        return Ok(Vec::new());
+    }
+    let table_pattern = format!("%\"{}\"%", table);
+    let schema_table = format!("%{}.{}%", schema, table);
+    let rows = client
+        .query(
+            r#"
+            SELECT LEFT(query, 400) AS query, calls, mean_exec_time AS mean_exec_time_ms
+            FROM pg_stat_statements
+            WHERE (query ILIKE $1 OR query ILIKE $2)
+              AND query NOT ILIKE '%pg_stat%'
+              AND query NOT ILIKE '%EXPLAIN%'
+            ORDER BY total_exec_time DESC
+            LIMIT $3
+            "#,
+            &[&table_pattern, &schema_table, &limit],
+        )
+        .await
+        .map_err(|e| e.to_string())?;
+    let samples = rows
+        .iter()
+        .map(|row| super::types::QuerySample {
+            query: row.get("query"),
+            calls: row.get("calls"),
+            mean_exec_time_ms: row.get("mean_exec_time_ms"),
+        })
+        .collect();
+    Ok(samples)
 }
 
 /// Analyze pg_stat_statements for queries that would benefit from the proposed index.

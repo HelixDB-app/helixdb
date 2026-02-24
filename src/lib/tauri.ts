@@ -17,6 +17,7 @@ import type {
     ColumnStats,
     PgSession,
     IndexStats,
+    QuerySample,
     IndexImpactQuery,
     IndexBuildProgress,
     CreateIndexRequest,
@@ -630,6 +631,19 @@ export async function dbGetIndexes(
     return invoke<IndexStats[]>("db_get_indexes", { connectionId, schema });
 }
 
+/** Get sample queries from pg_stat_statements that reference a table (for AI index optimization). */
+export async function dbGetTableQuerySamples(
+    connectionId: string,
+    schema: string,
+    table: string
+): Promise<QuerySample[]> {
+    return invoke<QuerySample[]>("db_get_table_query_samples", {
+        connectionId,
+        schema,
+        table,
+    });
+}
+
 /** Find queries in pg_stat_statements that would benefit from a proposed index. */
 export async function dbGetIndexImpact(
     connectionId: string,
@@ -695,4 +709,28 @@ export async function notesDelete(id: string): Promise<QueryNote[]> {
 /** Search notes by keyword (case-insensitive on title + sql). */
 export async function notesSearch(query: string): Promise<QueryNote[]> {
     return invoke<QueryNote[]>("notes_search", { query });
+}
+
+// ─── Schema Designer (persisted via Rust core engine) ─────────────────────
+
+import type { SchemaProject } from "./types";
+
+/** Load all schema designer projects from disk */
+export async function schemaDesignerLoadAll(): Promise<SchemaProject[]> {
+    return invoke<SchemaProject[]>("schema_designer_load_all");
+}
+
+/** Get a single schema designer project by ID */
+export async function schemaDesignerGetProject(id: string): Promise<SchemaProject | null> {
+    return invoke<SchemaProject | null>("schema_designer_get_project", { id });
+}
+
+/** Save or update a schema designer project. Returns the full updated list. */
+export async function schemaDesignerSaveProject(project: SchemaProject): Promise<SchemaProject[]> {
+    return invoke<SchemaProject[]>("schema_designer_save_project", { project });
+}
+
+/** Delete a schema designer project by ID. Returns the full updated list. */
+export async function schemaDesignerDeleteProject(id: string): Promise<SchemaProject[]> {
+    return invoke<SchemaProject[]>("schema_designer_delete_project", { id });
 }

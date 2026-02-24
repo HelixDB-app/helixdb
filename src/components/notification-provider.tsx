@@ -46,10 +46,14 @@ export function NotificationProvider({ children }: { children: React.ReactNode }
     if (!isFCMAvailable()) return;
 
     let mounted = true;
-    (async () => {
-      const granted = await requestNotificationPermission();
-      if (!mounted || !granted) return;
-      unsubRef.current = onFCMMessage(getEnabled, onShowInApp);
+    void (async () => {
+      try {
+        const granted = await requestNotificationPermission();
+        if (!mounted || !granted) return;
+        unsubRef.current = onFCMMessage(getEnabled, onShowInApp);
+      } catch {
+        // Guard against async notification setup failures.
+      }
     })();
     return () => {
       mounted = false;

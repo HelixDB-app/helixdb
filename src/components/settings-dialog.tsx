@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useState } from "react";
 import { useTheme } from "next-themes";
 import {
@@ -36,7 +37,6 @@ import {
     Minus,
     Plus,
     Zap,
-    Bell,
     Sparkles,
     Eye,
     EyeOff,
@@ -445,6 +445,8 @@ const SHORTCUTS = [
     { keys: ["⌘", "R"], description: "Refresh schemas and current table" },
     { keys: ["⌘", "Enter"], description: "Execute query in editor" },
     { keys: ["⇧", "⌥", "F"], description: "Format SQL in editor" },
+    { keys: ["⌘", "."], description: "Trigger AI inline suggestion" },
+    { keys: ["⌥", "→"], description: "Accept next AI suggestion word" },
     { keys: ["⌘", "⇧", "H"], description: "Toggle query history panel" },
     { keys: ["⌘", "⇧", "P"], description: "Open editor command palette" },
     { keys: ["⌘", ","], description: "Open settings" },
@@ -489,7 +491,19 @@ function NotificationsToggle() {
 }
 
 function AISection() {
-    const { geminiApiKey, defaultAiModel, updateSettings } = useSettingsStore();
+    const {
+        geminiApiKey,
+        defaultAiModel,
+        aiAutocompleteEnabled,
+        aiInlineSuggestions,
+        aiDropdownSuggestions,
+        aiNextActionSuggestions,
+        aiSuggestionMinChars,
+        aiSuggestionThrottleMs,
+        aiSuggestionContextWindowChars,
+        aiShowSuggestionLatency,
+        updateSettings,
+    } = useSettingsStore();
     const [showKey, setShowKey] = useState(false);
 
     const modelOptions: { value: GeminiModelId; label: string }[] = [
@@ -548,6 +562,99 @@ function AISection() {
                         value={defaultAiModel}
                         options={modelOptions}
                         onChange={(v) => updateSettings({ defaultAiModel: v as GeminiModelId })}
+                    />
+                </SettingRow>
+            </SettingSection>
+
+            <SettingSection title="Autocomplete">
+                <SettingRow
+                    label="Enable AI SQL autocomplete"
+                    description="Master switch for inline ghost text and AI suggestion dropdown."
+                >
+                    <Switch
+                        checked={aiAutocompleteEnabled}
+                        onCheckedChange={(v) => updateSettings({ aiAutocompleteEnabled: v })}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Inline ghost text"
+                    description="Show Cursor-style inline completion at the caret (Tab to accept)."
+                >
+                    <Switch
+                        checked={aiInlineSuggestions}
+                        onCheckedChange={(v) => updateSettings({ aiInlineSuggestions: v })}
+                        disabled={!aiAutocompleteEnabled}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="AI dropdown suggestions"
+                    description="Include AI completions in the IntelliSense dropdown."
+                >
+                    <Switch
+                        checked={aiDropdownSuggestions}
+                        onCheckedChange={(v) => updateSettings({ aiDropdownSuggestions: v })}
+                        disabled={!aiAutocompleteEnabled}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Next-action chips"
+                    description="Show quick AI follow-up actions under the editor."
+                >
+                    <Switch
+                        checked={aiNextActionSuggestions}
+                        onCheckedChange={(v) => updateSettings({ aiNextActionSuggestions: v })}
+                        disabled={!aiAutocompleteEnabled}
+                    />
+                </SettingRow>
+            </SettingSection>
+
+            <SettingSection title="Performance">
+                <SettingRow
+                    label="Minimum typed characters"
+                    description="Wait for enough context before querying AI to reduce noise."
+                >
+                    <StepInput
+                        value={aiSuggestionMinChars}
+                        min={4}
+                        max={24}
+                        onChange={(v) => updateSettings({ aiSuggestionMinChars: v })}
+                        format={(v) => `${v} chars`}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Request throttle"
+                    description="Minimum delay between AI requests while typing."
+                >
+                    <StepInput
+                        value={aiSuggestionThrottleMs}
+                        min={80}
+                        max={1200}
+                        step={20}
+                        onChange={(v) => updateSettings({ aiSuggestionThrottleMs: v })}
+                        format={(v) => `${v}ms`}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Context window"
+                    description="How much recent SQL is sent to AI for each completion."
+                >
+                    <StepInput
+                        value={aiSuggestionContextWindowChars}
+                        min={300}
+                        max={3000}
+                        step={100}
+                        onChange={(v) => updateSettings({ aiSuggestionContextWindowChars: v })}
+                        format={(v) => `${v}c`}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Live latency chip"
+                    description="Show real-time AI response time and cache/network source in the editor."
+                >
+                    <Switch
+                        checked={aiShowSuggestionLatency}
+                        onCheckedChange={(v) => updateSettings({ aiShowSuggestionLatency: v })}
+                        disabled={!aiAutocompleteEnabled}
                     />
                 </SettingRow>
             </SettingSection>
@@ -617,6 +724,21 @@ function AboutSection() {
                     description="Show system notifications for alerts and updates."
                 >
                     <NotificationsToggle />
+                </SettingRow>
+            </SettingSection>
+
+            <SettingSection title="Support">
+                <SettingRow
+                    label="Report a bug"
+                    description="Open the dedicated bug report page with screenshot attachments and Firebase tracking."
+                >
+                    <Link
+                        href="/bug-report"
+                        className="inline-flex items-center gap-1.5 text-xs text-emerald-400/80 hover:text-emerald-400 transition-colors"
+                    >
+                        Open bug report page
+                        <ExternalLink className="h-3 w-3" />
+                    </Link>
                 </SettingRow>
             </SettingSection>
 

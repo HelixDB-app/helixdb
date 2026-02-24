@@ -3,6 +3,7 @@ mod connections_storage;
 mod db;
 mod local_postgres;
 mod notes_storage;
+mod schema_designer_storage;
 
 use commands::AppState;
 
@@ -70,6 +71,7 @@ pub fn run() {
             commands::db_sandbox_rollback,
             commands::db_sandbox_elapsed,
             commands::db_get_indexes,
+            commands::db_get_table_query_samples,
             commands::db_get_index_impact,
             commands::db_create_index,
             commands::db_drop_index,
@@ -78,6 +80,10 @@ pub fn run() {
             commands::notes_save,
             commands::notes_delete,
             commands::notes_search,
+            commands::schema_designer_load_all,
+            commands::schema_designer_get_project,
+            commands::schema_designer_save_project,
+            commands::schema_designer_delete_project,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

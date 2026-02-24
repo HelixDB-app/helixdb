@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 import { aiSuggestionEngine } from "@/lib/ai-suggestions";
 import type { SchemaContext } from "@/lib/ai-suggestions";
 import { useSettingsStore } from "@/stores/settings-store";
-import { Sparkles, Zap } from "lucide-react";
+import { Loader2, Sparkles, Zap } from "lucide-react";
 
 const EDITOR_HEIGHT = 200;
 
@@ -67,10 +67,19 @@ export function MonacoSqlEditor({
         editorMinimap,
         editorLineNumbers,
         editorFontLigatures,
+        aiAutocompleteEnabled,
+        aiInlineSuggestions,
+        aiDropdownSuggestions,
+        aiNextActionSuggestions,
+        aiSuggestionMinChars,
+        aiSuggestionThrottleMs,
+        aiSuggestionContextWindowChars,
+        aiShowSuggestionLatency,
     } = useSettingsStore();
 
     const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
     const schemaContextRef = useRef<SchemaContext | undefined>(schemaContext);
+    const disabledRef = useRef<boolean>(!!disabled);
     const onFetchColumnsRef = useRef<typeof onFetchColumns>(onFetchColumns);
     const onFormatSqlRef = useRef<typeof onFormatSql>(onFormatSql);
     const onNextActionRef = useRef<typeof onNextAction>(onNextAction);
@@ -78,21 +87,76 @@ export function MonacoSqlEditor({
     const lastDropdownRequestRef = useRef<number>(0);
     const lastInlineRequestRef = useRef<number>(0);
     const nextActionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const dropdownAbortRef = useRef<AbortController | null>(null);
+    const aiPendingCountRef = useRef<number>(0);
+    const aiConfigRef = useRef({
+        aiAutocompleteEnabled,
+        aiInlineSuggestions,
+        aiDropdownSuggestions,
+        aiNextActionSuggestions,
+        aiSuggestionMinChars,
+        aiSuggestionThrottleMs,
+        aiSuggestionContextWindowChars,
+        aiShowSuggestionLatency,
+    });
 
     const [nextActions, setNextActions] = useState<string[]>([]);
     const [nextActionsLoading, setNextActionsLoading] = useState(false);
+    const [liveAi, setLiveAi] = useState<{
+        mode: "idle" | "inline" | "dropdown";
+        latencyMs: number | null;
+        source: "cache" | "network" | "coalesced" | null;
+    }>({
+        mode: "idle",
+        latencyMs: null,
+        source: null,
+    });
+    const [aiRequestInFlight, setAiRequestInFlight] = useState(false);
+
+    const beginAiRequest = useCallback(() => {
+        aiPendingCountRef.current += 1;
+        setAiRequestInFlight(true);
+    }, []);
+
+    const endAiRequest = useCallback(() => {
+        aiPendingCountRef.current = Math.max(0, aiPendingCountRef.current - 1);
+        setAiRequestInFlight(aiPendingCountRef.current > 0);
+    }, []);
 
     // Keep refs current
     useEffect(() => { schemaContextRef.current = schemaContext; }, [schemaContext]);
+    useEffect(() => { disabledRef.current = !!disabled; }, [disabled]);
     useEffect(() => { onFetchColumnsRef.current = onFetchColumns; }, [onFetchColumns]);
     useEffect(() => { onFormatSqlRef.current = onFormatSql; }, [onFormatSql]);
     useEffect(() => { onNextActionRef.current = onNextAction; }, [onNextAction]);
+    useEffect(() => {
+        aiConfigRef.current = {
+            aiAutocompleteEnabled,
+            aiInlineSuggestions,
+            aiDropdownSuggestions,
+            aiNextActionSuggestions,
+            aiSuggestionMinChars,
+            aiSuggestionThrottleMs,
+            aiSuggestionContextWindowChars,
+            aiShowSuggestionLatency,
+        };
+    }, [
+        aiAutocompleteEnabled,
+        aiInlineSuggestions,
+        aiDropdownSuggestions,
+        aiNextActionSuggestions,
+        aiSuggestionMinChars,
+        aiSuggestionThrottleMs,
+        aiSuggestionContextWindowChars,
+        aiShowSuggestionLatency,
+    ]);
 
     // Dispose providers on unmount
     useEffect(() => {
         return () => {
             disposablesRef.current.forEach((d) => d.dispose());
             disposablesRef.current = [];
+            dropdownAbortRef.current?.abort();
         };
     }, []);
 
@@ -100,7 +164,7 @@ export function MonacoSqlEditor({
     useEffect(() => {
         if (nextActionTimerRef.current) clearTimeout(nextActionTimerRef.current);
 
-        if (!isSubstantialQuery(value)) {
+        if (!aiAutocompleteEnabled || !aiNextActionSuggestions || disabled || !isSubstantialQuery(value)) {
             setNextActions([]);
             return;
         }
@@ -116,12 +180,12 @@ export function MonacoSqlEditor({
             } finally {
                 setNextActionsLoading(false);
             }
-        }, 1800);
+        }, Math.max(800, aiSuggestionThrottleMs * 4));
 
         return () => {
             if (nextActionTimerRef.current) clearTimeout(nextActionTimerRef.current);
         };
-    }, [value]);
+    }, [value, aiAutocompleteEnabled, aiNextActionSuggestions, aiSuggestionThrottleMs, disabled]);
 
     const monacoTheme = resolvedTheme === "light" ? "helix-light" : "helix-dark";
 
@@ -303,19 +367,31 @@ export function MonacoSqlEditor({
                 },
             });
 
-            // ── AI dropdown completions (debounced, cached) ──────────────────────
+            // ── AI dropdown completions (throttled, cursor-aware, telemetry) ─────
             const aiDropdownProvider = monacoInstance.languages.registerCompletionItemProvider("sql", {
-                triggerCharacters: [" ", "\n"],
-                provideCompletionItems: (model, position) => {
+                triggerCharacters: [" ", "\n", "."],
+                provideCompletionItems: async (model, position, _ctx, token) => {
+                    const cfg = aiConfigRef.current;
+                    if (!cfg.aiAutocompleteEnabled || !cfg.aiDropdownSuggestions || disabledRef.current) {
+                        return { suggestions: [] };
+                    }
+
                     const now = Date.now();
-                    if (now - lastDropdownRequestRef.current < 500) {
+                    if (now - lastDropdownRequestRef.current < cfg.aiSuggestionThrottleMs) {
                         return { suggestions: [], incomplete: true };
                     }
                     lastDropdownRequestRef.current = now;
 
-                    const ctx = schemaContextRef.current;
-                    const sql = model.getValue();
-                    if (!sql.trim() || sql.trim().length < 4) return { suggestions: [] };
+                    const textUntilCursor = model.getValueInRange({
+                        startLineNumber: 1,
+                        startColumn: 1,
+                        endLineNumber: position.lineNumber,
+                        endColumn: position.column,
+                    });
+
+                    if (textUntilCursor.trim().length < cfg.aiSuggestionMinChars) {
+                        return { suggestions: [] };
+                    }
 
                     const wordInfo = model.getWordUntilPosition(position);
                     const range = {
@@ -325,33 +401,55 @@ export function MonacoSqlEditor({
                         endColumn: position.column,
                     };
 
-                    return new Promise((resolve) => {
-                        aiSuggestionEngine.getSuggestions(
-                            sql,
-                            ctx ?? { tables: [], columns: {} },
-                            (suggestions) => {
-                                resolve({
-                                    suggestions: suggestions.map((text, i) => ({
-                                        label: text,
-                                        kind: monacoInstance.languages.CompletionItemKind.Snippet,
-                                        insertText: text,
-                                        range,
-                                        sortText: String(i).padStart(3, "0"),
-                                        detail: "✦ Nova AI",
-                                        documentation: {
-                                            value: "**AI-powered** schema-aware SQL suggestion",
-                                        },
-                                    })),
-                                });
-                            }
-                        );
-                    });
+                    const ctx = schemaContextRef.current ?? { tables: [], columns: {} };
+                    dropdownAbortRef.current?.abort();
+                    const abortController = new AbortController();
+                    dropdownAbortRef.current = abortController;
+                    token?.onCancellationRequested?.(() => abortController.abort());
+
+                    beginAiRequest();
+                    try {
+                        const result = await aiSuggestionEngine.getDropdownSuggestions(textUntilCursor, ctx, {
+                            signal: abortController.signal,
+                            contextWindowChars: cfg.aiSuggestionContextWindowChars,
+                            maxSuggestions: 5,
+                        });
+
+                        if (token?.isCancellationRequested || abortController.signal.aborted) {
+                            return { suggestions: [] };
+                        }
+
+                        setLiveAi({
+                            mode: "dropdown",
+                            latencyMs: result.telemetry.latencyMs,
+                            source: result.telemetry.source,
+                        });
+
+                        return {
+                            suggestions: result.suggestions.map((text, i) => ({
+                                label: text,
+                                kind: monacoInstance.languages.CompletionItemKind.Snippet,
+                                insertText: text,
+                                range,
+                                sortText: String(i).padStart(3, "0"),
+                                detail: `✦ Nova AI (${result.telemetry.source})`,
+                                documentation: {
+                                    value: `**AI suggestion** • ${result.telemetry.latencyMs}ms`,
+                                },
+                            })),
+                        };
+                    } catch {
+                        return { suggestions: [] };
+                    } finally {
+                        if (dropdownAbortRef.current === abortController) {
+                            dropdownAbortRef.current = null;
+                        }
+                        endAiRequest();
+                    }
                 },
             });
 
-            // ── Inline ghost-text completions (Tab-to-accept) ────────────────────
-            // Throttle: at most one request every 700 ms so we don't fire on every
-            // keystroke.  The AbortController inside the engine cancels stale requests.
+            // ── Inline ghost-text completions (Cursor-style) ────────────────────
             // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const inlineProvider = (monacoInstance.languages as any).registerInlineCompletionsProvider?.("sql", {
                 provideInlineCompletions: async (
@@ -360,9 +458,15 @@ export function MonacoSqlEditor({
                     _context: unknown,
                     token: { isCancellationRequested: boolean; onCancellationRequested: (cb: () => void) => void }
                 ) => {
-                    // Throttle to avoid a request on every keystroke
+                    const cfg = aiConfigRef.current;
+                    if (!cfg.aiAutocompleteEnabled || !cfg.aiInlineSuggestions || disabledRef.current) {
+                        return { items: [] };
+                    }
+
                     const now = Date.now();
-                    if (now - lastInlineRequestRef.current < 700) return { items: [] };
+                    if (now - lastInlineRequestRef.current < cfg.aiSuggestionThrottleMs) {
+                        return { items: [] };
+                    }
                     lastInlineRequestRef.current = now;
 
                     const textUntilCursor = model.getValueInRange({
@@ -372,39 +476,52 @@ export function MonacoSqlEditor({
                         endColumn: position.column,
                     });
 
-                    if (textUntilCursor.trim().length < 8) return { items: [] };
+                    if (textUntilCursor.trim().length < cfg.aiSuggestionMinChars) {
+                        return { items: [] };
+                    }
 
                     const ctx = schemaContextRef.current ?? { tables: [], columns: {} };
                     const abortController = new AbortController();
                     token.onCancellationRequested(() => abortController.abort());
 
+                    beginAiRequest();
                     try {
-                        const completion = await aiSuggestionEngine.getInlineCompletion(
+                        const result = await aiSuggestionEngine.getInlineCompletionWithTelemetry(
                             textUntilCursor,
                             ctx,
-                            abortController.signal
+                            {
+                                signal: abortController.signal,
+                                contextWindowChars: cfg.aiSuggestionContextWindowChars,
+                            }
                         );
 
-                        if (!completion || token.isCancellationRequested) return { items: [] };
+                        if (!result.completion || token.isCancellationRequested || abortController.signal.aborted) {
+                            return { items: [] };
+                        }
 
-                        // Replace from cursor to end of current line so existing
-                        // partial tokens on the line are cleanly overwritten.
-                        const lineMaxCol = model.getLineMaxColumn(position.lineNumber);
+                        setLiveAi({
+                            mode: "inline",
+                            latencyMs: result.telemetry.latencyMs,
+                            source: result.telemetry.source,
+                        });
+
                         return {
                             items: [
                                 {
-                                    insertText: completion,
+                                    insertText: result.completion,
                                     range: {
                                         startLineNumber: position.lineNumber,
                                         startColumn: position.column,
                                         endLineNumber: position.lineNumber,
-                                        endColumn: lineMaxCol,
+                                        endColumn: position.column,
                                     },
                                 },
                             ],
                         };
                     } catch {
                         return { items: [] };
+                    } finally {
+                        endAiRequest();
                     }
                 },
                 freeInlineCompletions: () => {},
@@ -413,7 +530,7 @@ export function MonacoSqlEditor({
             disposablesRef.current.push(schemaProvider, aiDropdownProvider);
             if (inlineProvider) disposablesRef.current.push(inlineProvider);
         },
-        []
+        [beginAiRequest, endAiRequest]
     );
 
     const handleEditorDidMount = useCallback(
@@ -438,6 +555,24 @@ export function MonacoSqlEditor({
                 run: () => {
                     const current = editorInstance.getValue();
                     onFormatSqlRef.current?.(current);
+                },
+            });
+
+            editorInstance.addAction({
+                id: "accept-next-ai-word",
+                label: "Accept Next AI Word",
+                keybindings: [monacoInstance.KeyMod.Alt | monacoInstance.KeyCode.RightArrow],
+                run: () => {
+                    editorInstance.trigger("keyboard", "editor.action.inlineSuggest.acceptNextWord", {});
+                },
+            });
+
+            editorInstance.addAction({
+                id: "trigger-ai-inline-suggestion",
+                label: "Trigger AI Inline Suggestion",
+                keybindings: [monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.Period],
+                run: () => {
+                    editorInstance.trigger("keyboard", "editor.action.inlineSuggest.trigger", {});
                 },
             });
 
@@ -490,19 +625,47 @@ export function MonacoSqlEditor({
                             comments: false,
                             strings: false,
                         },
+                        quickSuggestionsDelay: Math.min(240, Math.max(20, Math.round(aiSuggestionThrottleMs / 2))),
                         suggestOnTriggerCharacters: true,
                         acceptSuggestionOnEnter: "smart",
                         // Enable inline ghost-text (Copilot-style Tab-to-accept)
                         inlineSuggest: {
-                            enabled: true,
+                            enabled: aiAutocompleteEnabled && aiInlineSuggestions && !disabled,
                             mode: "prefix",
+                            suppressSuggestions: false,
                         },
                     }}
                 />
+
+                {aiAutocompleteEnabled && aiShowSuggestionLatency && !disabled && (
+                    <div className="pointer-events-none absolute left-2 top-2 z-20">
+                        <div
+                            className={cn(
+                                "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] font-medium",
+                                "bg-background/80 backdrop-blur border-border/40 text-muted-foreground"
+                            )}
+                        >
+                            {aiRequestInFlight ? (
+                                <Loader2 className="h-3 w-3 animate-spin text-emerald-400" />
+                            ) : (
+                                <Zap className="h-3 w-3 text-amber-400/80" />
+                            )}
+                            <span>AI {liveAi.mode === "idle" ? "ready" : liveAi.mode}</span>
+                            {liveAi.latencyMs != null && (
+                                <span className="font-mono text-foreground/80">{liveAi.latencyMs}ms</span>
+                            )}
+                            {liveAi.source && (
+                                <span className="uppercase tracking-wide text-[9px] text-muted-foreground/70">
+                                    {liveAi.source}
+                                </span>
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* ── Next-action suggestions bar ──────────────────────────────────── */}
-            {(nextActions.length > 0 || nextActionsLoading) && !disabled && (
+            {(nextActions.length > 0 || nextActionsLoading) && !disabled && aiAutocompleteEnabled && aiNextActionSuggestions && (
                 <div className="flex items-center gap-1.5 px-2 py-1.5 border border-t-0 border-border/30 bg-muted/20 rounded-b overflow-x-auto">
                     <div className="flex items-center gap-1 shrink-0 text-[10px] text-muted-foreground/50 font-medium">
                         {nextActionsLoading ? (

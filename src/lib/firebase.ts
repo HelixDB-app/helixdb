@@ -16,6 +16,7 @@ export function getFirebaseConfig() {
     apiKey,
     authDomain: process.env.NEXT_PUBLIC_FIREBASE_AUTH_DOMAIN || undefined,
     projectId,
+    databaseURL: process.env.NEXT_PUBLIC_FIREBASE_DATABASE_URL || undefined,
     storageBucket: process.env.NEXT_PUBLIC_FIREBASE_STORAGE_BUCKET || undefined,
     messagingSenderId:
       process.env.NEXT_PUBLIC_FIREBASE_MESSAGING_SENDER_ID || undefined,

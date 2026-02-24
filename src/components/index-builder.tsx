@@ -8,14 +8,19 @@ import {
     dbCreateIndex,
     dbDropIndex,
     dbGetIndexBuildProgress,
+    dbGetTableQuerySamples,
 } from "@/lib/tauri";
 import { dbExecuteQuery, dbGetColumns, dbListTables } from "@/lib/tauri";
+import { getIndexSuggestions } from "@/lib/index-optimization-engine";
+import type { IndexSuggestion } from "@/lib/index-optimization-engine";
+import { GEMINI_MODELS, type GeminiModelId } from "@/lib/ai-chat-engine";
 import type {
     IndexStats,
     IndexImpactQuery,
     IndexBuildProgress,
     TableInfo,
     ColumnInfo,
+    CreateIndexRequest,
 } from "@/lib/types";
 import {
     ResizableHandle,
@@ -27,6 +32,7 @@ import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import {
     AlertTriangle,
+    Bot,
     CheckCircle2,
     ChevronDown,
     Copy,
@@ -38,6 +44,7 @@ import {
     RefreshCw,
     Search,
     Shield,
+    Sparkles,
     Trash2,
     TrendingDown,
     Zap,
@@ -151,6 +158,7 @@ interface LeftPanelProps {
     onSchemaChange: (s: string) => void;
     indexes: IndexStats[];
     loading: boolean;
+    loadError: string | null;
     onRefresh: () => void;
     onLoadIntoDesigner: (idx: IndexStats) => void;
     onDrop: (idx: IndexStats) => void;
@@ -165,6 +173,7 @@ function LeftPanel({
     onSchemaChange,
     indexes,
     loading,
+    loadError,
     onRefresh,
     onLoadIntoDesigner,
     onDrop,
@@ -246,6 +255,14 @@ function LeftPanel({
                 {loading ? (
                     <div className="flex items-center justify-center h-20">
                         <Loader2 className="h-4 w-4 animate-spin text-muted-foreground/40" />
+                    </div>
+                ) : loadError ? (
+                    <div className="flex flex-col items-center justify-center h-24 px-3 text-center gap-2">
+                        <AlertTriangle className="h-5 w-5 text-amber-400" />
+                        <span className="text-xs text-muted-foreground/80">{loadError}</span>
+                        <Button variant="outline" size="sm" className="h-7 text-xs" onClick={onRefresh}>
+                            <RefreshCw className="h-3 w-3 mr-1" /> Retry
+                        </Button>
                     </div>
                 ) : Object.keys(grouped).length === 0 ? (
                     <div className="flex flex-col items-center justify-center h-24 text-muted-foreground/40 gap-1">
@@ -689,6 +706,199 @@ function CenterPanel({
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
+// AI Optimize Panel — table-wise index suggestions
+// ──────────────────────────────────────────────────────────────────────────────
+
+interface AIOptimizePanelProps {
+    schema: string;
+    tables: TableInfo[];
+    connectionId: string | null;
+    indexes: IndexStats[];
+    selectedModel: GeminiModelId;
+    onModelChange: (m: GeminiModelId) => void;
+    onUseInDesigner: (table: string, suggestion: IndexSuggestion) => void;
+    onCreateFromSuggestion: (table: string, suggestion: IndexSuggestion) => void;
+    createLoading: boolean;
+}
+
+function AIOptimizePanel({
+    schema,
+    tables,
+    connectionId,
+    indexes,
+    selectedModel,
+    onModelChange,
+    onUseInDesigner,
+    onCreateFromSuggestion,
+    createLoading,
+}: AIOptimizePanelProps) {
+    const [selectedTable, setSelectedTable] = useState("");
+    const [suggestions, setSuggestions] = useState<IndexSuggestion[]>([]);
+    const [loading, setLoading] = useState(false);
+    const [error, setError] = useState<string | null>(null);
+
+    const analyze = async () => {
+        if (!connectionId || !selectedTable) return;
+        setLoading(true);
+        setError(null);
+        setSuggestions([]);
+        try {
+            const [columns, querySamples] = await Promise.all([
+                dbGetColumns(connectionId, schema, selectedTable),
+                dbGetTableQuerySamples(connectionId, schema, selectedTable).catch(() => []),
+            ]);
+            const existingForTable = indexes.filter((i) => i.table_name === selectedTable);
+            const list = await getIndexSuggestions(
+                schema,
+                selectedTable,
+                columns,
+                existingForTable,
+                querySamples,
+                { model: selectedModel }
+            );
+            setSuggestions(list);
+        } catch (e) {
+            setError(e instanceof Error ? e.message : String(e));
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleCreate = (suggestion: IndexSuggestion) => {
+        onCreateFromSuggestion(selectedTable, suggestion);
+    };
+
+    const suggestionSql = (s: IndexSuggestion) =>
+        buildCreateSQL({
+            schema,
+            table: selectedTable,
+            indexName: s.index_name || generateIndexName(selectedTable, s.columns),
+            columns: s.columns,
+            indexType: (s.index_type || "BTREE") as IndexTypeName,
+            isUnique: s.is_unique,
+            whereClause: s.where_clause || "",
+        });
+
+    const priorityColor = (p: string) =>
+        p === "high" ? "bg-emerald-500/20 text-emerald-400 border-emerald-500/40" : p === "low" ? "bg-muted/30 text-muted-foreground border-border/30" : "bg-amber-500/10 text-amber-400 border-amber-500/30";
+
+    return (
+        <div className="flex h-full flex-col bg-card/5 overflow-y-auto">
+            <div className="shrink-0 border-b border-border/20 px-3 py-2.5">
+                <div className="flex items-center gap-1.5">
+                    <Sparkles className="h-3.5 w-3.5 text-amber-400/80" />
+                    <span className="text-xs font-semibold text-foreground/80">AI Index Optimize</span>
+                </div>
+            </div>
+            <div className="flex-1 p-3 space-y-4">
+                <div className="space-y-1.5">
+                    <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">Table</label>
+                    <select
+                        value={selectedTable}
+                        onChange={(e) => { setSelectedTable(e.target.value); setSuggestions([]); setError(null); }}
+                        className="w-full appearance-none rounded bg-muted/30 border border-border/30 px-2.5 py-1.5 pr-7 text-xs text-foreground focus:outline-none focus:border-emerald-500/50"
+                    >
+                        <option value="">Select a table…</option>
+                        {tables.map((t) => (
+                            <option key={t.name} value={t.name}>{t.name}</option>
+                        ))}
+                    </select>
+                </div>
+                <div className="space-y-1.5">
+                    <label className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">AI Model</label>
+                    <div className="relative">
+                        <select
+                            value={selectedModel}
+                            onChange={(e) => onModelChange(e.target.value as GeminiModelId)}
+                            className="w-full appearance-none rounded bg-muted/30 border border-border/30 px-2.5 py-1.5 pr-7 text-xs text-foreground focus:outline-none focus:border-emerald-500/50"
+                        >
+                            {Object.values(GEMINI_MODELS).map((m) => (
+                                <option key={m.id} value={m.id}>{m.displayName}</option>
+                            ))}
+                        </select>
+                        <ChevronDown className="pointer-events-none absolute right-2 top-1/2 h-3 w-3 -translate-y-1/2 text-muted-foreground/50" />
+                    </div>
+                </div>
+                <Button
+                    size="sm"
+                    className="w-full h-8 text-xs bg-amber-600 hover:bg-amber-500 text-white"
+                    disabled={!selectedTable || loading}
+                    onClick={analyze}
+                >
+                    {loading ? (
+                        <><Loader2 className="h-3 w-3 mr-1.5 animate-spin" />Analyzing…</>
+                    ) : (
+                        <><Bot className="h-3 w-3 mr-1.5" />Analyze with AI</>
+                    )}
+                </Button>
+                {error && (
+                    <div className="rounded border border-red-500/30 bg-red-500/10 px-2.5 py-2 text-xs text-red-400">
+                        {error}
+                    </div>
+                )}
+                {suggestions.length > 0 && (
+                    <div className="space-y-2">
+                        <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/50">
+                            Suggestions ({suggestions.length})
+                        </span>
+                        <div className="space-y-3">
+                            {suggestions.map((s, i) => (
+                                <div
+                                    key={i}
+                                    className="rounded-lg border border-border/20 bg-muted/5 p-3 space-y-2"
+                                >
+                                    <div className="flex items-center gap-2 flex-wrap">
+                                        <Badge className={cn("text-[9px] uppercase", priorityColor(s.priority))}>
+                                            {s.priority}
+                                        </Badge>
+                                        <span className="font-mono text-[10px] text-muted-foreground/70">
+                                            ({s.columns.join(", ")})
+                                        </span>
+                                    </div>
+                                    <p className="text-[11px] text-foreground/80 leading-relaxed">{s.explanation}</p>
+                                    <pre className="rounded bg-background/50 border border-border/10 px-2 py-1.5 font-mono text-[10px] text-emerald-300/90 whitespace-pre-wrap break-all">
+                                        {suggestionSql(s)}
+                                    </pre>
+                                    <div className="flex gap-1.5">
+                                        <Button
+                                            size="sm"
+                                            variant="outline"
+                                            className="h-6 text-[10px] border-border/30"
+                                            onClick={() => onUseInDesigner(selectedTable, s)}
+                                        >
+                                            <Copy className="h-2.5 w-2.5 mr-1" /> Use in Designer
+                                        </Button>
+                                        <Button
+                                            size="sm"
+                                            className="h-6 text-[10px] bg-emerald-600 hover:bg-emerald-500"
+                                            disabled={createLoading}
+                                            onClick={() => handleCreate(s)}
+                                        >
+                                            {createLoading ? (
+                                                <Loader2 className="h-2.5 w-2.5 mr-1 animate-spin" />
+                                            ) : (
+                                                <Zap className="h-2.5 w-2.5 mr-1" />
+                                            )}
+                                            Create Index
+                                        </Button>
+                                    </div>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+                {!loading && suggestions.length === 0 && selectedTable && !error && (
+                    <div className="flex flex-col items-center justify-center py-8 text-muted-foreground/50 gap-2">
+                        <Sparkles className="h-8 w-8 opacity-40" />
+                        <span className="text-xs">Select a table and click Analyze with AI</span>
+                    </div>
+                )}
+            </div>
+        </div>
+    );
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
 // Right Panel — Impact Preview + Build Monitor
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -1026,6 +1236,7 @@ export function IndexBuilder() {
 
     const [indexes, setIndexes] = useState<IndexStats[]>([]);
     const [indexesLoading, setIndexesLoading] = useState(false);
+    const [indexesLoadError, setIndexesLoadError] = useState<string | null>(null);
     const [searchQuery, setSearchQuery] = useState("");
     const [droppingIndex, setDroppingIndex] = useState<string | null>(null);
     const [dropConfirm, setDropConfirm] = useState<IndexStats | null>(null);
@@ -1048,6 +1259,8 @@ export function IndexBuilder() {
     const [createLoading, setCreateLoading] = useState(false);
     const [hasStatStatements, setHasStatStatements] = useState(true);
     const [generatedSQL, setGeneratedSQL] = useState("");
+    const [centerMode, setCenterMode] = useState<"designer" | "ai">("designer");
+    const [aiModel, setAiModel] = useState<GeminiModelId>("gemini-2.5-flash");
 
     const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
@@ -1059,18 +1272,42 @@ export function IndexBuilder() {
             .catch(() => setTables([]));
     }, [connectionId, activeSchema]);
 
-    // Load indexes for the active schema (only when connected)
+    // Load indexes for the active schema. One in-flight load; request id ignores stale responses.
+    const loadIndexesRequestId = useRef(0);
     const loadIndexes = useCallback(() => {
         if (!connectionId) {
             setIndexesLoading(false);
             setIndexes([]);
+            setIndexesLoadError(null);
             return;
         }
+        const requestId = ++loadIndexesRequestId.current;
         setIndexesLoading(true);
-        dbGetIndexes(connectionId, activeSchema)
-            .then(setIndexes)
-            .catch(() => setIndexes([]))
-            .finally(() => setIndexesLoading(false));
+        setIndexesLoadError(null);
+        const timeoutMs = 22_000; // Slightly above backend 20s so backend timeout wins
+        const timeoutPromise = new Promise<IndexStats[]>((_, reject) =>
+            setTimeout(() => reject(new Error("Loading indexes timed out")), timeoutMs)
+        );
+        Promise.race([
+            dbGetIndexes(connectionId, activeSchema),
+            timeoutPromise,
+        ])
+            .then((data) => {
+                if (requestId === loadIndexesRequestId.current) {
+                    setIndexes(data);
+                    setIndexesLoadError(null);
+                }
+            })
+            .catch((err: unknown) => {
+                if (requestId === loadIndexesRequestId.current) {
+                    setIndexes([]);
+                    const msg = typeof err === "string" ? err : err instanceof Error ? err.message : "Failed to load indexes";
+                    setIndexesLoadError(msg);
+                }
+            })
+            .finally(() => {
+                if (requestId === loadIndexesRequestId.current) setIndexesLoading(false);
+            });
     }, [connectionId, activeSchema]);
 
     useEffect(() => {
@@ -1079,6 +1316,7 @@ export function IndexBuilder() {
         } else {
             setIndexesLoading(false);
             setIndexes([]);
+            setIndexesLoadError(null);
         }
     }, [connectionId, loadIndexes]);
 
@@ -1169,71 +1407,77 @@ export function IndexBuilder() {
         }
     };
 
-    const handleCreateIndex = async () => {
-        if (!connectionId || !designer.selectedTable || designer.selectedColumns.length === 0) return;
-
-        const autoName = generateIndexName(designer.selectedTable, designer.selectedColumns);
-        const indexName = designer.customName || autoName;
-
+    const runCreateIndex = async (request: CreateIndexRequest) => {
+        if (!connectionId) return;
+        const indexName = request.index_name || generateIndexName(request.table_name, request.columns);
         setCreateLoading(true);
-
-        // Capture before-time for impact measurement
         let beforeMs = 0;
-        if (rightPanel.mode === "impact" && rightPanel.queries.length > 0) {
-            beforeMs = rightPanel.queries[0].mean_exec_time_ms;
-        }
-
+        if (rightPanel.mode === "impact" && rightPanel.queries.length > 0) beforeMs = rightPanel.queries[0].mean_exec_time_ms;
         try {
-            const sql = await dbCreateIndex(connectionId, {
-                schema: activeSchema,
-                table_name: designer.selectedTable,
-                index_name: designer.customName || null,
-                columns: designer.selectedColumns,
-                index_type: designer.indexType,
-                is_unique: designer.isUnique,
-                where_clause: designer.whereClause || null,
-            });
-
-            setRightPanel({
-                mode: "building",
-                indexName,
-                progress: null,
-                sql,
-            });
-
-            // Poll for build progress
+            const sql = await dbCreateIndex(connectionId, request);
+            setRightPanel({ mode: "building", indexName, progress: null, sql });
             pollRef.current = setInterval(async () => {
                 try {
                     const progress = await dbGetIndexBuildProgress(connectionId, indexName);
                     if (progress === null) {
-                        // Build complete — index no longer in pg_stat_progress_create_index
                         clearInterval(pollRef.current!);
                         pollRef.current = null;
                         loadIndexes();
-                        setRightPanel({
-                            mode: "done",
-                            indexName,
-                            beforeMs,
-                            afterMs: beforeMs > 0 ? beforeMs * 0.05 : 0,
-                        });
+                        setRightPanel({ mode: "done", indexName, beforeMs, afterMs: beforeMs > 0 ? beforeMs * 0.05 : 0 });
                     } else {
-                        setRightPanel((prev) =>
-                            prev.mode === "building"
-                                ? { ...prev, progress }
-                                : prev
-                        );
+                        setRightPanel((prev) => (prev.mode === "building" ? { ...prev, progress } : prev));
                     }
                 } catch {
-                    // Ignore polling errors
+                    /* ignore */
                 }
             }, 2000);
         } catch (err: unknown) {
-            const message = err instanceof Error ? err.message : String(err);
-            console.error("Create index failed:", message);
+            console.error("Create index failed:", err instanceof Error ? err.message : err);
             setRightPanel({ mode: "idle" });
         } finally {
             setCreateLoading(false);
         }
+    };
+
+    const handleCreateIndex = async () => {
+        if (!connectionId || !designer.selectedTable || designer.selectedColumns.length === 0) return;
+        await runCreateIndex({
+            schema: activeSchema,
+            table_name: designer.selectedTable,
+            index_name: designer.customName || null,
+            columns: designer.selectedColumns,
+            index_type: designer.indexType,
+            is_unique: designer.isUnique,
+            where_clause: designer.whereClause || null,
+        });
+    };
+
+    const handleCreateFromSuggestion = (table: string, s: IndexSuggestion) => {
+        if (!connectionId) return;
+        const indexType = (s.index_type || "BTREE").toUpperCase();
+        if (!["BTREE", "HASH", "GIN", "GIST", "BRIN", "SPGIST"].includes(indexType)) return;
+        runCreateIndex({
+            schema: activeSchema,
+            table_name: table,
+            index_name: s.index_name || null,
+            columns: s.columns,
+            index_type: indexType,
+            is_unique: s.is_unique,
+            where_clause: s.where_clause || null,
+        });
+    };
+
+    const handleUseInDesigner = (table: string, s: IndexSuggestion) => {
+        handleTableChange(table);
+        setDesigner({
+            selectedTable: table,
+            selectedColumns: s.columns,
+            indexType: (s.index_type || "BTREE").toUpperCase() as IndexTypeName,
+            isUnique: s.is_unique,
+            whereClause: s.where_clause || "",
+            customName: s.index_name || "",
+        });
+        setCenterMode("designer");
     };
 
     // Cleanup poll on unmount
@@ -1294,6 +1538,7 @@ export function IndexBuilder() {
                         onSchemaChange={handleSchemaChange}
                         indexes={indexes}
                         loading={indexesLoading}
+                        loadError={indexesLoadError}
                         onRefresh={loadIndexes}
                         onLoadIntoDesigner={handleLoadIntoDesigner}
                         onDrop={(idx) => setDropConfirm(idx)}
@@ -1305,33 +1550,77 @@ export function IndexBuilder() {
 
                 <ResizableHandle className="w-px bg-border/20 hover:bg-emerald-500/40 transition-colors data-[resize-handle-active]:bg-emerald-500/60" />
 
-                {/* Center: designer */}
+                {/* Center: designer or AI Optimize */}
                 <ResizablePanel defaultSize={38} minSize={28}>
-                    <CenterPanel
-                        tables={tables}
-                        columns={columns}
-                        loadingColumns={loadingColumns}
-                        designer={designer}
-                        onDesignerChange={handleDesignerChange}
-                        onTableChange={handleTableChange}
-                        onPreviewImpact={handlePreviewImpact}
-                        onGenerateSQL={() => setGeneratedSQL(
-                            buildCreateSQL({
-                                schema: activeSchema,
-                                table: designer.selectedTable,
-                                indexName: designer.customName || generateIndexName(designer.selectedTable, designer.selectedColumns),
-                                columns: designer.selectedColumns,
-                                indexType: designer.indexType,
-                                isUnique: designer.isUnique,
-                                whereClause: designer.whereClause,
-                            })
-                        )}
-                        onCreateIndex={handleCreateIndex}
-                        previewLoading={previewLoading}
-                        createLoading={createLoading}
-                        generatedSQL={generatedSQL}
-                        schema={activeSchema}
-                    />
+                    <div className="flex h-full flex-col">
+                        <div className="shrink-0 flex border-b border-border/20">
+                            <button
+                                type="button"
+                                onClick={() => setCenterMode("designer")}
+                                className={cn(
+                                    "flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors",
+                                    centerMode === "designer"
+                                        ? "text-emerald-400 border-b-2 border-emerald-500 bg-card/20"
+                                        : "text-muted-foreground hover:text-foreground"
+                                )}
+                            >
+                                <Plus className="h-3.5 w-3.5" /> Index Designer
+                            </button>
+                            <button
+                                type="button"
+                                onClick={() => setCenterMode("ai")}
+                                className={cn(
+                                    "flex items-center gap-1.5 px-3 py-2 text-xs font-medium transition-colors",
+                                    centerMode === "ai"
+                                        ? "text-amber-400 border-b-2 border-amber-500 bg-card/20"
+                                        : "text-muted-foreground hover:text-foreground"
+                                )}
+                            >
+                                <Sparkles className="h-3.5 w-3.5" /> AI Optimize
+                            </button>
+                        </div>
+                        <div className="flex-1 min-h-0">
+                            {centerMode === "designer" ? (
+                                <CenterPanel
+                                    tables={tables}
+                                    columns={columns}
+                                    loadingColumns={loadingColumns}
+                                    designer={designer}
+                                    onDesignerChange={handleDesignerChange}
+                                    onTableChange={handleTableChange}
+                                    onPreviewImpact={handlePreviewImpact}
+                                    onGenerateSQL={() => setGeneratedSQL(
+                                        buildCreateSQL({
+                                            schema: activeSchema,
+                                            table: designer.selectedTable,
+                                            indexName: designer.customName || generateIndexName(designer.selectedTable, designer.selectedColumns),
+                                            columns: designer.selectedColumns,
+                                            indexType: designer.indexType,
+                                            isUnique: designer.isUnique,
+                                            whereClause: designer.whereClause,
+                                        })
+                                    )}
+                                    onCreateIndex={handleCreateIndex}
+                                    previewLoading={previewLoading}
+                                    createLoading={createLoading}
+                                    generatedSQL={generatedSQL}
+                                    schema={activeSchema}
+                                />
+                            ) : (
+                                <AIOptimizePanel
+                                    schema={activeSchema}
+                                    tables={tables}
+                                    connectionId={connectionId}
+                                    indexes={indexes}
+                                    selectedModel={aiModel}
+                                    onModelChange={setAiModel}
+                                    onUseInDesigner={handleUseInDesigner}
+                                    onCreateFromSuggestion={handleCreateFromSuggestion}
+                                    createLoading={createLoading}
+                                />
+                            )}
+                        </div>
+                    </div>
                 </ResizablePanel>
 
                 <ResizableHandle className="w-px bg-border/20 hover:bg-emerald-500/40 transition-colors data-[resize-handle-active]:bg-emerald-500/60" />

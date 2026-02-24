@@ -41,6 +41,14 @@ export interface AppSettings {
     // AI
     geminiApiKey: string;
     defaultAiModel: GeminiModelId;
+    aiAutocompleteEnabled: boolean;
+    aiInlineSuggestions: boolean;
+    aiDropdownSuggestions: boolean;
+    aiNextActionSuggestions: boolean;
+    aiSuggestionMinChars: number;
+    aiSuggestionThrottleMs: number;
+    aiSuggestionContextWindowChars: number;
+    aiShowSuggestionLatency: boolean;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -63,6 +71,14 @@ const DEFAULT_SETTINGS: AppSettings = {
     notificationsEnabled: true,
     geminiApiKey: "AIzaSyCtgJ0ORZ-Bd7tnFoqYK4IHUIHpMExqgKM",
     defaultAiModel: "gemini-2.5-flash",
+    aiAutocompleteEnabled: true,
+    aiInlineSuggestions: true,
+    aiDropdownSuggestions: true,
+    aiNextActionSuggestions: true,
+    aiSuggestionMinChars: 8,
+    aiSuggestionThrottleMs: 220,
+    aiSuggestionContextWindowChars: 1200,
+    aiShowSuggestionLatency: true,
 };
 
 interface SettingsStore extends AppSettings {
