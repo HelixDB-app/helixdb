@@ -636,7 +636,7 @@ export function MonacoSqlEditor({
                         },
                     }}
                 />
-
+{/* 
                 {aiAutocompleteEnabled && aiShowSuggestionLatency && !disabled && (
                     <div className="pointer-events-none absolute left-2 top-2 z-20">
                         <div
@@ -661,7 +661,7 @@ export function MonacoSqlEditor({
                             )}
                         </div>
                     </div>
-                )}
+                )} */}
             </div>
 
             {/* ── Next-action suggestions bar ──────────────────────────────────── */}

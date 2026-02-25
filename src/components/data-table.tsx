@@ -1139,7 +1139,18 @@ export function DataTable() {
                                         </TableRow>
                                     </TableHeader>
                                     <TableBody>
-                                        {displayRows.map((row, rowIdx) => {
+                                        {displayRows.length === 0 ? (
+                                            <TableRow className="hover:bg-transparent">
+                                                <TableCell
+                                                    colSpan={(result?.columns?.length ?? 0) + (canEditDelete ? 2 : 1)}
+                                                    className="text-center py-12 text-muted-foreground/60"
+                                                >
+                                                    <p className="text-sm font-medium">Empty table</p>
+                                                    <p className="text-xs mt-1 text-muted-foreground/40">This table has no rows</p>
+                                                </TableCell>
+                                            </TableRow>
+                                        ) : (
+                                        displayRows.map((row, rowIdx) => {
                                             const rowKey = getRowKey(row, result.columns, pkColumnNames);
                                             const isSelected = selectedRowKeys.has(rowKey);
                                             const isRowEditing = canEditDelete && editingCell?.rowKey === rowKey;
@@ -1353,7 +1364,8 @@ export function DataTable() {
                                                 </ContextMenuContent>
                                                 </ContextMenu>
                                             );
-                                        })}
+                                        })
+                                        )}
                                     </TableBody>
                                 </Table>
 

@@ -13,6 +13,7 @@ import { NotesPanel } from "@/components/notes-panel";
 import { QueryPlanViewer } from "@/components/query-plan-viewer";
 import { SandboxDiffViewer } from "@/components/sandbox-diff-viewer";
 import { DataCanvas } from "@/components/data-canvas";
+import { VirtualizedQueryResultTable } from "@/components/virtualized-query-result-table";
 import { format as formatSQL } from "sql-formatter";
 import { MonacoSqlEditor } from "@/components/monaco-sql-editor";
 import { aiSuggestionEngine } from "@/lib/ai-suggestions";
@@ -27,14 +28,6 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
-import {
-    Table,
-    TableBody,
-    TableCell,
-    TableHead,
-    TableHeader,
-    TableRow,
-} from "@/components/ui/table";
 import {
     Tooltip,
     TooltipContent,
@@ -76,7 +69,12 @@ import {
     LayoutDashboard,
     StickyNote,
     Save,
+    Maximize2,
+    Minimize2,
+    Sparkles,
 } from "lucide-react";
+import { explainQueryErrorWithAI } from "@/lib/query-error-ai";
+import { AIError } from "@/lib/ai-chat-engine";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
@@ -99,18 +97,30 @@ function isCommandResult(result: QueryResult): boolean {
     );
 }
 
+/** True when backend ran multiple statements (DDL script); column name "statements". */
+function isMultiStatementResult(result: QueryResult): boolean {
+    return (
+        result.columns.length === 1 &&
+        result.columns[0].name === "statements" &&
+        result.rows.length === 1
+    );
+}
+
 /** Display count: for command results use the cell value; for SELECT use row_count. */
 function getDisplayCount(result: QueryResult): number {
-    if (isCommandResult(result)) {
+    if (isCommandResult(result) || isMultiStatementResult(result)) {
         const cell = result.rows[0]?.[0];
         if (cell && "value" in cell && typeof cell.value === "number") return cell.value;
     }
     return result.row_count;
 }
 
-/** Human-readable row summary: "2 rows affected" vs "3 rows returned". */
+/** Human-readable row summary: "2 rows affected" vs "3 rows returned" vs "4 statements executed". */
 function getRowCountLabel(result: QueryResult): string {
     const n = getDisplayCount(result);
+    if (isMultiStatementResult(result)) {
+        return n === 1 ? "1 statement executed" : `${n} statements executed`;
+    }
     const affected = isCommandResult(result);
     if (n === 1) return affected ? "1 row affected" : "1 row returned";
     return affected ? `${n.toLocaleString()} rows affected` : `${n.toLocaleString()} rows returned`;
@@ -159,18 +169,47 @@ function downloadBlob(content: string, filename: string, mimeType: string) {
 
 // ── Error panel ────────────────────────────────────────────────────────────
 
+/** Extract quoted or parenthesized name from messages like: function "foo"(date) or function foo(integer) */
+function extractObjectName(raw: string, prefix: string): string | null {
+    const lower = raw.toLowerCase();
+    const i = lower.indexOf(prefix);
+    if (i === -1) return null;
+    const after = raw.slice(i + prefix.length).trim();
+    const match = after.match(/^["']?([a-z_][a-z0-9_]*)/i) || after.match(/^([a-z_][a-z0-9_]*)\s*\(/i);
+    return match ? match[1] : null;
+}
+
 function explainQueryError(raw: string): { summary: string; fix: string } | null {
     const lower = raw.toLowerCase();
-    if (lower.includes("does not exist") || (lower.includes("relation") && lower.includes("does not exist"))) {
+    // Function missing (check before generic "does not exist")
+    if (lower.includes("function") && (lower.includes("does not exist") || lower.includes("no function matches"))) {
+        const name = extractObjectName(raw, "function");
+        const withName = name ? ` The function \`${name}\` is not defined or has different argument types.` : "";
+        let fix = "Create the function with CREATE FUNCTION, fix the name/schema, or call an existing overload.";
+        if (lower.includes("argument type") || lower.includes("type cast") || lower.includes("explicit type")) {
+            fix = "No function matches the name and argument types. Create the function with the right signature, or add explicit casts (e.g. mycol::date).";
+        }
         return {
-            summary: "The table or object you're referring to doesn't exist in this database.",
-            fix: "Check the table name (and schema, e.g. public.mytable). Use CREATE TABLE, or fix the typo.",
+            summary: `A function you're calling doesn't exist in this database.${withName}`,
+            fix,
         };
     }
     if (lower.includes("column") && (lower.includes("does not exist") || lower.includes("undefined"))) {
         return {
-            summary: "A column name in your query doesn't exist on the table.",
+            summary: "A column in your query doesn't exist on the table.",
             fix: "Check spelling and that the column exists. Use the correct column names from the table definition.",
+        };
+    }
+    if (lower.includes("relation") && lower.includes("does not exist") || (lower.includes("does not exist") && !lower.includes("schema"))) {
+        return {
+            summary: "The table or view you're referring to doesn't exist.",
+            fix: "Check the table name and schema (e.g. public.mytable). Use CREATE TABLE or fix the typo.",
+        };
+    }
+    if (lower.includes("schema") && lower.includes("does not exist")) {
+        return {
+            summary: "The schema doesn't exist.",
+            fix: "Check the schema name (e.g. public). Use CREATE SCHEMA or fix the typo.",
         };
     }
     if (lower.includes("syntax error") || lower.includes("parse error")) {
@@ -205,72 +244,149 @@ function explainQueryError(raw: string): { summary: string; fix: string } | null
     }
     if (lower.includes("connection") || lower.includes("pool")) {
         return {
-            summary: "The app lost the connection to the database.",
+            summary: "The connection to the database was lost.",
             fix: "Check your network and DB server. Try reconnecting.",
         };
     }
     return null;
 }
 
-function QueryErrorPanel({ message }: { message: string }) {
+interface QueryErrorPanelProps {
+    message: string;
+    sql?: string;
+    schemaContextForAi?: string;
+}
+
+function QueryErrorPanel({ message, sql, schemaContextForAi }: QueryErrorPanelProps) {
     const [copied, setCopied] = useState(false);
+    const [showTechnical, setShowTechnical] = useState(false);
+    const [aiExplanation, setAiExplanation] = useState<string | null>(null);
+    const [aiLoading, setAiLoading] = useState(false);
+    const [aiError, setAiError] = useState<string | null>(null);
     const explanation = explainQueryError(message);
+    const shortMessage = message.split(/\n/)[0]?.trim() || message;
+    const canUseAi = Boolean(sql?.trim() && schemaContextForAi?.trim());
+
+    const handleAiExplain = useCallback(async () => {
+        if (!sql?.trim() || !schemaContextForAi?.trim()) return;
+        setAiLoading(true);
+        setAiError(null);
+        setAiExplanation(null);
+        try {
+            const result = await explainQueryErrorWithAI(sql, message, schemaContextForAi);
+            setAiExplanation(result);
+        } catch (err) {
+            const msg = err instanceof AIError ? err.userMessage : err instanceof Error ? err.message : "Could not get AI explanation.";
+            setAiError(msg);
+        } finally {
+            setAiLoading(false);
+        }
+    }, [sql, message, schemaContextForAi]);
 
     return (
         <div className="flex flex-col h-full overflow-hidden">
             <div className="p-4 space-y-3">
                 <div className="rounded-xl border border-destructive/30 bg-destructive/5 overflow-hidden">
                     <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-destructive/10">
-                        <div className="flex items-center gap-2">
+                        <div className="flex items-center gap-2 min-w-0">
                             <AlertCircle className="h-5 w-5 text-destructive shrink-0" />
-                            <p className="text-sm font-semibold text-destructive">Query failed</p>
+                            <div className="min-w-0">
+                                <p className="text-sm font-semibold text-destructive">Query failed</p>
+                                {!explanation && (
+                                    <p className="text-xs text-muted-foreground truncate mt-0.5" title={shortMessage}>
+                                        {shortMessage}
+                                    </p>
+                                )}
+                            </div>
                         </div>
-                        <Button
-                            variant="ghost"
-                            size="sm"
-                            className="h-8 gap-1.5 text-xs"
-                            onClick={() => {
-                                navigator.clipboard.writeText(message);
-                                setCopied(true);
-                                setTimeout(() => setCopied(false), 2000);
-                            }}
-                        >
-                            {copied ? (
-                                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
-                            ) : (
-                                <Copy className="h-3.5 w-3.5" />
+                        <div className="flex items-center gap-1.5 shrink-0">
+                            {canUseAi && (
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-8 gap-1.5 text-xs border-primary/30 text-primary hover:bg-primary/10"
+                                    onClick={handleAiExplain}
+                                    disabled={aiLoading}
+                                >
+                                    {aiLoading ? (
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                        <Sparkles className="h-3.5 w-3.5" />
+                                    )}
+                                    AI Explain
+                                </Button>
                             )}
-                            {copied ? "Copied" : "Copy error"}
-                        </Button>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-8 gap-1.5 text-xs"
+                                onClick={() => {
+                                    navigator.clipboard.writeText(message);
+                                    setCopied(true);
+                                    setTimeout(() => setCopied(false), 2000);
+                                }}
+                            >
+                                {copied ? (
+                                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                                ) : (
+                                    <Copy className="h-3.5 w-3.5" />
+                                )}
+                                {copied ? "Copied" : "Copy"}
+                            </Button>
+                        </div>
                     </div>
 
-                    {explanation && (
-                        <div className="px-4 py-3 bg-muted/30 border-b border-destructive/10">
-                            <div className="flex items-start gap-2">
+                    {explanation ? (
+                        <div className="px-4 py-3 space-y-3">
+                            <p className="text-sm text-foreground/95">{explanation.summary}</p>
+                            <div className="flex items-start gap-2 rounded-lg bg-muted/40 p-2.5">
                                 <Lightbulb className="h-4 w-4 text-amber-500/80 mt-0.5 shrink-0" />
-                                <div className="text-xs space-y-1.5">
-                                    <p>
-                                        <span className="font-semibold text-foreground/90">Why: </span>
-                                        <span className="text-muted-foreground">{explanation.summary}</span>
-                                    </p>
-                                    <p>
-                                        <span className="font-semibold text-foreground/90">Fix: </span>
-                                        <span className="text-muted-foreground">{explanation.fix}</span>
-                                    </p>
+                                <div className="text-xs">
+                                    <span className="font-medium text-foreground/90">How to fix: </span>
+                                    <span className="text-muted-foreground">{explanation.fix}</span>
                                 </div>
                             </div>
                         </div>
+                    ) : null}
+
+                    {(aiExplanation || aiError) && (
+                        <div className="px-4 py-3 border-t border-destructive/10 space-y-2">
+                            <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/80">
+                                AI analysis
+                            </p>
+                            {aiError && (
+                                <p className="text-xs text-destructive/90">{aiError}</p>
+                            )}
+                            {aiExplanation && (
+                                <ScrollArea className="max-h-56 rounded-lg border border-border/30 bg-background/90 p-3">
+                                    <pre className="text-xs text-foreground/90 whitespace-pre-wrap break-words font-sans">
+                                        {aiExplanation}
+                                    </pre>
+                                </ScrollArea>
+                            )}
+                        </div>
                     )}
 
-                    <div className="p-4">
-                        <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/60 mb-2">
-                            Full error
-                        </p>
-                        <ScrollArea className="max-h-52 rounded-lg border border-border/30 bg-background/90 p-3">
-                            <pre className="text-xs font-mono whitespace-pre-wrap break-all text-foreground/90">
-                                {message}
-                            </pre>
-                        </ScrollArea>
+                    <div className="border-t border-destructive/10">
+                        <button
+                            type="button"
+                            onClick={() => setShowTechnical((v) => !v)}
+                            className="flex items-center gap-2 w-full px-4 py-2.5 text-left text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
+                        >
+                            <ChevronDown
+                                className={`h-3.5 w-3.5 shrink-0 transition-transform ${showTechnical ? "rotate-180" : ""}`}
+                            />
+                            {showTechnical ? "Hide" : "Show"} technical details
+                        </button>
+                        {showTechnical && (
+                            <div className="px-4 pb-4 pt-0">
+                                <ScrollArea className="max-h-48 rounded-lg border border-border/30 bg-background/90 p-3">
+                                    <pre className="text-xs font-mono whitespace-pre-wrap break-all text-foreground/80">
+                                        {message}
+                                    </pre>
+                                </ScrollArea>
+                            </div>
+                        )}
                     </div>
                 </div>
             </div>
@@ -506,7 +622,7 @@ function HistoryPanel({
 // ── Main component ─────────────────────────────────────────────────────────
 
 export function QueryEditor() {
-    const { connectionId, databaseName, tables } = useConnectionStore();
+    const { connectionId, databaseName, tables, selectedSchema, schemaFunctions } = useConnectionStore();
     const {
         tabs,
         activeTabId,
@@ -579,6 +695,7 @@ export function QueryEditor() {
     const [saveNoteOpen, setSaveNoteOpen] = useState(false);
     const [saveNoteTitle, setSaveNoteTitle] = useState("");
     const [saveNoteLoading, setSaveNoteLoading] = useState(false);
+    const [editorFullScreen, setEditorFullScreen] = useState(false);
     const historyPanelRef = useRef<HTMLDivElement>(null);
 
     // Notes store
@@ -607,6 +724,25 @@ export function QueryEditor() {
         }),
         [tables, columnCache]
     );
+
+    // Schema summary for AI error explanation (tables + columns, functions in current schema)
+    const schemaContextForAi = useMemo(() => {
+        const schema = selectedSchema ?? "public";
+        const tableLines = tables
+            .filter((t) => t.schema === schema)
+            .map((t) => `  ${t.schema}.${t.name}: ${(columnCache[t.name] ?? []).join(", ") || "(columns not loaded)"}`);
+        const funcs = schemaFunctions[schema] ?? [];
+        const funcLines = funcs
+            .filter((f) => !f.is_trigger_function)
+            .map((f) => `  ${f.name}(${f.arguments}) -> ${f.return_type}`);
+        return [
+            "Tables:",
+            ...tableLines,
+            "",
+            "Functions:",
+            ...(funcLines.length ? funcLines : ["  (none listed)"]),
+        ].join("\n");
+    }, [tables, columnCache, selectedSchema, schemaFunctions]);
 
     // ── Eager column preloading ─────────────────────────────────────────────
     // When the connection or table list changes, batch-fetch columns for every
@@ -728,9 +864,13 @@ export function QueryEditor() {
         if (tabs.length === 0) addTab();
     }, [tabs.length, addTab]);
 
-    // ⌘+Shift+P command palette / ⌘+Shift+H history
+    // ⌘+Shift+P command palette / ⌘+Shift+H history / Esc exit full-screen
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
+            if (e.key === "Escape") {
+                setEditorFullScreen((v) => (v ? false : v));
+                return;
+            }
             if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "P") {
                 e.preventDefault();
                 setCommandPaletteOpen((o) => !o);
@@ -1075,6 +1215,106 @@ export function QueryEditor() {
             {/* Editor area */}
             {activeTab && (
                 <>
+                    {/* Full-screen editor overlay */}
+                    {editorFullScreen && (
+                        <div className="fixed inset-0 z-50 bg-background flex flex-col">
+                            <header className="flex items-center justify-between px-4 py-2 border-b border-border/30 bg-card/50 shrink-0">
+                                <span className="text-sm font-medium text-muted-foreground">Query editor</span>
+                                <div className="flex items-center gap-2">
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-8 gap-1.5"
+                                        onClick={handleExecute}
+                                        disabled={
+                                            activeTab.isExecuting ||
+                                            isSandboxBusy ||
+                                            isSandboxReviewing ||
+                                            !activeTab.sql.trim()
+                                        }
+                                    >
+                                        {activeTab.isExecuting || isSandboxBusy ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                            <Play className="h-3.5 w-3.5" />
+                                        )}
+                                        Run
+                                    </Button>
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <Button
+                                                size="sm"
+                                                variant="ghost"
+                                                className="h-8 gap-1.5"
+                                                onClick={() => setEditorFullScreen(false)}
+                                            >
+                                                <Minimize2 className="h-3.5 w-3.5" />
+                                                Exit full screen
+                                            </Button>
+                                        </TooltipTrigger>
+                                        <TooltipContent>Exit full screen (Esc)</TooltipContent>
+                                    </Tooltip>
+                                </div>
+                            </header>
+                            <div className="flex-1 min-h-0 flex flex-col">
+                                <div className="shrink-0 border-b border-border/30">
+                                    <MonacoSqlEditor
+                                        value={activeTab.sql}
+                                        onChange={(v) => updateSql(activeTab.id, v)}
+                                        onExecute={handleExecute}
+                                        onFormatSql={handleFormatSql}
+                                        onFetchColumns={handleFetchColumns}
+                                        onNextAction={handleNextAction}
+                                        schemaContext={schemaContext}
+                                        disabled={activeTab.isExecuting}
+                                        className="rounded-none border-0"
+                                        editorHeight={380}
+                                    />
+                                </div>
+                                <div className="flex-1 min-h-0 overflow-auto flex flex-col p-4">
+                                    {activeTab.result ? (
+                                        activeTab.result.is_error ? (
+                                            <QueryErrorPanel
+                                                message={activeTab.result.error_message ?? "Unknown error"}
+                                                sql={activeTab.sql}
+                                                schemaContextForAi={schemaContextForAi}
+                                            />
+                                        ) : (
+                                            <div className="space-y-3">
+                                                <div className="flex items-center gap-3 text-sm">
+                                                    <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
+                                                    <span className="text-emerald-600 dark:text-emerald-400 font-medium">
+                                                        {getRowCountLabel(activeTab.result)}
+                                                    </span>
+                                                    <Badge variant="outline" className="text-xs font-mono">
+                                                        {activeTab.result.execution_time_ms.toFixed(1)}ms
+                                                    </Badge>
+                                                </div>
+                                                {!isCommandResult(activeTab.result) && !isMultiStatementResult(activeTab.result) && activeTab.result.columns.length > 0 && (
+                                                    <VirtualizedQueryResultTable
+                                                        result={activeTab.result}
+                                                        showRowIndex={false}
+                                                        maxHeight="40vh"
+                                                        compact
+                                                    />
+                                                )}
+                                                {(isCommandResult(activeTab.result) || isMultiStatementResult(activeTab.result)) && (
+                                                    <p className="text-sm text-muted-foreground">
+                                                        {isMultiStatementResult(activeTab.result)
+                                                            ? `${getDisplayCount(activeTab.result)} statement(s) executed successfully.`
+                                                            : `${getDisplayCount(activeTab.result).toLocaleString()} row(s) affected.`}
+                                                    </p>
+                                                )}
+                                            </div>
+                                        )
+                                    ) : (
+                                        <p className="text-sm text-muted-foreground">Run a query to see results.</p>
+                                    )}
+                                </div>
+                            </div>
+                        </div>
+                    )}
+
                     <div className="relative border-b border-border/30">
                         <MonacoSqlEditor
                             value={activeTab.sql}
@@ -1126,6 +1366,19 @@ export function QueryEditor() {
                             <span className="text-[10px] text-muted-foreground/40 font-mono">
                                 ⌘+Enter to run
                             </span>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-8 gap-1.5 text-xs text-muted-foreground/50 hover:text-foreground px-2"
+                                        onClick={() => setEditorFullScreen((v) => !v)}
+                                    >
+                                        <Maximize2 className="h-3.5 w-3.5" />
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>Full-screen editor</TooltipContent>
+                            </Tooltip>
                             <Tooltip>
                                 <TooltipTrigger asChild>
                                     <Button
@@ -1339,20 +1592,24 @@ export function QueryEditor() {
                                         Query Plan
                                     </button>
                                 )}
-                                {activeTab.result && !activeTab.result.is_error && activeTab.result.columns.length > 0 && (
-                                    <button
-                                        className={cn(
-                                            "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border-b-2 transition-colors",
-                                            activeResultView === "canvas"
-                                                ? "border-emerald-400 text-foreground"
-                                                : "border-transparent text-muted-foreground hover:text-foreground"
-                                        )}
-                                        onClick={() => activeTabId && setResultView((p) => ({ ...p, [activeTabId]: "canvas" }))}
-                                    >
-                                        <LayoutDashboard className="h-3 w-3" />
-                                        Canvas
-                                    </button>
-                                )}
+                                {activeTab.result &&
+                                    !activeTab.result.is_error &&
+                                    activeTab.result.columns.length > 0 &&
+                                    !isCommandResult(activeTab.result) &&
+                                    !isMultiStatementResult(activeTab.result) && (
+                                        <button
+                                            className={cn(
+                                                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border-b-2 transition-colors",
+                                                activeResultView === "canvas"
+                                                    ? "border-emerald-400 text-foreground"
+                                                    : "border-transparent text-muted-foreground hover:text-foreground"
+                                            )}
+                                            onClick={() => activeTabId && setResultView((p) => ({ ...p, [activeTabId]: "canvas" }))}
+                                        >
+                                            <LayoutDashboard className="h-3 w-3" />
+                                            Canvas
+                                        </button>
+                                    )}
                             </div>
                         )}
 
@@ -1384,6 +1641,8 @@ export function QueryEditor() {
                             activeTab.result.is_error ? (
                                 <QueryErrorPanel
                                     message={activeTab.result.error_message ?? "Unknown error"}
+                                    sql={activeTab.sql}
+                                    schemaContextForAi={schemaContextForAi}
                                 />
                             ) : (
                                 <div className="flex h-full min-h-0 flex-col">
@@ -1431,7 +1690,7 @@ export function QueryEditor() {
 
                                         {/* Export dropdown — only for result sets with multiple columns */}
                                         <div className="flex items-center gap-1">
-                                            {!isCommandResult(activeTab.result) && (
+                                            {!isCommandResult(activeTab.result) && !isMultiStatementResult(activeTab.result) && (
                                                 <>
                                                     <Tooltip>
                                                         <TooltipTrigger asChild>
@@ -1492,75 +1751,22 @@ export function QueryEditor() {
                                         </div>
                                     </div>
 
-                                    {/* Result: compact message for INSERT/UPDATE/DELETE, table for SELECT */}
-                                    {isCommandResult(activeTab.result) ? (
+                                    {/* Result: compact message for INSERT/UPDATE/DELETE/multi-statement, table for SELECT */}
+                                    {isCommandResult(activeTab.result) || isMultiStatementResult(activeTab.result) ? (
                                         <div className="flex-1 flex items-center justify-center p-6">
                                             <p className="text-sm text-muted-foreground">
-                                                {getDisplayCount(activeTab.result).toLocaleString()} row{getDisplayCount(activeTab.result) !== 1 ? "s" : ""} affected.
+                                                {isMultiStatementResult(activeTab.result)
+                                                    ? `${getDisplayCount(activeTab.result)} statement${getDisplayCount(activeTab.result) !== 1 ? "s" : ""} executed successfully.`
+                                                    : `${getDisplayCount(activeTab.result).toLocaleString()} row${getDisplayCount(activeTab.result) !== 1 ? "s" : ""} affected.`}
                                             </p>
                                         </div>
                                     ) : (
                                         <div className="flex-1 min-h-0 overflow-hidden">
-                                            <ScrollArea className="h-full w-full">
-                                                <Table>
-                                                    <TableHeader>
-                                                        <TableRow className="hover:bg-transparent border-border/30">
-                                                            <TableHead className="w-12 text-center text-[10px] font-mono text-muted-foreground/50 sticky top-0 bg-background z-10">
-                                                                #
-                                                            </TableHead>
-                                                            {activeTab.result.columns.map((col) => (
-                                                                <TableHead key={col.name} className="whitespace-nowrap sticky top-0 bg-background z-10">
-                                                                    <div className="flex items-center gap-1.5">
-                                                                        <span className="text-xs font-semibold">
-                                                                            {col.name}
-                                                                        </span>
-                                                                        <span className="text-[10px] font-mono text-muted-foreground/40">
-                                                                            {col.data_type}
-                                                                        </span>
-                                                                    </div>
-                                                                </TableHead>
-                                                            ))}
-                                                        </TableRow>
-                                                    </TableHeader>
-                                                    <TableBody>
-                                                        {activeTab.result.rows.map((row, rowIdx) => (
-                                                            <TableRow
-                                                                key={rowIdx}
-                                                                className="border-border/20 hover:bg-accent/30 transition-colors"
-                                                            >
-                                                                <TableCell className="text-center text-[10px] font-mono text-muted-foreground/40">
-                                                                    {rowIdx + 1}
-                                                                </TableCell>
-                                                                {row.map((cell, colIdx) => (
-                                                                    <TableCell
-                                                                        key={colIdx}
-                                                                        className={cn(
-                                                                            "text-xs font-mono max-w-xs truncate cursor-pointer hover:bg-accent/30 transition-colors",
-                                                                            cell.type === "Null" &&
-                                                                            "text-muted-foreground/30 italic"
-                                                                        )}
-                                                                        title={formatCellValue(cell)}
-                                                                        onClick={() => {
-                                                                            if (cell.type !== "Null") {
-                                                                                navigator.clipboard.writeText(
-                                                                                    formatCellValue(cell)
-                                                                                );
-                                                                                toast.success("Copied", {
-                                                                                    duration: 1200,
-                                                                                });
-                                                                            }
-                                                                        }}
-                                                                    >
-                                                                        {formatCellValue(cell)}
-                                                                    </TableCell>
-                                                                ))}
-                                                            </TableRow>
-                                                        ))}
-                                                    </TableBody>
-                                                </Table>
-                                                <ScrollBar orientation="horizontal" />
-                                                <ScrollBar orientation="vertical" />
-                                            </ScrollArea>
+                                            <VirtualizedQueryResultTable
+                                                result={activeTab.result}
+                                                showRowIndex
+                                                className="h-full"
+                                            />
                                         </div>
                                     )}
                                 </div>

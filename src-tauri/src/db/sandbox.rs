@@ -1,4 +1,5 @@
 use dashmap::DashMap;
+use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 use std::time::Instant;
@@ -596,8 +597,13 @@ fn cell_to_string(row: &Row, idx: usize) -> Option<String> {
             .ok()
             .flatten()
             .map(|v| v.to_string()),
-        &Type::FLOAT8 | &Type::NUMERIC => row
+        &Type::FLOAT8 => row
             .try_get::<_, Option<f64>>(idx)
+            .ok()
+            .flatten()
+            .map(|v| v.to_string()),
+        &Type::NUMERIC => row
+            .try_get::<_, Option<Decimal>>(idx)
             .ok()
             .flatten()
             .map(|v| v.to_string()),

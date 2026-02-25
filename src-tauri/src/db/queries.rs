@@ -3,6 +3,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_postgres::types::Type;
 use tokio_postgres::Row;
+use rust_decimal::Decimal;
 
 use super::types::*;
 
@@ -45,13 +46,10 @@ fn convert_cell(row: &Row, idx: usize, pg_type: &Type) -> CellValue {
             Ok(Some(v)) => CellValue::Float64(v),
             _ => CellValue::Null,
         },
-        // NUMERIC: try as f64 first (sufficient for most uses), fall back to text
-        &Type::NUMERIC => match row.try_get::<_, Option<f64>>(idx) {
-            Ok(Some(v)) => CellValue::Float64(v),
-            _ => match row.try_get::<_, Option<String>>(idx) {
-                Ok(Some(v)) => CellValue::String(v),
-                _ => CellValue::Null,
-            },
+        // NUMERIC/DECIMAL: read via rust_decimal to preserve precision (e.g. 0.0000)
+        &Type::NUMERIC => match row.try_get::<_, Option<Decimal>>(idx) {
+            Ok(Some(d)) => CellValue::String(d.to_string()),
+            _ => CellValue::Null,
         },
         &Type::TEXT | &Type::VARCHAR | &Type::BPCHAR | &Type::NAME => {
             match row.try_get::<_, Option<String>>(idx) {
@@ -751,7 +749,17 @@ pub async fn get_table_data(
             })
             .collect()
     } else {
-        Vec::new()
+        get_columns(pool, schema, table)
+            .await
+            .map(|cols| {
+                cols.into_iter()
+                    .map(|c| ResultColumn {
+                        name: c.name,
+                        data_type: c.data_type,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
     };
 
     let data: Vec<Vec<CellValue>> = rows.iter().map(|row| row_to_cells(row)).collect();
@@ -815,62 +823,233 @@ fn max_parameter_index(sql: &str) -> usize {
     max
 }
 
+/// Split SQL into statements by `;`, ignoring semicolons inside single-quoted strings.
+fn split_sql_statements(sql: &str) -> Vec<String> {
+    let mut statements = Vec::new();
+    let mut current = String::new();
+    let mut in_single = false;
+    let mut i = 0;
+    let chars: Vec<char> = sql.chars().collect();
+    while i < chars.len() {
+        let c = chars[i];
+        if in_single {
+            if c == '\'' && i + 1 < chars.len() && chars[i + 1] == '\'' {
+                current.push(c);
+                current.push(chars[i + 1]);
+                i += 2;
+                continue;
+            }
+            if c == '\'' {
+                in_single = false;
+            }
+            current.push(c);
+            i += 1;
+            continue;
+        }
+        if c == '\'' {
+            in_single = true;
+            current.push(c);
+            i += 1;
+            continue;
+        }
+        if c == ';' {
+            let stmt = current.trim().to_string();
+            if !stmt.is_empty() {
+                statements.push(stmt);
+            }
+            current.clear();
+            i += 1;
+            continue;
+        }
+        current.push(c);
+        i += 1;
+    }
+    let stmt = current.trim().to_string();
+    if !stmt.is_empty() {
+        statements.push(stmt);
+    }
+    statements
+}
+
 pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, String> {
     let start = Instant::now();
     let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
 
     let trimmed = sql.trim();
-    let upper = trimmed.to_uppercase();
-    let is_select = upper.starts_with("SELECT")
-        || upper.starts_with("WITH")
-        || upper.starts_with("TABLE")
-        || upper.starts_with("VALUES")
-        || upper.starts_with("SHOW")
-        || upper.starts_with("EXPLAIN");
+    let statements = split_sql_statements(trimmed);
 
-    // Bind parameters: if SQL contains $1, $2, ... use NULL for each so the query runs.
-    let param_count = max_parameter_index(trimmed);
-    let params: Vec<Option<String>> = (0..param_count).map(|_| None).collect();
-    let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = params
-        .iter()
-        .map(|p| p as &(dyn tokio_postgres::types::ToSql + Sync))
-        .collect();
-    let param_slice: &[&(dyn tokio_postgres::types::ToSql + Sync)] = param_refs.as_slice();
+    // Single statement: existing behaviour (prepared statement compatible).
+    if statements.len() <= 1 {
+        let stmt = if statements.is_empty() { trimmed } else { &statements[0] };
+        let upper = stmt.to_uppercase();
+        let is_select = upper.starts_with("SELECT")
+            || upper.starts_with("WITH")
+            || upper.starts_with("TABLE")
+            || upper.starts_with("VALUES")
+            || upper.starts_with("SHOW")
+            || upper.starts_with("EXPLAIN");
 
-    if is_select {
-        match client.query(trimmed, param_slice).await {
-            Ok(rows) => {
-                let columns: Vec<ResultColumn> = if !rows.is_empty() {
-                    rows[0]
-                        .columns()
-                        .iter()
-                        .map(|col| ResultColumn {
-                            name: col.name().to_string(),
-                            data_type: pg_type_to_string(col.type_()),
-                        })
-                        .collect()
-                } else {
-                    Vec::new()
-                };
-                let data: Vec<Vec<CellValue>> = rows.iter().map(|row| row_to_cells(row)).collect();
-                let row_count = data.len();
-                let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-                Ok(QueryResult {
-                    columns,
-                    rows: data,
-                    row_count,
-                    total_rows: Some(row_count as i64),
-                    execution_time_ms: elapsed,
-                    page: None,
-                    page_size: None,
-                    query: trimmed.to_string(),
-                    is_error: false,
-                    error_message: None,
-                })
+        let param_count = max_parameter_index(stmt);
+        let params: Vec<Option<String>> = (0..param_count).map(|_| None).collect();
+        let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = params
+            .iter()
+            .map(|p| p as &(dyn tokio_postgres::types::ToSql + Sync))
+            .collect();
+        let param_slice: &[&(dyn tokio_postgres::types::ToSql + Sync)] = param_refs.as_slice();
+
+        if is_select {
+            match client.query(stmt, param_slice).await {
+                Ok(rows) => {
+                    let columns: Vec<ResultColumn> = if !rows.is_empty() {
+                        rows[0]
+                            .columns()
+                            .iter()
+                            .map(|col| ResultColumn {
+                                name: col.name().to_string(),
+                                data_type: pg_type_to_string(col.type_()),
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    let data: Vec<Vec<CellValue>> = rows.iter().map(|row| row_to_cells(row)).collect();
+                    let row_count = data.len();
+                    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                    return Ok(QueryResult {
+                        columns,
+                        rows: data,
+                        row_count,
+                        total_rows: Some(row_count as i64),
+                        execution_time_ms: elapsed,
+                        page: None,
+                        page_size: None,
+                        query: trimmed.to_string(),
+                        is_error: false,
+                        error_message: None,
+                    });
+                }
+                Err(e) => {
+                    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                    return Ok(QueryResult {
+                        columns: Vec::new(),
+                        rows: Vec::new(),
+                        row_count: 0,
+                        total_rows: None,
+                        execution_time_ms: elapsed,
+                        page: None,
+                        page_size: None,
+                        query: trimmed.to_string(),
+                        is_error: true,
+                        error_message: Some(format_query_error(&e)),
+                    });
+                }
             }
-            Err(e) => {
+        } else {
+            match client.execute(stmt, param_slice).await {
+                Ok(affected) => {
+                    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                    return Ok(QueryResult {
+                        columns: vec![ResultColumn {
+                            name: "affected_rows".to_string(),
+                            data_type: "bigint".to_string(),
+                        }],
+                        rows: vec![vec![CellValue::Int64(affected as i64)]],
+                        row_count: 1,
+                        total_rows: Some(1),
+                        execution_time_ms: elapsed,
+                        page: None,
+                        page_size: None,
+                        query: trimmed.to_string(),
+                        is_error: false,
+                        error_message: None,
+                    });
+                }
+                Err(e) => {
+                    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                    return Ok(QueryResult {
+                        columns: Vec::new(),
+                        rows: Vec::new(),
+                        row_count: 0,
+                        total_rows: None,
+                        execution_time_ms: elapsed,
+                        page: None,
+                        page_size: None,
+                        query: trimmed.to_string(),
+                        is_error: true,
+                        error_message: Some(format_query_error(&e)),
+                    });
+                }
+            }
+        }
+    }
+
+    // Multiple statements: execute each in order (no prepared statement; one command per execute/query).
+    let n = statements.len();
+    let mut last_select_result: Option<QueryResult> = None;
+    for (idx, stmt) in statements.iter().enumerate() {
+        let stmt_trim = stmt.trim();
+        if stmt_trim.is_empty() {
+            continue;
+        }
+        let upper = stmt_trim.to_uppercase();
+        let read_only = upper.starts_with("SELECT")
+            || upper.starts_with("WITH")
+            || upper.starts_with("TABLE")
+            || upper.starts_with("VALUES")
+            || upper.starts_with("SHOW")
+            || upper.starts_with("EXPLAIN");
+
+        if read_only {
+            match client.query(stmt_trim, &[]).await {
+                Ok(rows) => {
+                    let columns: Vec<ResultColumn> = if !rows.is_empty() {
+                        rows[0]
+                            .columns()
+                            .iter()
+                            .map(|col| ResultColumn {
+                                name: col.name().to_string(),
+                                data_type: pg_type_to_string(col.type_()),
+                            })
+                            .collect()
+                    } else {
+                        Vec::new()
+                    };
+                    let data: Vec<Vec<CellValue>> = rows.iter().map(|row| row_to_cells(row)).collect();
+                    let row_count = data.len();
+                    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                    last_select_result = Some(QueryResult {
+                        columns,
+                        rows: data,
+                        row_count,
+                        total_rows: Some(row_count as i64),
+                        execution_time_ms: elapsed,
+                        page: None,
+                        page_size: None,
+                        query: trimmed.to_string(),
+                        is_error: false,
+                        error_message: None,
+                    });
+                }
+                Err(e) => {
+                    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+                    return Ok(QueryResult {
+                        columns: Vec::new(),
+                        rows: Vec::new(),
+                        row_count: 0,
+                        total_rows: None,
+                        execution_time_ms: elapsed,
+                        page: None,
+                        page_size: None,
+                        query: trimmed.to_string(),
+                        is_error: true,
+                        error_message: Some(format_query_error(&e)),
+                    });
+                }
+            }
+        } else {
+            if let Err(e) = client.execute(stmt_trim, &[]).await {
                 let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-                Ok(QueryResult {
+                return Ok(QueryResult {
                     columns: Vec::new(),
                     rows: Vec::new(),
                     row_count: 0,
@@ -880,46 +1059,34 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
                     page_size: None,
                     query: trimmed.to_string(),
                     is_error: true,
-                    error_message: Some(format_query_error(&e)),
-                })
+                    error_message: Some(format!("Statement {}: {}", idx + 1, format_query_error(&e))),
+                });
             }
         }
+    }
+
+    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+    if let Some(res) = last_select_result {
+        Ok(QueryResult {
+            execution_time_ms: elapsed,
+            ..res
+        })
     } else {
-        match client.execute(trimmed, param_slice).await {
-            Ok(affected) => {
-                let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-                Ok(QueryResult {
-                    columns: vec![ResultColumn {
-                        name: "affected_rows".to_string(),
-                        data_type: "bigint".to_string(),
-                    }],
-                    rows: vec![vec![CellValue::Int64(affected as i64)]],
-                    row_count: 1,
-                    total_rows: Some(1),
-                    execution_time_ms: elapsed,
-                    page: None,
-                    page_size: None,
-                    query: trimmed.to_string(),
-                    is_error: false,
-                    error_message: None,
-                })
-            }
-            Err(e) => {
-                let elapsed = start.elapsed().as_secs_f64() * 1000.0;
-                Ok(QueryResult {
-                    columns: Vec::new(),
-                    rows: Vec::new(),
-                    row_count: 0,
-                    total_rows: None,
-                    execution_time_ms: elapsed,
-                    page: None,
-                    page_size: None,
-                    query: trimmed.to_string(),
-                    is_error: true,
-                    error_message: Some(format_query_error(&e)),
-                })
-            }
-        }
+        Ok(QueryResult {
+            columns: vec![ResultColumn {
+                name: "statements".to_string(),
+                data_type: "int8".to_string(),
+            }],
+            rows: vec![vec![CellValue::Int64(n as i64)]],
+            row_count: 1,
+            total_rows: Some(1),
+            execution_time_ms: elapsed,
+            page: None,
+            page_size: None,
+            query: trimmed.to_string(),
+            is_error: false,
+            error_message: None,
+        })
     }
 }
 
