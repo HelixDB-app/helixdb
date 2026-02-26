@@ -26,6 +26,7 @@ export interface ColumnInfo {
     ordinal_position: number;
     column_default: string | null;
     is_primary_key: boolean;
+    comment: string | null;
 }
 
 export interface SchemaInfo {
@@ -38,6 +39,7 @@ export interface TableInfo {
     schema: string;
     row_count: number;
     table_type: string;
+    table_comment: string | null;
 }
 
 export interface QueryResult {
@@ -51,6 +53,195 @@ export interface QueryResult {
     query: string;
     is_error: boolean;
     error_message: string | null;
+}
+
+/** Query history list/search filter */
+export interface QueryHistoryFilter {
+    search_text?: string | null;
+    connection_id?: string | null;
+    status?: string | null;
+    query_type?: string | null;
+    was_cached?: boolean | null;
+    bookmark_only?: boolean | null;
+    min_time_ms?: number | null;
+    max_time_ms?: number | null;
+    from_time?: number | null;
+    to_time?: number | null;
+    tables?: string[] | null;
+    sort_by?: string | null;
+    sort_dir?: "asc" | "desc" | string | null;
+    limit?: number | null;
+    offset?: number | null;
+}
+
+/** One query row in history list */
+export interface QueryHistorySummary {
+    id: number;
+    query_text: string;
+    query_hash: number;
+    connection_id: string;
+    connection_label: string;
+    executed_at: number;
+    planning_ms: number | null;
+    execution_ms: number;
+    total_ms: number;
+    rows_returned: number | null;
+    rows_affected: number | null;
+    status: string;
+    error_code: string | null;
+    error_message: string | null;
+    blks_hit: number | null;
+    blks_read: number | null;
+    temp_blks_written: number | null;
+    query_type: string;
+    tables_touched: string[];
+    was_cached: boolean;
+    run_count: number;
+    avg_ms: number;
+    fastest_ms: number;
+    slowest_ms: number;
+    bookmark: boolean;
+    note: string | null;
+}
+
+export interface QueryHistoryPeer {
+    id: number;
+    query_text: string;
+    executed_at: number;
+    total_ms: number;
+    status: string;
+    connection_label: string;
+}
+
+/** Detail payload for one query history item */
+export interface QueryHistoryDetail {
+    item: QueryHistorySummary;
+    query_normalized: string;
+    explain_json: string | null;
+    ai_analysis: string | null;
+    similar_by_hash: QueryHistoryPeer[];
+    similar_by_table: QueryHistoryPeer[];
+}
+
+export interface QueryHistoryStats {
+    total_queries: number;
+    avg_time_ms: number;
+    slowest_ms: number;
+    failed_count: number;
+    cached_count: number;
+    today_count: number;
+}
+
+export interface QueryHistoryConnectionInfo {
+    connection_id: string;
+    connection_label: string;
+    query_count: number;
+}
+
+export interface QueryHistoryListResponse {
+    items: QueryHistorySummary[];
+    total_count: number;
+    stats: QueryHistoryStats;
+    connections: QueryHistoryConnectionInfo[];
+}
+
+export interface QueryHistoryDashboardFilter {
+    connection_id?: string | null;
+    from_time?: number | null;
+    to_time?: number | null;
+}
+
+export interface QueryDashboardPoint {
+    bucket_start: number;
+    avg_ms: number;
+    total_count: number;
+    failed_count: number;
+    error_rate: number;
+    cache_hit_rate: number;
+}
+
+export interface QueryVolumeHourPoint {
+    hour: number;
+    count: number;
+}
+
+export interface QueryDashboardSlowItem {
+    query_hash: number;
+    query_text: string;
+    slowest_ms: number;
+    avg_ms: number;
+    run_count: number;
+}
+
+export interface QueryDashboardTableFrequency {
+    table_name: string;
+    count: number;
+}
+
+export interface QueryAnomaly {
+    query_hash: number;
+    query_text: string;
+    previous_avg_ms: number;
+    recent_avg_ms: number;
+    delta_factor: number;
+}
+
+export interface QueryHistoryDashboard {
+    trend: QueryDashboardPoint[];
+    volume_by_hour: QueryVolumeHourPoint[];
+    top_slowest: QueryDashboardSlowItem[];
+    table_frequency: QueryDashboardTableFrequency[];
+    anomalies: QueryAnomaly[];
+}
+
+/** Runtime status of pg_stat_statements for the current DB connection. */
+export interface PgStatStatementsStatus {
+    extension_installed: boolean;
+    preload_enabled: boolean;
+    can_query: boolean;
+    shared_preload_libraries: string | null;
+    message: string | null;
+}
+
+/** Search/sort/pagination payload for pg_stat_statements list queries. */
+export interface PgStatStatementsFilter {
+    search_text?: string | null;
+    min_mean_ms?: number | null;
+    /** slowest | max | total | calls | rows | disk */
+    sort_by?: string | null;
+    /** ASC | DESC */
+    sort_dir?: string | null;
+    limit?: number | null;
+    offset?: number | null;
+}
+
+/** One row from pg_stat_statements. */
+export interface PgStatStatementEntry {
+    query_id: string;
+    query: string;
+    calls: number;
+    total_exec_time_ms: number;
+    mean_exec_time_ms: number;
+    min_exec_time_ms: number;
+    max_exec_time_ms: number;
+    stddev_exec_time_ms: number | null;
+    rows: number;
+    shared_blks_hit: number;
+    shared_blks_read: number;
+    temp_blks_written: number;
+    blk_read_time_ms: number | null;
+    blk_write_time_ms: number | null;
+    hit_percent: number;
+    slow_call_estimate: number;
+}
+
+/** Paginated response from pg_stat_statements list API. */
+export interface PgStatStatementsPage {
+    items: PgStatStatementEntry[];
+    total_count: number;
+    limit: number;
+    offset: number;
+    has_more: boolean;
 }
 
 export interface ResultColumn {
@@ -138,6 +329,7 @@ export interface TableIndex {
     index_type: string;
     columns: string[];
     definition: string;
+    comment: string | null;
 }
 
 /** Table trigger */
@@ -163,6 +355,64 @@ export interface TableDetails {
     table_size: string;
     indexes_size: string;
     comment: string | null;
+}
+
+/** Documentation context for one table object. */
+export interface DocumentationTable {
+    schema: string;
+    table: string;
+    table_type: string;
+    comment: string | null;
+}
+
+/** Documentation context for one column object. */
+export interface DocumentationColumn {
+    schema: string;
+    table: string;
+    table_type: string;
+    ordinal_position: number;
+    name: string;
+    data_type: string;
+    is_nullable: boolean;
+    column_default: string | null;
+    is_primary_key: boolean;
+    foreign_key_target: string | null;
+    comment: string | null;
+}
+
+/** Documentation context for one index object. */
+export interface DocumentationIndex {
+    schema: string;
+    table: string;
+    table_type: string;
+    name: string;
+    is_unique: boolean;
+    is_primary: boolean;
+    index_type: string;
+    columns: string[];
+    definition: string;
+    comment: string | null;
+}
+
+/** Full documentation context payload for AI comment generation. */
+export interface DocumentationContext {
+    database_name: string;
+    tables: DocumentationTable[];
+    columns: DocumentationColumn[];
+    indexes: DocumentationIndex[];
+    undocumented_tables: number;
+    undocumented_columns: number;
+    undocumented_indexes: number;
+}
+
+/** One comment patch to apply with COMMENT ON. */
+export interface DocumentationCommentPatch {
+    kind: "table" | "column" | "index";
+    schema: string;
+    table?: string | null;
+    column?: string | null;
+    index?: string | null;
+    comment: string;
 }
 
 /** Sidebar selection for the preview panel */

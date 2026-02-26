@@ -599,6 +599,15 @@ export function DataTable() {
         () => (tableColumns?.filter((c) => c.is_primary_key).map((c) => c.name) ?? []),
         [tableColumns]
     );
+    const columnCommentsByName = useMemo(() => {
+        const map = new Map<string, string>();
+        for (const col of tableColumns ?? []) {
+            if (col.comment?.trim()) {
+                map.set(col.name, col.comment.trim());
+            }
+        }
+        return map;
+    }, [tableColumns]);
     const canEditDelete = isTableNotView && pkColumnNames.length > 0;
 
     // ── Save cell edit ────────────────────────────────────────────────────────
@@ -1098,7 +1107,12 @@ export function DataTable() {
                                                             className="flex items-center gap-1.5 cursor-pointer flex-1 text-left"
                                                             onClick={() => handleSort(col.name)}
                                                         >
-                                                            <span className="text-xs font-semibold text-foreground/80">{col.name}</span>
+                                                            <span
+                                                                className="text-xs font-semibold text-foreground/80"
+                                                                title={columnCommentsByName.get(col.name)}
+                                                            >
+                                                                {col.name}
+                                                            </span>
                                                             <span className="text-[9px] font-mono text-muted-foreground/30 hidden group-hover:inline">{col.data_type}</span>
                                                             {sortColumn === col.name ? (
                                                                 sortDirection === "ASC"
@@ -2364,7 +2378,7 @@ function TypePreview({
                 .map((v) => [v, null]);
             if (renames.length > 0 || additions.length > 0) {
                 await dbAlterEnumValues(connectionId, schema, name, renames, additions);
-                loadSchemaObjects(schema);
+                loadSchemaObjects(schema, true);
                 fetchDetail();
             }
         } catch (e) {

@@ -398,8 +398,19 @@ function QuerySection() {
         autoFormatOnExecute,
         confirmDangerousQueries,
         queryTimeoutSeconds,
+        aiReviewEnabled,
+        aiReviewAutoOnDml,
+        aiReviewUseGemini,
+        aiReviewModel,
+        aiReviewComplexLineThreshold,
         updateSettings,
     } = useSettingsStore();
+
+    const reviewModelOptions: { value: GeminiModelId; label: string }[] = [
+        { value: "gemini-2.5-flash-lite", label: "Flash Lite" },
+        { value: "gemini-2.5-flash", label: "Flash" },
+        { value: "gemini-2.5-pro", label: "Pro" },
+    ];
 
     return (
         <div className="space-y-5">
@@ -436,13 +447,69 @@ function QuerySection() {
                     />
                 </SettingRow>
             </SettingSection>
+
+            <SettingSection title="AI Review Mode">
+                <SettingRow
+                    label="Enable AI Review Mode"
+                    description="Run SQL safety checks before execution and show a review panel."
+                >
+                    <Switch
+                        checked={aiReviewEnabled}
+                        onCheckedChange={(v) => updateSettings({ aiReviewEnabled: v })}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Auto-review on DML"
+                    description="Automatically review INSERT, UPDATE, DELETE, DROP, and TRUNCATE before execution."
+                >
+                    <Switch
+                        checked={aiReviewAutoOnDml}
+                        onCheckedChange={(v) => updateSettings({ aiReviewAutoOnDml: v })}
+                        disabled={!aiReviewEnabled}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Semantic check with Gemini"
+                    description="Use Gemini only when local checks flag risk or query is complex."
+                >
+                    <Switch
+                        checked={aiReviewUseGemini}
+                        onCheckedChange={(v) => updateSettings({ aiReviewUseGemini: v })}
+                        disabled={!aiReviewEnabled}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Review model"
+                    description="Gemini model used for semantic risk analysis."
+                >
+                    <SegmentedControl
+                        value={aiReviewModel}
+                        options={reviewModelOptions}
+                        onChange={(v) => updateSettings({ aiReviewModel: v as GeminiModelId })}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Complex query threshold"
+                    description="Trigger semantic AI review when SQL exceeds this line count."
+                >
+                    <StepInput
+                        value={aiReviewComplexLineThreshold}
+                        min={6}
+                        max={40}
+                        step={1}
+                        onChange={(v) => updateSettings({ aiReviewComplexLineThreshold: v })}
+                        format={(v) => `${v} lines`}
+                    />
+                </SettingRow>
+            </SettingSection>
         </div>
     );
 }
 
 const SHORTCUTS = [
     { keys: ["⌘", "K"], description: "Open command palette / search" },
-    { keys: ["⌘", "R"], description: "Refresh schemas and current table" },
+    { keys: ["⌘", "⇧", "R"], description: "Refresh schemas and current table" },
+    { keys: ["⌘", "R"], description: "Run AI Review Mode (query editor)" },
     { keys: ["⌘", "Enter"], description: "Execute query in editor" },
     { keys: ["⇧", "⌥", "F"], description: "Format SQL in editor" },
     { keys: ["⌘", "."], description: "Trigger AI inline suggestion" },

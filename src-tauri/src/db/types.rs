@@ -30,6 +30,7 @@ pub struct ColumnInfo {
     pub ordinal_position: i32,
     pub column_default: Option<String>,
     pub is_primary_key: bool,
+    pub comment: Option<String>,
 }
 
 /// Schema metadata
@@ -46,6 +47,7 @@ pub struct TableInfo {
     pub schema: String,
     pub row_count: i64,
     pub table_type: String, // "BASE TABLE" or "VIEW"
+    pub table_comment: Option<String>,
 }
 
 /// Query result with rows, columns, timing, and pagination info
@@ -149,6 +151,71 @@ pub struct TableIndex {
     pub index_type: String,
     pub columns: Vec<String>,
     pub definition: String,
+    pub comment: Option<String>,
+}
+
+/// Documentation context for a table object.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentationTable {
+    pub schema: String,
+    pub table: String,
+    pub table_type: String,
+    pub comment: Option<String>,
+}
+
+/// Documentation context for a column object.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentationColumn {
+    pub schema: String,
+    pub table: String,
+    pub table_type: String,
+    pub ordinal_position: i32,
+    pub name: String,
+    pub data_type: String,
+    pub is_nullable: bool,
+    pub column_default: Option<String>,
+    pub is_primary_key: bool,
+    pub foreign_key_target: Option<String>,
+    pub comment: Option<String>,
+}
+
+/// Documentation context for an index object.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentationIndex {
+    pub schema: String,
+    pub table: String,
+    pub table_type: String,
+    pub name: String,
+    pub is_unique: bool,
+    pub is_primary: bool,
+    pub index_type: String,
+    pub columns: Vec<String>,
+    pub definition: String,
+    pub comment: Option<String>,
+}
+
+/// Full context payload for AI doc generation.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentationContext {
+    pub database_name: String,
+    pub tables: Vec<DocumentationTable>,
+    pub columns: Vec<DocumentationColumn>,
+    pub indexes: Vec<DocumentationIndex>,
+    pub undocumented_tables: usize,
+    pub undocumented_columns: usize,
+    pub undocumented_indexes: usize,
+}
+
+/// A documentation comment patch to apply with COMMENT ON.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DocumentationCommentPatch {
+    /// table | column | index
+    pub kind: String,
+    pub schema: String,
+    pub table: Option<String>,
+    pub column: Option<String>,
+    pub index: Option<String>,
+    pub comment: String,
 }
 
 /// Table trigger
@@ -280,6 +347,61 @@ pub struct QuerySample {
     pub query: String,
     pub calls: i64,
     pub mean_exec_time_ms: f64,
+}
+
+/// Runtime status of pg_stat_statements on the connected database.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PgStatStatementsStatus {
+    pub extension_installed: bool,
+    pub preload_enabled: bool,
+    pub can_query: bool,
+    pub shared_preload_libraries: Option<String>,
+    pub message: Option<String>,
+}
+
+/// Search/sort/pagination parameters for pg_stat_statements list view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PgStatStatementsFilter {
+    pub search_text: Option<String>,
+    pub min_mean_ms: Option<f64>,
+    /// slowest | max | total | calls | rows | disk
+    pub sort_by: Option<String>,
+    /// ASC | DESC
+    pub sort_dir: Option<String>,
+    pub limit: Option<u32>,
+    pub offset: Option<u32>,
+}
+
+/// One aggregated query entry from pg_stat_statements.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PgStatStatementEntry {
+    pub query_id: String,
+    pub query: String,
+    pub calls: i64,
+    pub total_exec_time_ms: f64,
+    pub mean_exec_time_ms: f64,
+    pub min_exec_time_ms: f64,
+    pub max_exec_time_ms: f64,
+    pub stddev_exec_time_ms: Option<f64>,
+    pub rows: i64,
+    pub shared_blks_hit: i64,
+    pub shared_blks_read: i64,
+    pub temp_blks_written: i64,
+    pub blk_read_time_ms: Option<f64>,
+    pub blk_write_time_ms: Option<f64>,
+    pub hit_percent: f64,
+    /// Estimated number of calls that likely exceeded 1 second.
+    pub slow_call_estimate: i64,
+}
+
+/// Paged response for pg_stat_statements list.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PgStatStatementsPage {
+    pub items: Vec<PgStatStatementEntry>,
+    pub total_count: i64,
+    pub limit: u32,
+    pub offset: u32,
+    pub has_more: bool,
 }
 
 /// A query from pg_stat_statements that would benefit from a proposed index

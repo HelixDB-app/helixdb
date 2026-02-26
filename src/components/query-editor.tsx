@@ -6,6 +6,8 @@ import type { QueryHistoryEntry } from "@/stores/query-store";
 import { useSandboxStore } from "@/stores/sandbox-store";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useNotesStore } from "@/stores/notes-store";
+import { useSettingsStore } from "@/stores/settings-store";
+import { useShallow } from "zustand/react/shallow";
 import { formatCellValue } from "@/lib/types";
 import type { QueryResult } from "@/lib/types";
 import { dbGetColumns, dbExplainQuery, dbExecuteQuery } from "@/lib/tauri";
@@ -14,9 +16,11 @@ import { QueryPlanViewer } from "@/components/query-plan-viewer";
 import { SandboxDiffViewer } from "@/components/sandbox-diff-viewer";
 import { DataCanvas } from "@/components/data-canvas";
 import { VirtualizedQueryResultTable } from "@/components/virtualized-query-result-table";
+import { QueryReviewPanel } from "@/components/query-review-panel";
 import { format as formatSQL } from "sql-formatter";
 import { MonacoSqlEditor } from "@/components/monaco-sql-editor";
 import { aiSuggestionEngine } from "@/lib/ai-suggestions";
+import { getSqlReviewIntent, runSqlSafetyReview, type SqlReviewReport } from "@/lib/sql-review";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -37,7 +41,6 @@ import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuItem,
-    DropdownMenuSeparator,
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -57,18 +60,13 @@ import {
     FileText,
     Braces,
     ChevronDown,
-    RotateCcw,
-    XCircle,
     AlignLeft,
     Search,
-    Filter,
     GitBranch,
     Shield,
     ShieldCheck,
-    ShieldOff,
     LayoutDashboard,
     StickyNote,
-    Save,
     Maximize2,
     Minimize2,
     Sparkles,
@@ -165,6 +163,32 @@ function downloadBlob(content: string, filename: string, mimeType: string) {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
+}
+
+function normalizeSqlForCompare(sql: string): string {
+    return sql.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+function getReviewIssueCounts(report: SqlReviewReport) {
+    return report.issues.reduce(
+        (acc, issue) => {
+            if (issue.severity === "block") acc.block += 1;
+            if (issue.severity === "warn") acc.warn += 1;
+            if (issue.severity === "info") acc.info += 1;
+            return acc;
+        },
+        { block: 0, warn: 0, info: 0 }
+    );
+}
+
+function columnCacheKey(schema: string, table: string): string {
+    return `${schema}.${table}`.toLowerCase();
+}
+
+function getCachedColumns(cache: Record<string, string[]>, schema: string, table: string): string[] {
+    const scoped = cache[columnCacheKey(schema, table)];
+    if (scoped) return scoped;
+    return cache[table.toLowerCase()] ?? [];
 }
 
 // ── Error panel ────────────────────────────────────────────────────────────
@@ -561,6 +585,21 @@ function HistoryPanel({
                                                 </span>
                                             </>
                                         )}
+                                        {entry.aiReview && (
+                                            <>
+                                                <span className="text-muted-foreground/20">·</span>
+                                                <span
+                                                    className={cn(
+                                                        "text-[10px] font-medium",
+                                                        entry.aiReview.overridden
+                                                            ? "text-amber-400/80"
+                                                            : "text-emerald-400/70"
+                                                    )}
+                                                >
+                                                    {entry.aiReview.overridden ? "AI override" : "AI reviewed"}
+                                                </span>
+                                            </>
+                                        )}
                                     </div>
                                 </div>
 
@@ -622,7 +661,23 @@ function HistoryPanel({
 // ── Main component ─────────────────────────────────────────────────────────
 
 export function QueryEditor() {
-    const { connectionId, databaseName, tables, selectedSchema, schemaFunctions } = useConnectionStore();
+    const { connectionId, databaseName, tables, selectedSchema, schemaFunctions } = useConnectionStore(
+        useShallow((state) => ({
+            connectionId: state.connectionId,
+            databaseName: state.databaseName,
+            tables: state.tables,
+            selectedSchema: state.selectedSchema,
+            schemaFunctions: state.schemaFunctions,
+        }))
+    );
+    const {
+        aiReviewEnabled,
+        aiReviewAutoOnDml,
+        aiReviewUseGemini,
+        aiReviewModel,
+        aiReviewComplexLineThreshold,
+        geminiApiKey,
+    } = useSettingsStore();
     const {
         tabs,
         activeTabId,
@@ -689,6 +744,13 @@ export function QueryEditor() {
     }, [loadSandboxHistory]);
 
     const activeTab = tabs.find((t) => t.id === activeTabId);
+    const [reviewReport, setReviewReport] = useState<SqlReviewReport | null>(null);
+    const [reviewLoading, setReviewLoading] = useState(false);
+    const [reviewPendingApproval, setReviewPendingApproval] = useState<{
+        sql: string;
+        mode: "direct" | "sandbox";
+        trigger: "auto" | "manual";
+    } | null>(null);
     const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
     const [historyOpen, setHistoryOpen] = useState(false);
     const [notesOpen, setNotesOpen] = useState(false);
@@ -710,27 +772,71 @@ export function QueryEditor() {
     const isExplaining = activeTabId ? (planLoading[activeTabId] ?? false) : false;
     const activeResultView = activeTabId ? (resultView[activeTabId] ?? "results") : "results";
 
-    // Column cache for schema-aware completions: tableName → column names
+    // Column cache for schema-aware completions.
     const [columnCache, setColumnCache] = useState<Record<string, string[]>>({});
-    // Ref so eager-loader can read current cache without being in its dep array
     const columnCacheRef = useRef<Record<string, string[]>>({});
+    const pendingColumnLoadsRef = useRef<Record<string, Promise<string[]>>>({});
+
     useEffect(() => { columnCacheRef.current = columnCache; }, [columnCache]);
+    useEffect(() => {
+        setColumnCache({});
+        columnCacheRef.current = {};
+        pendingColumnLoadsRef.current = {};
+    }, [connectionId]);
+
+    const tablesByPriority = useMemo(() => {
+        if (!selectedSchema) return tables;
+        return [
+            ...tables.filter((table) => table.schema === selectedSchema),
+            ...tables.filter((table) => table.schema !== selectedSchema),
+        ];
+    }, [tables, selectedSchema]);
 
     // Build schema context from connection store
     const schemaContext = useMemo(
         () => ({
-            tables: tables.map((t) => t.name),
-            columns: columnCache,
+            tables: tablesByPriority.map((t) => t.name),
+            columns: tablesByPriority.reduce<Record<string, string[]>>((acc, table) => {
+                const tableName = table.name.toLowerCase();
+                if (acc[tableName]) return acc;
+                acc[tableName] = getCachedColumns(columnCache, table.schema, table.name);
+                return acc;
+            }, {}),
         }),
-        [tables, columnCache]
+        [tablesByPriority, columnCache]
     );
+
+    const tableRowCounts = useMemo(() => {
+        const out: Record<string, number> = {};
+        for (const table of tables) {
+            out[table.name.toLowerCase()] = table.row_count ?? 0;
+        }
+        return out;
+    }, [tables]);
+
+    const tableColumnsForReview = useMemo(() => {
+        const out: Record<string, string[]> = {};
+        for (const table of tables) {
+            const cols = getCachedColumns(columnCache, table.schema, table.name);
+            const tableName = table.name.toLowerCase();
+            if (!out[tableName] || table.schema === selectedSchema) {
+                out[tableName] = cols.map((c) => c.toLowerCase());
+            }
+        }
+        return out;
+    }, [tables, columnCache, selectedSchema]);
+
+    const reviewIsStale = useMemo(() => {
+        if (!reviewReport || !activeTab?.sql) return false;
+        return normalizeSqlForCompare(reviewReport.sql) !== normalizeSqlForCompare(activeTab.sql);
+    }, [reviewReport, activeTab?.sql]);
 
     // Schema summary for AI error explanation (tables + columns, functions in current schema)
     const schemaContextForAi = useMemo(() => {
         const schema = selectedSchema ?? "public";
         const tableLines = tables
             .filter((t) => t.schema === schema)
-            .map((t) => `  ${t.schema}.${t.name}: ${(columnCache[t.name] ?? []).join(", ") || "(columns not loaded)"}`);
+            .map((t) => `  ${t.schema}.${t.name}: ${getCachedColumns(columnCache, t.schema, t.name).join(", ") || "(columns not loaded)"}`);
         const funcs = schemaFunctions[schema] ?? [];
         const funcLines = funcs
             .filter((f) => !f.is_trigger_function)
@@ -744,71 +850,53 @@ export function QueryEditor() {
         ].join("\n");
     }, [tables, columnCache, selectedSchema, schemaFunctions]);
 
-    // ── Eager column preloading ─────────────────────────────────────────────
-    // When the connection or table list changes, batch-fetch columns for every
-    // table so the AI always has the real schema instead of guessing.
-    useEffect(() => {
-        if (!connectionId || tables.length === 0) return;
-        let cancelled = false;
-
-        const load = async () => {
-            const BATCH = 6;
-            for (let i = 0; i < tables.length; i += BATCH) {
-                if (cancelled) break;
-                const batch = tables.slice(i, i + BATCH);
-                await Promise.allSettled(
-                    batch
-                        .filter((t) => !columnCacheRef.current[t.name])
-                        .map(async (tableInfo) => {
-                            try {
-                                const cols = await dbGetColumns(
-                                    connectionId,
-                                    tableInfo.schema,
-                                    tableInfo.name
-                                );
-                                if (!cancelled) {
-                                    setColumnCache((prev) => ({
-                                        ...prev,
-                                        [tableInfo.name]: cols.map((c) => c.name),
-                                    }));
-                                }
-                            } catch {
-                                // ignore individual failures silently
-                            }
-                        })
-                );
-            }
-        };
-
-        load();
-        return () => { cancelled = true; };
-        // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [connectionId, tables]);
-
-    // Lazily fetch columns on-demand (e.g. "tableName." typed) — keeps cache warm
+    // Lazily fetch columns on-demand (e.g. "tableName." typed), with request dedupe.
     const handleFetchColumns = useCallback(
         async (tableName: string): Promise<string[]> => {
             if (!connectionId) return [];
-            const cached = columnCacheRef.current[tableName];
-            if (cached) return cached;
+            const normalized = tableName.toLowerCase();
             const tableInfo = tables.find(
-                (t) => t.name.toLowerCase() === tableName.toLowerCase()
-            );
+                (table) =>
+                    table.name.toLowerCase() === normalized &&
+                    (!selectedSchema || table.schema === selectedSchema)
+            ) ?? tables.find((table) => table.name.toLowerCase() === normalized);
             if (!tableInfo) return [];
+
+            const cacheKey = columnCacheKey(tableInfo.schema, tableInfo.name);
+            const cached = getCachedColumns(columnCacheRef.current, tableInfo.schema, tableInfo.name);
+            if (cached.length > 0) return cached;
+
+            const requestKey = `${connectionId}:${cacheKey}`;
+            const existingRequest = pendingColumnLoadsRef.current[requestKey];
+            if (existingRequest) return existingRequest;
+
             try {
-                const cols = await dbGetColumns(
+                const request = dbGetColumns(
                     connectionId,
                     tableInfo.schema,
                     tableInfo.name
-                );
-                const colNames = cols.map((c) => c.name);
-                setColumnCache((prev) => ({ ...prev, [tableName]: colNames }));
-                return colNames;
+                ).then((cols) => {
+                    if (useConnectionStore.getState().connectionId !== connectionId) return [];
+                    const colNames = cols.map((c) => c.name);
+                    setColumnCache((prev) => {
+                        const next = { ...prev, [cacheKey]: colNames };
+                        const unscoped = tableInfo.name.toLowerCase();
+                        if (!prev[unscoped] || tableInfo.schema === selectedSchema) {
+                            next[unscoped] = colNames;
+                        }
+                        return next;
+                    });
+                    return colNames;
+                });
+                pendingColumnLoadsRef.current[requestKey] = request;
+                return await request;
             } catch {
                 return [];
+            } finally {
+                delete pendingColumnLoadsRef.current[`${connectionId}:${cacheKey}`];
             }
         },
-        [connectionId, tables]
+        [connectionId, selectedSchema, tables]
     );
 
     const handleFormatSql = useCallback(
@@ -864,6 +952,14 @@ export function QueryEditor() {
         if (tabs.length === 0) addTab();
     }, [tabs.length, addTab]);
 
+    // If SQL changed after an auto-review gate, require a fresh review.
+    useEffect(() => {
+        if (!reviewPendingApproval || !activeTab?.sql) return;
+        if (normalizeSqlForCompare(reviewPendingApproval.sql) !== normalizeSqlForCompare(activeTab.sql)) {
+            setReviewPendingApproval(null);
+        }
+    }, [reviewPendingApproval, activeTab?.sql]);
+
     // ⌘+Shift+P command palette / ⌘+Shift+H history / Esc exit full-screen
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
@@ -888,18 +984,158 @@ export function QueryEditor() {
         return () => window.removeEventListener("keydown", onKey);
     }, []);
 
-    const handleExecute = useCallback(() => {
+    const executeCurrentSql = useCallback(
+        (mode: "direct" | "sandbox", reviewMode?: "manual" | "auto", reviewReportForAudit?: SqlReviewReport) => {
+            if (!connectionId || !activeTabId) return;
+            const sql = activeTab?.sql.trim() ?? "";
+            if (!sql) return;
+
+            const reviewAudit = reviewReportForAudit
+                ? {
+                    mode: reviewMode ?? "manual",
+                    overridden: reviewReportForAudit.issues.some(
+                        (issue) => issue.severity === "block" || issue.severity === "warn"
+                    ),
+                    aiModel: reviewReportForAudit.aiModel,
+                    issueCounts: getReviewIssueCounts(reviewReportForAudit),
+                }
+                : undefined;
+
+            if (mode === "sandbox") {
+                runInSandbox(connectionId, sql);
+                return;
+            }
+
+            executeQuery(connectionId, activeTabId, databaseName || undefined, { aiReview: reviewAudit });
+        },
+        [connectionId, activeTabId, activeTab?.sql, databaseName, executeQuery, runInSandbox]
+    );
+
+    const runQueryReview = useCallback(
+        async (trigger: "manual" | "auto"): Promise<SqlReviewReport | null> => {
+            if (!activeTab?.sql.trim()) return null;
+            const sql = activeTab.sql.trim();
+
+            setReviewLoading(true);
+            setReviewPendingApproval(null);
+            try {
+                const report = await runSqlSafetyReview(
+                    sql,
+                    {
+                        tableColumns: tableColumnsForReview,
+                        tableRowCounts,
+                        schemaSummary: schemaContextForAi,
+                    },
+                    {
+                        enableGemini: aiReviewUseGemini,
+                        geminiApiKey: geminiApiKey.trim(),
+                        geminiModel: aiReviewModel,
+                        complexLineThreshold: aiReviewComplexLineThreshold,
+                    }
+                );
+
+                setReviewReport(report);
+
+                if (trigger === "manual") {
+                    const counts = getReviewIssueCounts(report);
+                    if (counts.block > 0) {
+                        toast.error(`AI Review: ${counts.block} blocking issue(s) found.`, { duration: 2600 });
+                    } else if (counts.warn > 0) {
+                        toast.warning(`AI Review: ${counts.warn} warning(s) found.`, { duration: 2600 });
+                    } else {
+                        toast.success("AI Review passed.", { duration: 1800 });
+                    }
+                }
+
+                return report;
+            } catch (error) {
+                const msg = error instanceof Error ? error.message : "Review failed.";
+                toast.error(`AI review failed: ${msg}`, { duration: 3500 });
+                return null;
+            } finally {
+                setReviewLoading(false);
+            }
+        },
+        [
+            activeTab?.sql,
+            aiReviewUseGemini,
+            geminiApiKey,
+            aiReviewModel,
+            aiReviewComplexLineThreshold,
+            tableColumnsForReview,
+            tableRowCounts,
+            schemaContextForAi,
+        ]
+    );
+
+    const handleManualReview = useCallback(async () => {
+        if (!aiReviewEnabled) {
+            toast.info("AI Review Mode is disabled. Enable it in Settings > Query.");
+            return;
+        }
+        await runQueryReview("manual");
+    }, [aiReviewEnabled, runQueryReview]);
+
+    const handleRunAfterReview = useCallback(() => {
+        if (!reviewPendingApproval || !activeTab?.sql) return;
+        const currentSql = activeTab.sql.trim();
+        if (normalizeSqlForCompare(reviewPendingApproval.sql) !== normalizeSqlForCompare(currentSql)) {
+            setReviewPendingApproval(null);
+            toast.info("SQL changed after review. Run review again before executing.");
+            return;
+        }
+
+        executeCurrentSql(reviewPendingApproval.mode, reviewPendingApproval.trigger, reviewReport ?? undefined);
+        setReviewPendingApproval(null);
+    }, [reviewPendingApproval, activeTab?.sql, executeCurrentSql, reviewReport]);
+
+    const handleCancelPendingReview = useCallback(() => {
+        setReviewPendingApproval(null);
+    }, []);
+
+    const handleExecute = useCallback(async () => {
         if (!connectionId || !activeTabId) return;
         const sql = activeTab?.sql.trim() ?? "";
         if (!sql) return;
 
-        if (isSandboxMode) {
-            // Route to sandbox: open transaction, execute, show diff
-            runInSandbox(connectionId, sql);
-        } else {
-            executeQuery(connectionId, activeTabId, databaseName || undefined);
+        const mode: "direct" | "sandbox" = isSandboxMode ? "sandbox" : "direct";
+        const intent = getSqlReviewIntent(sql);
+        const shouldAutoReview = aiReviewEnabled && aiReviewAutoOnDml && intent.autoReviewCandidate;
+
+        if (!shouldAutoReview) {
+            if (reviewPendingApproval) setReviewPendingApproval(null);
+            const reviewedForCurrentSql =
+                reviewReport && !reviewIsStale ? reviewReport : undefined;
+            executeCurrentSql(
+                mode,
+                reviewedForCurrentSql ? "manual" : undefined,
+                reviewedForCurrentSql
+            );
+            return;
         }
-    }, [connectionId, activeTabId, databaseName, executeQuery, isSandboxMode, activeTab?.sql, runInSandbox]);
+
+        const report = await runQueryReview("auto");
+        if (!report) return;
+
+        setReviewPendingApproval({
+            sql,
+            mode,
+            trigger: "auto",
+        });
+        toast.info("AI review complete. Confirm in the review panel to execute.", { duration: 2600 });
+    }, [
+        connectionId,
+        activeTabId,
+        activeTab?.sql,
+        isSandboxMode,
+        aiReviewEnabled,
+        aiReviewAutoOnDml,
+        reviewPendingApproval,
+        reviewReport,
+        reviewIsStale,
+        executeCurrentSql,
+        runQueryReview,
+    ]);
 
     const handleExplain = useCallback(async (tabId?: string, sql?: string) => {
         const tid = tabId ?? activeTabId;
@@ -1212,6 +1448,23 @@ export function QueryEditor() {
                 </div>
             )}
 
+            {/* AI review panel */}
+            {aiReviewEnabled && (
+                <QueryReviewPanel
+                    report={reviewReport}
+                    isLoading={reviewLoading}
+                    isStale={reviewIsStale}
+                    onRecheck={handleManualReview}
+                    onClose={() => {
+                        setReviewReport(null);
+                        setReviewPendingApproval(null);
+                    }}
+                    pendingApproval={Boolean(reviewPendingApproval)}
+                    onRunPending={handleRunAfterReview}
+                    onCancelPending={handleCancelPendingReview}
+                />
+            )}
+
             {/* Editor area */}
             {activeTab && (
                 <>
@@ -1225,9 +1478,24 @@ export function QueryEditor() {
                                         size="sm"
                                         variant="outline"
                                         className="h-8 gap-1.5"
+                                        onClick={handleManualReview}
+                                        disabled={!activeTab.sql.trim() || activeTab.isExecuting || reviewLoading || !aiReviewEnabled}
+                                    >
+                                        {reviewLoading ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                            <Shield className="h-3.5 w-3.5" />
+                                        )}
+                                        Review
+                                    </Button>
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="h-8 gap-1.5"
                                         onClick={handleExecute}
                                         disabled={
                                             activeTab.isExecuting ||
+                                            reviewLoading ||
                                             isSandboxBusy ||
                                             isSandboxReviewing ||
                                             !activeTab.sql.trim()
@@ -1262,9 +1530,11 @@ export function QueryEditor() {
                                         value={activeTab.sql}
                                         onChange={(v) => updateSql(activeTab.id, v)}
                                         onExecute={handleExecute}
+                                        onReview={handleManualReview}
                                         onFormatSql={handleFormatSql}
                                         onFetchColumns={handleFetchColumns}
                                         onNextAction={handleNextAction}
+                                        reviewIssues={reviewReport?.issues ?? []}
                                         schemaContext={schemaContext}
                                         disabled={activeTab.isExecuting}
                                         className="rounded-none border-0"
@@ -1320,9 +1590,11 @@ export function QueryEditor() {
                             value={activeTab.sql}
                             onChange={(v) => updateSql(activeTab.id, v)}
                             onExecute={handleExecute}
+                            onReview={handleManualReview}
                             onFormatSql={handleFormatSql}
                             onFetchColumns={handleFetchColumns}
                             onNextAction={handleNextAction}
+                            reviewIssues={reviewReport?.issues ?? []}
                             schemaContext={schemaContext}
                             disabled={activeTab.isExecuting}
                             className="rounded-none border-0"
@@ -1362,6 +1634,25 @@ export function QueryEditor() {
                                     </Button>
                                 </TooltipTrigger>
                                 <TooltipContent>Format SQL (⇧⌥F)</TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-8 gap-1.5 text-xs border-border/40 text-muted-foreground hover:text-foreground hover:border-border/70"
+                                        onClick={handleManualReview}
+                                        disabled={!activeTab.sql.trim() || activeTab.isExecuting || reviewLoading || !aiReviewEnabled}
+                                    >
+                                        {reviewLoading ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                            <Shield className="h-3.5 w-3.5" />
+                                        )}
+                                        Review
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>AI Review Mode (⌘R)</TooltipContent>
                             </Tooltip>
                             <span className="text-[10px] text-muted-foreground/40 font-mono">
                                 ⌘+Enter to run
@@ -1409,6 +1700,7 @@ export function QueryEditor() {
                                 onClick={handleExecute}
                                 disabled={
                                     activeTab.isExecuting ||
+                                    reviewLoading ||
                                     isSandboxBusy ||
                                     isSandboxReviewing ||
                                     !activeTab.sql.trim()
@@ -1559,7 +1851,7 @@ export function QueryEditor() {
                                 <ShieldCheck className="h-12 w-12 mb-3 opacity-15 text-emerald-400" />
                                 <p className="text-sm font-medium">Sandbox mode active</p>
                                 <p className="text-xs mt-1 opacity-60">
-                                    Write SQL above and press ⌘+Enter — changes won't be committed until you approve
+                                    Write SQL above and press ⌘+Enter. Changes will not be committed until you approve.
                                 </p>
                             </div>
                         )}

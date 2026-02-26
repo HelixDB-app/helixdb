@@ -36,6 +36,7 @@ import {
     Network,
     PlugZap,
     RefreshCw,
+    Clock3,
     Search,
     Settings,
     Bug,
@@ -96,10 +97,10 @@ export default function Home() {
         return () => window.removeEventListener("keydown", handler);
     }, []);
 
-    // Global ⌘R / Ctrl+R — refresh all (schemas, databases, current table)
+    // Global ⌘⇧R / Ctrl+Shift+R — refresh all (schemas, databases, current table)
     useEffect(() => {
         const handler = (e: KeyboardEvent) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "r") {
+            if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "r") {
                 e.preventDefault();
                 if (isConnected) refreshAll();
             }
@@ -191,12 +192,12 @@ export default function Home() {
                                         {isRefreshingAll ? "Refreshing…" : "Refresh"}
                                     </span>
                                     <kbd className="hidden sm:inline-flex h-4 items-center rounded border border-border/30 bg-muted/40 px-1 font-mono text-[9px] text-muted-foreground/40 ml-0.5">
-                                        ⌘R
+                                        ⌘⇧R
                                     </kbd>
                                 </Button>
                             </TooltipTrigger>
                             <TooltipContent>
-                                Refresh current table and metadata (⌘R)
+                                Refresh current table and metadata (⌘⇧R)
                             </TooltipContent>
                         </Tooltip>
                     )}
@@ -318,6 +319,23 @@ export default function Home() {
                             <TooltipContent>Connect to database</TooltipContent>
                         </Tooltip>
                     )}
+
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                asChild
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 gap-1.5 px-2.5 text-xs text-muted-foreground/60 hover:text-foreground border border-border/20 hover:border-border/40 bg-muted/20 hover:bg-muted/40 transition-all"
+                            >
+                                <Link href="/query-history">
+                                    <Clock3 className="h-3.5 w-3.5" />
+                                    <span className="hidden sm:inline">Query History</span>
+                                </Link>
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Open Query History & Performance Intelligence</TooltipContent>
+                    </Tooltip>
 
                     <Tooltip>
                         <TooltipTrigger asChild>

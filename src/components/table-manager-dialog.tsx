@@ -317,7 +317,7 @@ function ColumnsTab({
                             ) : (
                                 <tr key={col.name} className="border-b border-border/10 hover:bg-accent/20 group">
                                     <td className="px-4 py-2 text-muted-foreground/40 font-mono tabular-nums">{col.ordinal_position}</td>
-                                    <td className="px-3 py-2 font-mono font-medium">{col.name}</td>
+                                    <td className="px-3 py-2 font-mono font-medium" title={col.comment?.trim() || undefined}>{col.name}</td>
                                     <td className="px-3 py-2 text-sky-400/80 font-mono">{col.data_type}</td>
                                     <td className="px-3 py-2 text-muted-foreground/60 font-mono truncate max-w-[120px]">
                                         {col.column_default ?? <span className="italic opacity-40">NULL</span>}
@@ -479,6 +479,9 @@ function IndexesTab({ details }: { details: TableDetails }) {
                             <div className="font-mono text-[10px] text-muted-foreground/50 bg-muted/20 rounded px-2 py-1 break-all">
                                 {idx.definition}
                             </div>
+                            {idx.comment?.trim() && (
+                                <p className="mt-1.5 text-[10px] text-muted-foreground/70">{idx.comment}</p>
+                            )}
                         </div>
                     ))}
                 </div>

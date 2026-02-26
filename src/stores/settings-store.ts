@@ -34,6 +34,11 @@ export interface AppSettings {
     autoFormatOnExecute: boolean;
     confirmDangerousQueries: boolean;
     queryTimeoutSeconds: number;
+    aiReviewEnabled: boolean;
+    aiReviewAutoOnDml: boolean;
+    aiReviewUseGemini: boolean;
+    aiReviewModel: GeminiModelId;
+    aiReviewComplexLineThreshold: number;
 
     // Notifications
     notificationsEnabled: boolean;
@@ -68,6 +73,11 @@ const DEFAULT_SETTINGS: AppSettings = {
     autoFormatOnExecute: false,
     confirmDangerousQueries: true,
     queryTimeoutSeconds: 30,
+    aiReviewEnabled: true,
+    aiReviewAutoOnDml: true,
+    aiReviewUseGemini: true,
+    aiReviewModel: "gemini-2.5-flash-lite",
+    aiReviewComplexLineThreshold: 10,
     notificationsEnabled: true,
     geminiApiKey: "AIzaSyCtgJ0ORZ-Bd7tnFoqYK4IHUIHpMExqgKM",
     defaultAiModel: "gemini-2.5-flash",

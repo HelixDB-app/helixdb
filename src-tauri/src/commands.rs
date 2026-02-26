@@ -1,7 +1,6 @@
 use tauri::{AppHandle, Manager, State};
 
 use crate::connections_storage::{self, SavedConnection};
-use crate::local_postgres::{self, LocalPostgresStatus};
 use crate::db::types::{FilterCondition, ColumnStats};
 use crate::db::{
     cache::MetadataCache,
@@ -11,6 +10,8 @@ use crate::db::{
     types::{TableDetails, TopologyData, TypeDefinitionDetail, *},
     watcher::WatchManager,
 };
+use crate::local_postgres::{self, LocalPostgresStatus};
+use crate::query_history_storage::{self, QueryHistoryRecordInput};
 
 /// Application state shared across all Tauri commands
 pub struct AppState {
@@ -140,12 +141,95 @@ pub async fn db_get_columns(
     Ok(columns)
 }
 
+/// Get complete schema documentation context for AI comment generation.
+#[tauri::command]
+pub async fn db_get_documentation_context(
+    state: State<'_, AppState>,
+    connection_id: String,
+    schema: Option<String>,
+) -> Result<DocumentationContext, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::get_documentation_context(&pool, schema.as_deref()).await
+}
+
+/// Apply COMMENT ON statements in one transaction.
+#[tauri::command]
+pub async fn db_apply_documentation_comments(
+    state: State<'_, AppState>,
+    connection_id: String,
+    patches: Vec<DocumentationCommentPatch>,
+) -> Result<u64, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    let applied = queries::apply_documentation_comments(&pool, &patches).await?;
+    state.cache.invalidate(&connection_id);
+    Ok(applied)
+}
+
 fn is_created_at_column(name: &str) -> bool {
     let lower = name.to_lowercase();
     matches!(
         lower.as_str(),
         "created_at" | "createdat" | "create_date" | "creation_date" | "date_created" | "created"
     )
+}
+
+fn infer_connection_label(connection_string: Option<String>, fallback: &str) -> String {
+    let Some(raw) = connection_string else {
+        return fallback.to_string();
+    };
+    if let Ok(cfg) = raw.parse::<tokio_postgres::Config>() {
+        if let Some(db) = cfg.get_dbname() {
+            let db_name = db.to_string();
+            if !db_name.is_empty() {
+                return db_name;
+            }
+        }
+    }
+    fallback.to_string()
+}
+
+fn extract_error_code(message: Option<&str>) -> Option<String> {
+    let text = message?;
+
+    if let Some(idx) = text.find("SqlState(") {
+        let rest = &text[idx + "SqlState(".len()..];
+        if let Some(end) = rest.find(')') {
+            let code = &rest[..end];
+            if !code.trim().is_empty() {
+                return Some(code.trim().to_string());
+            }
+        }
+    }
+
+    if let Some(idx) = text.to_ascii_uppercase().find("SQLSTATE") {
+        let rest = &text[idx..];
+        let code: String = rest
+            .chars()
+            .skip_while(|c| !c.is_ascii_alphanumeric())
+            .take_while(|c| c.is_ascii_alphanumeric())
+            .collect();
+        if code.len() == 5 {
+            return Some(code);
+        }
+    }
+
+    None
+}
+
+fn extract_rows_affected(result: &QueryResult) -> Option<i64> {
+    if result.columns.len() == 1 && result.columns[0].name == "affected_rows" {
+        if let Some(first_row) = result.rows.first() {
+            if let Some(cell) = first_row.first() {
+                return match cell {
+                    CellValue::Int64(v) => Some(*v),
+                    CellValue::Int32(v) => Some(*v as i64),
+                    CellValue::Int16(v) => Some(*v as i64),
+                    _ => None,
+                };
+            }
+        }
+    }
+    None
 }
 
 /// Get paginated table data. When no sort is given, defaults to ORDER BY created_at (or similar) DESC so newest rows appear first.
@@ -188,11 +272,92 @@ pub async fn db_get_table_data(
 #[tauri::command]
 pub async fn db_execute_query(
     state: State<'_, AppState>,
+    app: AppHandle,
     connection_id: String,
     sql: String,
 ) -> Result<QueryResult, String> {
     let pool = state.conn_manager.get_pool(&connection_id)?;
-    queries::execute_query(&pool, &sql).await
+    let query_start = std::time::Instant::now();
+    let executed_at = chrono::Utc::now().timestamp_millis();
+
+    let connection_label = infer_connection_label(
+        state.conn_manager.get_connection_string(&connection_id),
+        &connection_id,
+    );
+    let app_data_dir = app.path().app_data_dir().ok();
+
+    match queries::execute_query(&pool, &sql).await {
+        Ok(result) => {
+            let rows_affected = extract_rows_affected(&result);
+            let rows_returned = if result.is_error || rows_affected.is_some() {
+                None
+            } else {
+                Some(result.row_count as i64)
+            };
+
+            let status = if result.is_error { "failed" } else { "success" }.to_string();
+            let error_message = result.error_message.clone();
+            let error_code = extract_error_code(error_message.as_deref());
+            let record = QueryHistoryRecordInput {
+                query_text: sql.clone(),
+                connection_id: connection_id.clone(),
+                connection_label,
+                executed_at,
+                planning_ms: None,
+                execution_ms: result.execution_time_ms,
+                total_ms: result.execution_time_ms,
+                rows_returned,
+                rows_affected,
+                status,
+                error_code,
+                error_message,
+                explain_json: None,
+                blks_hit: None,
+                blks_read: None,
+                temp_blks_written: None,
+                query_type: None,
+                tables_touched: None,
+                was_cached: false,
+            };
+
+            tokio::task::spawn_blocking(move || {
+                let _ = query_history_storage::record_query(app_data_dir, record);
+            });
+
+            Ok(result)
+        }
+        Err(err) => {
+            let elapsed_ms = query_start.elapsed().as_secs_f64() * 1000.0;
+            let error_message = Some(err.clone());
+            let record = QueryHistoryRecordInput {
+                query_text: sql,
+                connection_id,
+                connection_label,
+                executed_at,
+                planning_ms: None,
+                execution_ms: elapsed_ms,
+                total_ms: elapsed_ms,
+                rows_returned: None,
+                rows_affected: None,
+                status: "failed".to_string(),
+                error_code: extract_error_code(error_message.as_deref()),
+                error_message,
+                explain_json: None,
+                blks_hit: None,
+                blks_read: None,
+                temp_blks_written: None,
+                query_type: None,
+                tables_touched: None,
+                was_cached: false,
+            };
+
+            tokio::task::spawn_blocking(move || {
+                let _ = query_history_storage::record_query(app_data_dir, record);
+            });
+
+            Err(err)
+        }
+    }
 }
 
 /// List all databases on the connected server
@@ -870,6 +1035,37 @@ pub async fn db_sandbox_elapsed(
 
 // ─── Visual Index Builder ──────────────────────────────────────────────────
 
+/// Check runtime availability of pg_stat_statements on the current connection.
+#[tauri::command]
+pub async fn db_pg_stat_statements_status(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<PgStatStatementsStatus, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::get_pg_stat_statements_status(&pool).await
+}
+
+/// Enable pg_stat_statements extension in the current database and return refreshed status.
+#[tauri::command]
+pub async fn db_pg_stat_statements_enable(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<PgStatStatementsStatus, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::enable_pg_stat_statements(&pool).await
+}
+
+/// List statements from pg_stat_statements with server-side pagination.
+#[tauri::command]
+pub async fn db_pg_stat_statements_list(
+    state: State<'_, AppState>,
+    connection_id: String,
+    filter: PgStatStatementsFilter,
+) -> Result<PgStatStatementsPage, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::list_pg_stat_statements(&pool, &filter).await
+}
+
 /// Get all indexes in a schema with live usage statistics from pg_stat_user_indexes.
 /// Wrapped in a timeout so the UI never hangs (e.g. slow pool or large catalogs).
 #[tauri::command]
@@ -1046,4 +1242,122 @@ pub async fn schema_designer_delete_project(
         .app_data_dir()
         .map_err(|e| e.to_string())?;
     crate::schema_designer_storage::delete_project(Some(app_data_dir), &id)
+}
+
+// ─── Query History & Performance Intelligence (SQLite local store) ────────
+
+#[tauri::command]
+pub async fn query_history_list(
+    app: AppHandle,
+    filter: query_history_storage::QueryHistoryFilter,
+) -> Result<query_history_storage::QueryHistoryListResponse, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || query_history_storage::list_queries(Some(app_data_dir), filter))
+        .await
+        .map_err(|e| format!("Query history worker failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn query_history_get_detail(
+    app: AppHandle,
+    id: i64,
+) -> Result<query_history_storage::QueryHistoryDetail, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || query_history_storage::get_query_detail(Some(app_data_dir), id))
+        .await
+        .map_err(|e| format!("Query history detail worker failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn query_history_get_dashboard(
+    app: AppHandle,
+    filter: query_history_storage::QueryHistoryDashboardFilter,
+) -> Result<query_history_storage::QueryHistoryDashboard, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || query_history_storage::get_dashboard(Some(app_data_dir), filter))
+        .await
+        .map_err(|e| format!("Query history dashboard worker failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn query_history_save_ai_analysis(
+    app: AppHandle,
+    id: i64,
+    analysis_json: String,
+) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || query_history_storage::save_ai_analysis(Some(app_data_dir), id, analysis_json))
+        .await
+        .map_err(|e| format!("Query history AI analysis worker failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn query_history_save_explain(
+    app: AppHandle,
+    id: i64,
+    explain_json: String,
+) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || query_history_storage::save_explain_json(Some(app_data_dir), id, explain_json))
+        .await
+        .map_err(|e| format!("Query history explain worker failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn query_history_toggle_bookmark(
+    app: AppHandle,
+    id: i64,
+    bookmark: bool,
+) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || query_history_storage::toggle_bookmark(Some(app_data_dir), id, bookmark))
+        .await
+        .map_err(|e| format!("Query history bookmark worker failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn query_history_save_note(
+    app: AppHandle,
+    id: i64,
+    note: Option<String>,
+) -> Result<(), String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || query_history_storage::save_note(Some(app_data_dir), id, note))
+        .await
+        .map_err(|e| format!("Query history note worker failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn query_history_export_csv(
+    app: AppHandle,
+    filter: query_history_storage::QueryHistoryFilter,
+) -> Result<String, String> {
+    let app_data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || query_history_storage::export_csv(Some(app_data_dir), filter))
+        .await
+        .map_err(|e| format!("Query history CSV export worker failed: {}", e))?
 }

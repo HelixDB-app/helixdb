@@ -8,7 +8,8 @@ import { cn } from "@/lib/utils";
 import { aiSuggestionEngine } from "@/lib/ai-suggestions";
 import type { SchemaContext } from "@/lib/ai-suggestions";
 import { useSettingsStore } from "@/stores/settings-store";
-import { Loader2, Sparkles, Zap } from "lucide-react";
+import type { SqlReviewIssue } from "@/lib/sql-review";
+import { Sparkles, Zap } from "lucide-react";
 
 const EDITOR_HEIGHT = 200;
 
@@ -37,9 +38,11 @@ export interface MonacoSqlEditorProps {
     value: string;
     onChange: (value: string) => void;
     onExecute: () => void;
+    onReview?: () => void;
     onFormatSql?: (formatted: string) => void;
     onFetchColumns?: (tableName: string) => Promise<string[]>;
     onNextAction?: (action: string) => void;
+    reviewIssues?: SqlReviewIssue[];
     schemaContext?: SchemaContext;
     disabled?: boolean;
     className?: string;
@@ -51,9 +54,11 @@ export function MonacoSqlEditor({
     value,
     onChange,
     onExecute,
+    onReview,
     onFormatSql,
     onFetchColumns,
     onNextAction,
+    reviewIssues,
     schemaContext,
     disabled,
     className,
@@ -78,6 +83,7 @@ export function MonacoSqlEditor({
     } = useSettingsStore();
 
     const editorRef = useRef<editor.IStandaloneCodeEditor | null>(null);
+    const monacoRef = useRef<typeof import("monaco-editor") | null>(null);
     const schemaContextRef = useRef<SchemaContext | undefined>(schemaContext);
     const disabledRef = useRef<boolean>(!!disabled);
     const onFetchColumnsRef = useRef<typeof onFetchColumns>(onFetchColumns);
@@ -159,6 +165,39 @@ export function MonacoSqlEditor({
             dropdownAbortRef.current?.abort();
         };
     }, []);
+
+    // Monaco decorations for AI Review findings.
+    useEffect(() => {
+        const editorInstance = editorRef.current;
+        const monacoInstance = monacoRef.current;
+        const model = editorInstance?.getModel();
+        if (!editorInstance || !monacoInstance || !model) return;
+
+        const markers = (reviewIssues ?? []).map((issue) => {
+            const line = Math.max(1, Math.min(issue.line ?? 1, model.getLineCount()));
+            const severity =
+                issue.severity === "block"
+                    ? monacoInstance.MarkerSeverity.Error
+                    : issue.severity === "warn"
+                        ? monacoInstance.MarkerSeverity.Warning
+                        : monacoInstance.MarkerSeverity.Hint;
+
+            return {
+                severity,
+                message: `[AI Review] ${issue.title}: ${issue.message}`,
+                startLineNumber: line,
+                startColumn: 1,
+                endLineNumber: line,
+                endColumn: model.getLineMaxColumn(line),
+                source: "AI Review",
+            };
+        });
+
+        monacoInstance.editor.setModelMarkers(model, "ai-review", markers);
+        return () => {
+            monacoInstance.editor.setModelMarkers(model, "ai-review", []);
+        };
+    }, [reviewIssues, value]);
 
     // ── Next-action suggestions (debounced 1.8s, only for substantial queries) ─
     useEffect(() => {
@@ -536,12 +575,20 @@ export function MonacoSqlEditor({
     const handleEditorDidMount = useCallback(
         (editorInstance: editor.IStandaloneCodeEditor, monacoInstance: typeof import("monaco-editor")) => {
             editorRef.current = editorInstance;
+            monacoRef.current = monacoInstance;
 
             editorInstance.addAction({
                 id: "run-query",
                 label: "Run Query",
                 keybindings: [monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.Enter],
                 run: () => onExecute(),
+            });
+
+            editorInstance.addAction({
+                id: "review-query",
+                label: "Review Query",
+                keybindings: [monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyR],
+                run: () => onReview?.(),
             });
 
             editorInstance.addAction({
@@ -578,7 +625,7 @@ export function MonacoSqlEditor({
 
             editorInstance.focus();
         },
-        [onExecute]
+        [onExecute, onReview]
     );
 
     return (

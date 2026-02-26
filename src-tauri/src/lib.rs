@@ -3,6 +3,7 @@ mod connections_storage;
 mod db;
 mod local_postgres;
 mod notes_storage;
+mod query_history_storage;
 mod schema_designer_storage;
 
 use commands::AppState;
@@ -20,6 +21,8 @@ pub fn run() {
             commands::db_list_tables,
             commands::db_get_schema_topology,
             commands::db_get_columns,
+            commands::db_get_documentation_context,
+            commands::db_apply_documentation_comments,
             commands::db_get_table_data,
             commands::db_execute_query,
             commands::db_refresh_cache,
@@ -70,6 +73,9 @@ pub fn run() {
             commands::db_sandbox_commit,
             commands::db_sandbox_rollback,
             commands::db_sandbox_elapsed,
+            commands::db_pg_stat_statements_status,
+            commands::db_pg_stat_statements_enable,
+            commands::db_pg_stat_statements_list,
             commands::db_get_indexes,
             commands::db_get_table_query_samples,
             commands::db_get_index_impact,
@@ -84,6 +90,14 @@ pub fn run() {
             commands::schema_designer_get_project,
             commands::schema_designer_save_project,
             commands::schema_designer_delete_project,
+            commands::query_history_list,
+            commands::query_history_get_detail,
+            commands::query_history_get_dashboard,
+            commands::query_history_save_ai_analysis,
+            commands::query_history_save_explain,
+            commands::query_history_toggle_bookmark,
+            commands::query_history_save_note,
+            commands::query_history_export_csv,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

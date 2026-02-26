@@ -580,17 +580,22 @@ pub async fn list_tables(pool: &Arc<Pool>, schema: &str) -> Result<Vec<TableInfo
 
     let rows = client
         .query(
-            "SELECT t.table_name, t.table_schema, t.table_type,
-                    COALESCE(
-                        (SELECT reltuples::bigint FROM pg_class c
-                         JOIN pg_namespace n ON n.oid = c.relnamespace
-                         WHERE c.relname = t.table_name AND n.nspname = t.table_schema),
-                        0
-                    ) AS estimated_row_count
-             FROM information_schema.tables t
-             WHERE t.table_schema = $1
-               AND t.table_type IN ('BASE TABLE', 'VIEW')
-             ORDER BY t.table_name",
+            "SELECT
+                c.relname AS table_name,
+                n.nspname AS table_schema,
+                CASE c.relkind
+                    WHEN 'v' THEN 'VIEW'
+                    WHEN 'm' THEN 'VIEW'
+                    ELSE 'BASE TABLE'
+                END AS table_type,
+                COALESCE(c.reltuples::bigint, 0) AS estimated_row_count,
+                d.description AS table_comment
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             LEFT JOIN pg_description d ON d.objoid = c.oid AND d.objsubid = 0
+             WHERE n.nspname = $1
+               AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+             ORDER BY c.relname",
             &[&schema],
         )
         .await
@@ -603,6 +608,7 @@ pub async fn list_tables(pool: &Arc<Pool>, schema: &str) -> Result<Vec<TableInfo
             schema: row.get(1),
             table_type: row.get(2),
             row_count: row.get(3),
+            table_comment: row.get(4),
         })
         .collect();
 
@@ -618,21 +624,31 @@ pub async fn get_columns(
 
     let rows = client
         .query(
-            "SELECT c.column_name, c.data_type, c.is_nullable,
-                    c.ordinal_position, c.column_default,
-                    EXISTS(
-                        SELECT 1 FROM information_schema.key_column_usage kcu
-                        JOIN information_schema.table_constraints tc
-                            ON tc.constraint_name = kcu.constraint_name
-                           AND tc.table_schema    = kcu.table_schema
-                        WHERE kcu.table_schema = c.table_schema
-                          AND kcu.table_name   = c.table_name
-                          AND kcu.column_name  = c.column_name
-                          AND tc.constraint_type = 'PRIMARY KEY'
-                    ) AS is_pk
-             FROM information_schema.columns c
-             WHERE c.table_schema = $1 AND c.table_name = $2
-             ORDER BY c.ordinal_position",
+            "SELECT
+                a.attname,
+                pg_catalog.format_type(a.atttypid, a.atttypmod),
+                NOT a.attnotnull AS is_nullable,
+                a.attnum::int AS ordinal_position,
+                pg_get_expr(ad.adbin, ad.adrelid) AS column_default,
+                EXISTS (
+                    SELECT 1
+                    FROM pg_index i
+                    WHERE i.indrelid = c.oid
+                      AND i.indisprimary
+                      AND a.attnum = ANY(i.indkey)
+                ) AS is_pk,
+                d.description AS column_comment
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_attribute a ON a.attrelid = c.oid
+             LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
+             LEFT JOIN pg_description d ON d.objoid = c.oid AND d.objsubid = a.attnum
+             WHERE n.nspname = $1
+               AND c.relname = $2
+               AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+               AND a.attnum > 0
+               AND NOT a.attisdropped
+             ORDER BY a.attnum",
             &[&schema, &table],
         )
         .await
@@ -640,20 +656,321 @@ pub async fn get_columns(
 
     let columns = rows
         .iter()
-        .map(|row| {
-            let is_nullable: String = row.get(2);
-            ColumnInfo {
-                name: row.get(0),
-                data_type: row.get(1),
-                is_nullable: is_nullable == "YES",
-                ordinal_position: row.get(3),
-                column_default: row.get(4),
-                is_primary_key: row.get(5),
-            }
+        .map(|row| ColumnInfo {
+            name: row.get(0),
+            data_type: row.get(1),
+            is_nullable: row.get(2),
+            ordinal_position: row.get(3),
+            column_default: row.get(4),
+            is_primary_key: row.get(5),
+            comment: row.get(6),
         })
         .collect();
 
     Ok(columns)
+}
+
+fn is_comment_missing(comment: &Option<String>) -> bool {
+    comment
+        .as_ref()
+        .map(|v| v.trim().is_empty())
+        .unwrap_or(true)
+}
+
+fn quote_literal(value: &str) -> String {
+    format!("'{}'", value.replace('\'', "''"))
+}
+
+/// Returns complete table/column/index metadata (including existing comments) for AI documentation.
+pub async fn get_documentation_context(
+    pool: &Arc<Pool>,
+    schema_filter: Option<&str>,
+) -> Result<DocumentationContext, String> {
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+
+    let db_row = client
+        .query_one("SELECT current_database()", &[])
+        .await
+        .map_err(|e| format!("Database name query error: {}", e))?;
+    let database_name: String = db_row.get(0);
+
+    let table_rows = client
+        .query(
+            "SELECT
+                n.nspname AS schema_name,
+                c.relname AS table_name,
+                CASE c.relkind
+                    WHEN 'v' THEN 'VIEW'
+                    WHEN 'm' THEN 'MATERIALIZED VIEW'
+                    WHEN 'f' THEN 'FOREIGN TABLE'
+                    WHEN 'p' THEN 'PARTITIONED TABLE'
+                    ELSE 'BASE TABLE'
+                END AS table_type,
+                d.description AS table_comment
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             LEFT JOIN pg_description d ON d.objoid = c.oid AND d.objsubid = 0
+             WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+               AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+               AND n.nspname NOT LIKE 'pg_temp_%'
+               AND n.nspname NOT LIKE 'pg_toast_temp_%'
+               AND ($1::text IS NULL OR n.nspname = $1)
+             ORDER BY n.nspname, c.relname",
+            &[&schema_filter],
+        )
+        .await
+        .map_err(|e| format!("Documentation tables query error: {}", e))?;
+
+    let tables: Vec<DocumentationTable> = table_rows
+        .iter()
+        .map(|row| DocumentationTable {
+            schema: row.get(0),
+            table: row.get(1),
+            table_type: row.get(2),
+            comment: row.get(3),
+        })
+        .collect();
+
+    let column_rows = client
+        .query(
+            "SELECT
+                n.nspname AS schema_name,
+                c.relname AS table_name,
+                CASE c.relkind
+                    WHEN 'v' THEN 'VIEW'
+                    WHEN 'm' THEN 'MATERIALIZED VIEW'
+                    WHEN 'f' THEN 'FOREIGN TABLE'
+                    WHEN 'p' THEN 'PARTITIONED TABLE'
+                    ELSE 'BASE TABLE'
+                END AS table_type,
+                a.attnum::int AS ordinal_position,
+                a.attname AS column_name,
+                pg_catalog.format_type(a.atttypid, a.atttypmod) AS data_type,
+                NOT a.attnotnull AS is_nullable,
+                pg_get_expr(ad.adbin, ad.adrelid) AS column_default,
+                EXISTS (
+                    SELECT 1
+                    FROM pg_index i
+                    WHERE i.indrelid = c.oid
+                      AND i.indisprimary
+                      AND a.attnum = ANY(i.indkey)
+                ) AS is_primary_key,
+                fk.ref_target,
+                cd.description AS column_comment
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_attribute a ON a.attrelid = c.oid
+             LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
+             LEFT JOIN LATERAL (
+                 SELECT format('%I.%I(%I)', fn.nspname, fc.relname, fa.attname) AS ref_target
+                 FROM pg_constraint con
+                 JOIN pg_class fc ON fc.oid = con.confrelid
+                 JOIN pg_namespace fn ON fn.oid = fc.relnamespace
+                 JOIN unnest(con.conkey) WITH ORDINALITY AS src(attnum, ord) ON src.attnum = a.attnum
+                 JOIN unnest(con.confkey) WITH ORDINALITY AS tgt(attnum, ord) ON src.ord = tgt.ord
+                 JOIN pg_attribute fa ON fa.attrelid = con.confrelid AND fa.attnum = tgt.attnum
+                 WHERE con.contype = 'f'
+                   AND con.conrelid = c.oid
+                 LIMIT 1
+             ) fk ON true
+             LEFT JOIN pg_description cd ON cd.objoid = c.oid AND cd.objsubid = a.attnum
+             WHERE c.relkind IN ('r', 'p', 'v', 'm', 'f')
+               AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+               AND n.nspname NOT LIKE 'pg_temp_%'
+               AND n.nspname NOT LIKE 'pg_toast_temp_%'
+               AND ($1::text IS NULL OR n.nspname = $1)
+               AND a.attnum > 0
+               AND NOT a.attisdropped
+             ORDER BY n.nspname, c.relname, a.attnum",
+            &[&schema_filter],
+        )
+        .await
+        .map_err(|e| format!("Documentation columns query error: {}", e))?;
+
+    let columns: Vec<DocumentationColumn> = column_rows
+        .iter()
+        .map(|row| DocumentationColumn {
+            schema: row.get(0),
+            table: row.get(1),
+            table_type: row.get(2),
+            ordinal_position: row.get(3),
+            name: row.get(4),
+            data_type: row.get(5),
+            is_nullable: row.get(6),
+            column_default: row.get(7),
+            is_primary_key: row.get(8),
+            foreign_key_target: row.get(9),
+            comment: row.get(10),
+        })
+        .collect();
+
+    let index_rows = client
+        .query(
+            "SELECT
+                n.nspname AS schema_name,
+                t.relname AS table_name,
+                CASE t.relkind
+                    WHEN 'm' THEN 'MATERIALIZED VIEW'
+                    WHEN 'f' THEN 'FOREIGN TABLE'
+                    WHEN 'p' THEN 'PARTITIONED TABLE'
+                    ELSE 'BASE TABLE'
+                END AS table_type,
+                i.relname AS index_name,
+                ix.indisunique,
+                ix.indisprimary,
+                am.amname AS index_type,
+                (ARRAY(
+                    SELECT a.attname
+                    FROM pg_attribute a
+                    WHERE a.attrelid = t.oid
+                      AND a.attnum = ANY(ix.indkey)
+                      AND a.attnum > 0
+                    ORDER BY array_position(ix.indkey, a.attnum)
+                ))::text[] AS columns,
+                pg_get_indexdef(ix.indexrelid) AS definition,
+                idesc.description AS index_comment
+             FROM pg_index ix
+             JOIN pg_class t ON t.oid = ix.indrelid
+             JOIN pg_class i ON i.oid = ix.indexrelid
+             JOIN pg_namespace n ON n.oid = t.relnamespace
+             JOIN pg_am am ON am.oid = i.relam
+             LEFT JOIN pg_description idesc ON idesc.objoid = i.oid AND idesc.objsubid = 0
+             WHERE t.relkind IN ('r', 'p', 'm', 'f')
+               AND n.nspname NOT IN ('pg_catalog', 'information_schema', 'pg_toast')
+               AND n.nspname NOT LIKE 'pg_temp_%'
+               AND n.nspname NOT LIKE 'pg_toast_temp_%'
+               AND ($1::text IS NULL OR n.nspname = $1)
+             ORDER BY n.nspname, t.relname, i.relname",
+            &[&schema_filter],
+        )
+        .await
+        .map_err(|e| format!("Documentation indexes query error: {}", e))?;
+
+    let indexes: Vec<DocumentationIndex> = index_rows
+        .iter()
+        .map(|row| DocumentationIndex {
+            schema: row.get(0),
+            table: row.get(1),
+            table_type: row.get(2),
+            name: row.get(3),
+            is_unique: row.get(4),
+            is_primary: row.get(5),
+            index_type: row.get(6),
+            columns: row.try_get::<_, Vec<String>>(7).unwrap_or_default(),
+            definition: row.get(8),
+            comment: row.get(9),
+        })
+        .collect();
+
+    let undocumented_tables = tables
+        .iter()
+        .filter(|t| is_comment_missing(&t.comment))
+        .count();
+    let undocumented_columns = columns
+        .iter()
+        .filter(|c| is_comment_missing(&c.comment))
+        .count();
+    let undocumented_indexes = indexes
+        .iter()
+        .filter(|i| is_comment_missing(&i.comment))
+        .count();
+
+    Ok(DocumentationContext {
+        database_name,
+        tables,
+        columns,
+        indexes,
+        undocumented_tables,
+        undocumented_columns,
+        undocumented_indexes,
+    })
+}
+
+/// Applies COMMENT ON statements in one transaction. Any failure rolls back all comments.
+pub async fn apply_documentation_comments(
+    pool: &Arc<Pool>,
+    patches: &[DocumentationCommentPatch],
+) -> Result<u64, String> {
+    if patches.is_empty() {
+        return Ok(0);
+    }
+
+    let mut client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| format!("Transaction error: {}", e))?;
+
+    let mut applied_count = 0u64;
+    for patch in patches {
+        let comment = patch.comment.trim();
+        if comment.is_empty() {
+            continue;
+        }
+
+        let schema_q = quote_ident(&patch.schema);
+        let comment_lit = quote_literal(comment);
+        let kind = patch.kind.trim().to_ascii_lowercase();
+
+        let sql = match kind.as_str() {
+            "table" => {
+                let table = patch
+                    .table
+                    .as_ref()
+                    .map(|v| v.as_str())
+                    .ok_or_else(|| "Missing table name for table comment patch".to_string())?;
+                format!(
+                    "COMMENT ON TABLE {}.{} IS {}",
+                    schema_q,
+                    quote_ident(table),
+                    comment_lit
+                )
+            }
+            "column" => {
+                let table = patch
+                    .table
+                    .as_ref()
+                    .map(|v| v.as_str())
+                    .ok_or_else(|| "Missing table name for column comment patch".to_string())?;
+                let column = patch
+                    .column
+                    .as_ref()
+                    .map(|v| v.as_str())
+                    .ok_or_else(|| "Missing column name for column comment patch".to_string())?;
+                format!(
+                    "COMMENT ON COLUMN {}.{}.{} IS {}",
+                    schema_q,
+                    quote_ident(table),
+                    quote_ident(column),
+                    comment_lit
+                )
+            }
+            "index" => {
+                let index = patch
+                    .index
+                    .as_ref()
+                    .map(|v| v.as_str())
+                    .ok_or_else(|| "Missing index name for index comment patch".to_string())?;
+                format!(
+                    "COMMENT ON INDEX {}.{} IS {}",
+                    schema_q,
+                    quote_ident(index),
+                    comment_lit
+                )
+            }
+            _ => return Err(format!("Unsupported documentation patch kind: {}", patch.kind)),
+        };
+
+        tx.execute(&sql, &[])
+            .await
+            .map_err(|e| format!("Failed to apply {} comment: {}", kind, e))?;
+        applied_count += 1;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Commit error: {}", e))?;
+    Ok(applied_count)
 }
 
 pub async fn get_table_data(
@@ -1493,28 +1810,34 @@ pub async fn get_table_details(
 ) -> Result<TableDetails, String> {
     let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
 
-    let safe_schema = sanitize_identifier(schema);
-    let safe_table = sanitize_identifier(table);
-
     // Columns
     let col_rows = client
         .query(
-            "SELECT c.column_name, c.data_type, c.is_nullable = 'YES', c.ordinal_position::int,
-                    c.column_default,
-                    EXISTS (
-                        SELECT 1 FROM information_schema.table_constraints tc
-                        JOIN information_schema.key_column_usage kcu
-                            ON kcu.constraint_name = tc.constraint_name
-                            AND kcu.table_schema = tc.table_schema
-                            AND kcu.table_name = tc.table_name
-                        WHERE tc.constraint_type = 'PRIMARY KEY'
-                          AND tc.table_schema = c.table_schema
-                          AND tc.table_name = c.table_name
-                          AND kcu.column_name = c.column_name
-                    ) AS is_primary_key
-             FROM information_schema.columns c
-             WHERE c.table_schema = $1 AND c.table_name = $2
-             ORDER BY c.ordinal_position",
+            "SELECT
+                a.attname,
+                pg_catalog.format_type(a.atttypid, a.atttypmod),
+                NOT a.attnotnull AS is_nullable,
+                a.attnum::int AS ordinal_position,
+                pg_get_expr(ad.adbin, ad.adrelid) AS column_default,
+                EXISTS (
+                    SELECT 1
+                    FROM pg_index i
+                    WHERE i.indrelid = c.oid
+                      AND i.indisprimary
+                      AND a.attnum = ANY(i.indkey)
+                ) AS is_primary_key,
+                d.description AS column_comment
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_attribute a ON a.attrelid = c.oid
+             LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
+             LEFT JOIN pg_description d ON d.objoid = c.oid AND d.objsubid = a.attnum
+             WHERE n.nspname = $1
+               AND c.relname = $2
+               AND c.relkind IN ('r', 'p', 'v', 'm', 'f')
+               AND a.attnum > 0
+               AND NOT a.attisdropped
+             ORDER BY a.attnum",
             &[&schema, &table],
         )
         .await
@@ -1529,6 +1852,7 @@ pub async fn get_table_details(
             ordinal_position: row.get(3),
             column_default: row.get(4),
             is_primary_key: row.get(5),
+            comment: row.get(6),
         })
         .collect();
 
@@ -1602,12 +1926,14 @@ pub async fn get_table_details(
                           AND a.attnum > 0
                         ORDER BY array_position(ix.indkey, a.attnum)
                     ))::text[] AS columns,
-                    pg_get_indexdef(ix.indexrelid) AS definition
+                    pg_get_indexdef(ix.indexrelid) AS definition,
+                    idesc.description AS index_comment
              FROM pg_index ix
              JOIN pg_class t  ON t.oid = ix.indrelid
              JOIN pg_class i  ON i.oid = ix.indexrelid
              JOIN pg_am    am ON am.oid = i.relam
              JOIN pg_namespace n ON n.oid = t.relnamespace
+             LEFT JOIN pg_description idesc ON idesc.objoid = i.oid AND idesc.objsubid = 0
              WHERE n.nspname = $1 AND t.relname = $2
              ORDER BY i.relname",
             &[&schema, &table],
@@ -1626,6 +1952,7 @@ pub async fn get_table_details(
                 .try_get::<_, Vec<String>>(4)
                 .unwrap_or_default(),
             definition: row.get(5),
+            comment: row.get(6),
         })
         .collect();
 
@@ -2380,6 +2707,243 @@ pub async fn cancel_backend(pool: &Pool, pid: i32) -> Result<bool, String> {
 // ──────────────────────────────────────────────────────────────────────────────
 // Visual Index Builder queries
 // ──────────────────────────────────────────────────────────────────────────────
+
+/// Inspect whether pg_stat_statements is available for the current connection.
+/// Checks:
+/// 1) extension installed in current database
+/// 2) shared_preload_libraries contains pg_stat_statements
+/// 3) relation can actually be queried
+pub async fn get_pg_stat_statements_status(
+    pool: &Pool,
+) -> Result<super::types::PgStatStatementsStatus, String> {
+    let client = pool.get().await.map_err(|e| e.to_string())?;
+
+    let extension_installed: bool = client
+        .query_one(
+            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements')",
+            &[],
+        )
+        .await
+        .map_err(|e| e.to_string())?
+        .get(0);
+
+    let preload_raw: String = client
+        .query_one("SHOW shared_preload_libraries", &[])
+        .await
+        .map_err(|e| e.to_string())?
+        .get(0);
+
+    let preload_enabled = preload_raw
+        .split(',')
+        .map(|v| v.trim().to_ascii_lowercase())
+        .any(|v| v == "pg_stat_statements");
+
+    let mut can_query = false;
+    let mut probe_error: Option<String> = None;
+    if extension_installed {
+        match client.query_opt("SELECT 1 FROM pg_stat_statements LIMIT 1", &[]).await {
+            Ok(_) => can_query = true,
+            Err(err) => {
+                probe_error = Some(err.to_string());
+            }
+        }
+    }
+
+    let mut messages: Vec<String> = Vec::new();
+    if !extension_installed {
+        messages.push("pg_stat_statements extension is not installed in this database.".to_string());
+    }
+    if !preload_enabled {
+        messages.push(
+            "shared_preload_libraries does not include pg_stat_statements. Add it to postgresql.conf and restart PostgreSQL.".to_string(),
+        );
+    }
+    if extension_installed && preload_enabled && !can_query {
+        messages.push(
+            probe_error
+                .map(|e| format!("pg_stat_statements is configured but cannot be queried: {}", e))
+                .unwrap_or_else(|| "pg_stat_statements is configured but cannot be queried.".to_string()),
+        );
+    }
+
+    Ok(super::types::PgStatStatementsStatus {
+        extension_installed,
+        preload_enabled,
+        can_query,
+        shared_preload_libraries: Some(preload_raw),
+        message: if messages.is_empty() {
+            None
+        } else {
+            Some(messages.join(" "))
+        },
+    })
+}
+
+/// Run CREATE EXTENSION for pg_stat_statements and return the refreshed status.
+pub async fn enable_pg_stat_statements(
+    pool: &Pool,
+) -> Result<super::types::PgStatStatementsStatus, String> {
+    let client = pool.get().await.map_err(|e| e.to_string())?;
+
+    if let Err(err) = client
+        .execute("CREATE EXTENSION IF NOT EXISTS pg_stat_statements", &[])
+        .await
+    {
+        let raw = err.to_string();
+        if raw.contains("must be loaded via shared_preload_libraries") {
+            return Err(
+                "pg_stat_statements requires shared_preload_libraries update and PostgreSQL restart before CREATE EXTENSION can succeed."
+                    .to_string(),
+            );
+        }
+        return Err(format!("Failed to enable pg_stat_statements: {}", raw));
+    }
+
+    get_pg_stat_statements_status(pool).await
+}
+
+fn pg_stat_statements_sort_clause(sort_by: Option<&str>, sort_dir: Option<&str>) -> String {
+    let dir = match sort_dir.map(|v| v.to_ascii_uppercase()) {
+        Some(v) if v == "ASC" => "ASC",
+        _ => "DESC",
+    };
+
+    let column = match sort_by.unwrap_or("slowest").to_ascii_lowercase().as_str() {
+        "max" => "max_exec_time",
+        "total" => "total_exec_time",
+        "calls" => "calls",
+        "rows" => "rows",
+        "disk" => "shared_blks_read",
+        "slowest" => "mean_exec_time",
+        _ => "mean_exec_time",
+    };
+
+    format!("{column} {dir}, calls DESC")
+}
+
+/// Paginated list from pg_stat_statements with lightweight search and sort.
+/// Uses server-side pagination so the UI can handle very large statement sets.
+pub async fn list_pg_stat_statements(
+    pool: &Pool,
+    filter: &super::types::PgStatStatementsFilter,
+) -> Result<super::types::PgStatStatementsPage, String> {
+    let client = pool.get().await.map_err(|e| e.to_string())?;
+
+    let limit = filter.limit.unwrap_or(100).clamp(1, 500);
+    let offset = filter.offset.unwrap_or(0);
+    let sort_clause = pg_stat_statements_sort_clause(filter.sort_by.as_deref(), filter.sort_dir.as_deref());
+
+    let search_text = filter
+        .search_text
+        .as_ref()
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty());
+    let min_mean_ms = filter
+        .min_mean_ms
+        .filter(|v| v.is_finite() && *v >= 0.0);
+
+    let total_count: i64 = client
+        .query_one(
+            r#"
+            SELECT COUNT(*)
+            FROM pg_stat_statements
+            WHERE ($1::text IS NULL OR query ILIKE ('%' || $1 || '%'))
+              AND ($2::float8 IS NULL OR mean_exec_time >= $2)
+            "#,
+            &[&search_text, &min_mean_ms],
+        )
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("pg_stat_statements") {
+                format!("Unable to read pg_stat_statements: {}", msg)
+            } else {
+                msg
+            }
+        })?
+        .get(0);
+
+    let sql = format!(
+        r#"
+        SELECT
+            md5(query) AS query_id,
+            LEFT(query, 12000) AS query,
+            calls::bigint AS calls,
+            total_exec_time::float8 AS total_exec_time_ms,
+            mean_exec_time::float8 AS mean_exec_time_ms,
+            min_exec_time::float8 AS min_exec_time_ms,
+            max_exec_time::float8 AS max_exec_time_ms,
+            CASE WHEN calls > 1 THEN stddev_exec_time::float8 ELSE NULL END AS stddev_exec_time_ms,
+            rows::bigint AS rows,
+            shared_blks_hit::bigint AS shared_blks_hit,
+            shared_blks_read::bigint AS shared_blks_read,
+            temp_blks_written::bigint AS temp_blks_written,
+            blk_read_time::float8 AS blk_read_time_ms,
+            blk_write_time::float8 AS blk_write_time_ms,
+            CASE
+                WHEN (shared_blks_hit + shared_blks_read) > 0 THEN
+                    (shared_blks_hit::float8 * 100.0 / (shared_blks_hit + shared_blks_read)::float8)
+                ELSE 100.0
+            END AS hit_percent,
+            CASE
+                WHEN mean_exec_time >= 1000 THEN calls::bigint
+                WHEN max_exec_time >= 3000 THEN GREATEST(1, (calls::float8 * LEAST(1.0, mean_exec_time / max_exec_time))::bigint)
+                WHEN max_exec_time >= 1000 THEN GREATEST(1, (calls::float8 * LEAST(1.0, mean_exec_time / 1000.0))::bigint)
+                ELSE 0
+            END AS slow_call_estimate
+        FROM pg_stat_statements
+        WHERE ($1::text IS NULL OR query ILIKE ('%' || $1 || '%'))
+          AND ($2::float8 IS NULL OR mean_exec_time >= $2)
+        ORDER BY {sort_clause}
+        LIMIT $3 OFFSET $4
+        "#
+    );
+
+    let limit_i64 = limit as i64;
+    let offset_i64 = offset as i64;
+    let rows = client
+        .query(&sql, &[&search_text, &min_mean_ms, &limit_i64, &offset_i64])
+        .await
+        .map_err(|e| {
+            let msg = e.to_string();
+            if msg.contains("pg_stat_statements") {
+                format!("Unable to read pg_stat_statements rows: {}", msg)
+            } else {
+                msg
+            }
+        })?;
+
+    let items = rows
+        .iter()
+        .map(|row| super::types::PgStatStatementEntry {
+            query_id: row.get("query_id"),
+            query: row.get("query"),
+            calls: row.get("calls"),
+            total_exec_time_ms: row.get("total_exec_time_ms"),
+            mean_exec_time_ms: row.get("mean_exec_time_ms"),
+            min_exec_time_ms: row.get("min_exec_time_ms"),
+            max_exec_time_ms: row.get("max_exec_time_ms"),
+            stddev_exec_time_ms: row.try_get("stddev_exec_time_ms").ok().flatten(),
+            rows: row.get("rows"),
+            shared_blks_hit: row.get("shared_blks_hit"),
+            shared_blks_read: row.get("shared_blks_read"),
+            temp_blks_written: row.get("temp_blks_written"),
+            blk_read_time_ms: row.try_get("blk_read_time_ms").ok().flatten(),
+            blk_write_time_ms: row.try_get("blk_write_time_ms").ok().flatten(),
+            hit_percent: row.get("hit_percent"),
+            slow_call_estimate: row.get("slow_call_estimate"),
+        })
+        .collect::<Vec<_>>();
+
+    let has_more = (offset as i64 + items.len() as i64) < total_count;
+    Ok(super::types::PgStatStatementsPage {
+        items,
+        total_count,
+        limit,
+        offset,
+        has_more,
+    })
+}
 
 /// Get all indexes for a schema with live usage stats from pg_stat_user_indexes.
 pub async fn get_indexes_with_stats(

@@ -19,6 +19,16 @@ export interface QueryHistoryEntry {
     rowCount: number;
     isError: boolean;
     databaseName?: string;
+    aiReview?: {
+        mode: "manual" | "auto";
+        overridden: boolean;
+        aiModel: string | null;
+        issueCounts: {
+            block: number;
+            warn: number;
+            info: number;
+        };
+    };
 }
 
 const HISTORY_KEY = "helix-query-history";
@@ -51,11 +61,20 @@ interface QueryState {
     removeTab: (tabId: string) => void;
     setActiveTab: (tabId: string) => void;
     updateSql: (tabId: string, sql: string) => void;
-    executeQuery: (connectionId: string, tabId: string, databaseName?: string) => Promise<void>;
+    executeQuery: (
+        connectionId: string,
+        tabId: string,
+        databaseName?: string,
+        options?: QueryExecuteOptions
+    ) => Promise<void>;
     updateTabTitle: (tabId: string, title: string) => void;
     clearHistory: () => void;
     deleteHistoryEntry: (id: string) => void;
     loadHistoryFromStorage: () => void;
+}
+
+export interface QueryExecuteOptions {
+    aiReview?: QueryHistoryEntry["aiReview"];
 }
 
 let tabCounter = 0;
@@ -105,7 +124,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
         }));
     },
 
-    executeQuery: async (connectionId, tabId, databaseName?) => {
+    executeQuery: async (connectionId, tabId, databaseName?, options?) => {
         const tab = get().tabs.find((t) => t.id === tabId);
         if (!tab || !tab.sql.trim()) return;
 
@@ -127,6 +146,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
                 rowCount: result.row_count,
                 isError: result.is_error,
                 databaseName,
+                aiReview: options?.aiReview,
             };
             const newHistory = [entry, ...get().history].slice(0, MAX_HISTORY);
             saveHistory(newHistory);
@@ -153,6 +173,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
                 rowCount: 0,
                 isError: true,
                 databaseName,
+                aiReview: options?.aiReview,
             };
             const newHistory = [entry, ...get().history].slice(0, MAX_HISTORY);
             saveHistory(newHistory);

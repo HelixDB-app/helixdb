@@ -12,6 +12,8 @@ import type {
     TypeInfo,
     TypeDefinitionDetail,
     TableDetails,
+    DocumentationContext,
+    DocumentationCommentPatch,
     LocalPostgresStatus,
     FilterCondition,
     ColumnStats,
@@ -22,6 +24,14 @@ import type {
     IndexBuildProgress,
     CreateIndexRequest,
     QueryNote,
+    QueryHistoryFilter,
+    QueryHistoryListResponse,
+    QueryHistoryDetail,
+    QueryHistoryDashboard,
+    QueryHistoryDashboardFilter,
+    PgStatStatementsStatus,
+    PgStatStatementsFilter,
+    PgStatStatementsPage,
 } from "./types";
 
 /** Connect to a PostgreSQL database */
@@ -74,6 +84,28 @@ export async function dbGetColumns(
         connectionId,
         schema,
         table,
+    });
+}
+
+/** Get complete metadata context for AI documentation generation. */
+export async function dbGetDocumentationContext(
+    connectionId: string,
+    schema?: string | null
+): Promise<DocumentationContext> {
+    return invoke<DocumentationContext>("db_get_documentation_context", {
+        connectionId,
+        schema: schema ?? null,
+    });
+}
+
+/** Apply COMMENT ON statements in one transaction. Returns applied count. */
+export async function dbApplyDocumentationComments(
+    connectionId: string,
+    patches: DocumentationCommentPatch[]
+): Promise<number> {
+    return invoke<number>("db_apply_documentation_comments", {
+        connectionId,
+        patches,
     });
 }
 
@@ -623,6 +655,31 @@ export async function dbSandboxElapsed(sandboxId: string): Promise<number> {
 
 // ─── Visual Index Builder ─────────────────────────────────────────────────
 
+/** Check whether pg_stat_statements is available and queryable for this DB. */
+export async function dbPgStatStatementsStatus(
+    connectionId: string
+): Promise<PgStatStatementsStatus> {
+    return invoke<PgStatStatementsStatus>("db_pg_stat_statements_status", { connectionId });
+}
+
+/** Run CREATE EXTENSION IF NOT EXISTS pg_stat_statements and return updated status. */
+export async function dbPgStatStatementsEnable(
+    connectionId: string
+): Promise<PgStatStatementsStatus> {
+    return invoke<PgStatStatementsStatus>("db_pg_stat_statements_enable", { connectionId });
+}
+
+/** List statements from pg_stat_statements with server-side pagination. */
+export async function dbPgStatStatementsList(
+    connectionId: string,
+    filter: PgStatStatementsFilter
+): Promise<PgStatStatementsPage> {
+    return invoke<PgStatStatementsPage>("db_pg_stat_statements_list", {
+        connectionId,
+        filter,
+    });
+}
+
 /** Get all indexes in a schema with live usage stats from pg_stat_user_indexes. */
 export async function dbGetIndexes(
     connectionId: string,
@@ -687,6 +744,66 @@ export async function dbGetIndexBuildProgress(
         connectionId,
         indexName,
     });
+}
+
+// ─── Query History & Performance Intelligence ─────────────────────────────
+
+/** List query history rows with filters, pagination, sort, and summary stats. */
+export async function queryHistoryList(
+    filter: QueryHistoryFilter
+): Promise<QueryHistoryListResponse> {
+    return invoke<QueryHistoryListResponse>("query_history_list", { filter });
+}
+
+/** Get full details for a single query history row. */
+export async function queryHistoryGetDetail(id: number): Promise<QueryHistoryDetail> {
+    return invoke<QueryHistoryDetail>("query_history_get_detail", { id });
+}
+
+/** Get dashboard aggregates (trend, top slow, volume, anomalies). */
+export async function queryHistoryGetDashboard(
+    filter: QueryHistoryDashboardFilter
+): Promise<QueryHistoryDashboard> {
+    return invoke<QueryHistoryDashboard>("query_history_get_dashboard", { filter });
+}
+
+/** Persist AI analysis JSON for a query row. */
+export async function queryHistorySaveAiAnalysis(
+    id: number,
+    analysisJson: string
+): Promise<void> {
+    return invoke<void>("query_history_save_ai_analysis", { id, analysisJson });
+}
+
+/** Save explain JSON payload for a query row. */
+export async function queryHistorySaveExplain(
+    id: number,
+    explainJson: string
+): Promise<void> {
+    return invoke<void>("query_history_save_explain", { id, explainJson });
+}
+
+/** Toggle bookmark on a query row. */
+export async function queryHistoryToggleBookmark(
+    id: number,
+    bookmark: boolean
+): Promise<void> {
+    return invoke<void>("query_history_toggle_bookmark", { id, bookmark });
+}
+
+/** Save/update note on a query row. */
+export async function queryHistorySaveNote(
+    id: number,
+    note: string | null
+): Promise<void> {
+    return invoke<void>("query_history_save_note", { id, note });
+}
+
+/** Export filtered query history as CSV text. */
+export async function queryHistoryExportCsv(
+    filter: QueryHistoryFilter
+): Promise<string> {
+    return invoke<string>("query_history_export_csv", { filter });
 }
 
 // ─── Query Notes (persisted via Rust core engine) ─────────────────────────
