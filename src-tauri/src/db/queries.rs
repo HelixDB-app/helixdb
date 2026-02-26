@@ -1,4 +1,5 @@
 use deadpool_postgres::Pool;
+use log::{debug, warn};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_postgres::types::Type;
@@ -3358,6 +3359,7 @@ pub async fn get_schema_topology(
     schema: &str,
 ) -> Result<TopologyData, String> {
     const TIMEOUT: Duration = Duration::from_secs(15);
+    let started_at = Instant::now();
 
     let result = tokio::time::timeout(TIMEOUT, async {
         let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
@@ -3508,8 +3510,36 @@ pub async fn get_schema_topology(
     .await;
 
     match result {
-        Ok(inner) => inner,
-        Err(_) => Err("Topology query timed out after 15 seconds. The database may be slow or unreachable.".to_string()),
+        Ok(Ok(data)) => {
+            debug!(
+                target: "topology",
+                "schema_topology ok schema={} nodes={} edges={} elapsed_ms={}",
+                schema,
+                data.nodes.len(),
+                data.edges.len(),
+                started_at.elapsed().as_millis()
+            );
+            Ok(data)
+        }
+        Ok(Err(err)) => {
+            warn!(
+                target: "topology",
+                "schema_topology error schema={} elapsed_ms={} error={}",
+                schema,
+                started_at.elapsed().as_millis(),
+                err
+            );
+            Err(err)
+        }
+        Err(_) => {
+            warn!(
+                target: "topology",
+                "schema_topology timeout schema={} elapsed_ms={}",
+                schema,
+                started_at.elapsed().as_millis()
+            );
+            Err("Topology query timed out after 15 seconds. The database may be slow or unreachable.".to_string())
+        }
     }
 }
 

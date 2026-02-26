@@ -46,6 +46,37 @@ const LAYER_GAP = 180;
 const NODE_GAP = 40;
 const PADDING = 80;
 const EDGE_HIT_WIDTH = 14;
+const VIEWPORT_OVERSCAN = 180;
+const DENSE_GRAPH_NODE_THRESHOLD = 120;
+const DENSE_GRAPH_EDGE_THRESHOLD = 280;
+const EDGE_LIMIT_ZOOMED_OUT = 900;
+const EDGE_LIMIT_MEDIUM_ZOOM = 1800;
+const TOPOLOGY_CACHE_TTL_MS = 30_000;
+const TOPOLOGY_PERF_LOG_KEY = "pgstudio:topology:perf";
+
+const topologyCache = new Map<string, { cachedAt: number; data: TopologyData }>();
+
+function createTopologyPerfLogger() {
+    let lastConfigCheck = 0;
+    let enabled = false;
+    let lastLogAt = 0;
+    return (event: string, payload: Record<string, unknown>) => {
+        if (typeof window === "undefined") return;
+        const now = performance.now();
+        if (now - lastConfigCheck > 2_000) {
+            lastConfigCheck = now;
+            enabled = window.localStorage.getItem(TOPOLOGY_PERF_LOG_KEY) === "1";
+        }
+        if (!enabled) return;
+        if (now - lastLogAt < 120) return;
+        lastLogAt = now;
+        queueMicrotask(() => {
+            console.debug(`[TopologyPerf] ${event}`, payload);
+        });
+    };
+}
+
+const logTopologyPerf = createTopologyPerfLogger();
 
 /** Compute dynamic card height based on column count */
 function nodeHeight(node: TopologyNode): number {
@@ -354,6 +385,7 @@ const NodeCard = memo(function NodeCard({
     isEdgeSelected,
     fkColumns,
     highlightedColumns,
+    denseMode,
 }: {
     node: TopologyNode;
     x: number;
@@ -362,6 +394,7 @@ const NodeCard = memo(function NodeCard({
     isEdgeSelected: boolean;
     fkColumns: Set<string>;
     highlightedColumns: Set<string>;
+    denseMode: boolean;
 }) {
     const h = nodeHeight(node);
     const visibleCols = node.columns.slice(0, MAX_VISIBLE_COLUMNS);
@@ -392,7 +425,8 @@ const NodeCard = memo(function NodeCard({
                 rx={4}
                 ry={4}
                 className={cn(
-                    "fill-card stroke-[1.5] transition-colors",
+                    "fill-card stroke-[1.5]",
+                    denseMode ? "" : "transition-colors",
                     isEdgeSelected
                         ? "stroke-emerald-500"
                         : isHighlighted
@@ -464,7 +498,10 @@ const NodeCard = memo(function NodeCard({
                 const rowY = HEADER_HEIGHT + i * ROW_HEIGHT;
                 const textY = rowY + ROW_HEIGHT / 2;
                 const isFk = fkColumns.has(`${node.schema}.${node.table_name}.${col.name}`);
-                const isColHighlighted = highlightedColumns.has(col.name);
+                const isColHighlighted = highlightedColumns.has(
+                    `${node.schema}.${node.table_name}.${col.name}`
+                );
+                const hasMarker = col.is_primary_key || isFk;
 
                 return (
                     <g key={col.name}>
@@ -490,29 +527,23 @@ const NodeCard = memo(function NodeCard({
                         )}
                         {/* PK / FK icon */}
                         {col.is_primary_key ? (
-                            <g transform={`translate(10, ${textY})`}>
-                                <Key
-                                    width={12}
-                                    height={12}
-                                    x={-6}
-                                    y={-6}
-                                    className="text-yellow-500"
-                                />
-                            </g>
+                            <circle
+                                cx={10}
+                                cy={textY}
+                                r={3}
+                                className="fill-yellow-500"
+                            />
                         ) : isFk ? (
-                            <g transform={`translate(10, ${textY})`}>
-                                <Link2
-                                    width={12}
-                                    height={12}
-                                    x={-6}
-                                    y={-6}
-                                    className="text-blue-400"
-                                />
-                            </g>
+                            <circle
+                                cx={10}
+                                cy={textY}
+                                r={3}
+                                className="fill-blue-400"
+                            />
                         ) : null}
                         {/* Column name */}
                         <text
-                            x={col.is_primary_key || isFk ? 24 : 12}
+                            x={hasMarker ? 22 : 12}
                             y={textY}
                             className={cn(
                                 "text-[11px] font-mono",
@@ -565,7 +596,16 @@ const NodeCard = memo(function NodeCard({
             )}
         </g>
     );
-});
+}, (prev, next) =>
+    prev.node === next.node &&
+    prev.x === next.x &&
+    prev.y === next.y &&
+    prev.isHighlighted === next.isHighlighted &&
+    prev.isEdgeSelected === next.isEdgeSelected &&
+    prev.fkColumns === next.fkColumns &&
+    prev.highlightedColumns === next.highlightedColumns &&
+    prev.denseMode === next.denseMode
+);
 
 // ── Main Component ───────────────────────────────────────────────────────────
 
@@ -605,34 +645,115 @@ export function SchemaTopology({
     const [isExporting, setIsExporting] = useState(false);
     const [columnPopoverNode, setColumnPopoverNode] = useState<TopologyNode | null>(null);
     const [columnPopoverAnchor, setColumnPopoverAnchor] = useState<{ x: number; y: number } | null>(null);
+    const [viewportSize, setViewportSize] = useState({ width: 800, height: 600 });
     const panStart = useRef({ x: 0, y: 0 });
     const dragStart = useRef({ x: 0, y: 0 });
     const clickStartRef = useRef<{ id: string; x: number; y: number } | null>(null);
+    const dragNodeRef = useRef<string | null>(null);
+    const isPanningRef = useRef(false);
+    const scaleRef = useRef(scale);
+    const pendingPointerRef = useRef<{ x: number; y: number } | null>(null);
+    const interactionRafRef = useRef<number | null>(null);
+    const lastLaidOutTopologyRef = useRef<TopologyData | null>(null);
 
     const schema = topologySchema ?? selectedSchema ?? schemas[0]?.name ?? null;
+    const w = Math.max(400, viewportSize.width);
+    const h = Math.max(300, viewportSize.height);
+
+    useEffect(() => {
+        dragNodeRef.current = dragNode;
+    }, [dragNode]);
+
+    useEffect(() => {
+        isPanningRef.current = isPanning;
+    }, [isPanning]);
+
+    useEffect(() => {
+        scaleRef.current = scale;
+    }, [scale]);
+
+    useEffect(() => {
+        const container = containerRef.current;
+        if (!container) return;
+        let raf = 0;
+        const updateSize = () => {
+            const rect = container.getBoundingClientRect();
+            const nextWidth = Math.max(1, Math.round(rect.width));
+            const nextHeight = Math.max(1, Math.round(rect.height));
+            setViewportSize((prev) =>
+                prev.width === nextWidth && prev.height === nextHeight
+                    ? prev
+                    : { width: nextWidth, height: nextHeight }
+            );
+        };
+        updateSize();
+        const observer = new ResizeObserver(() => {
+            cancelAnimationFrame(raf);
+            raf = requestAnimationFrame(updateSize);
+        });
+        observer.observe(container);
+        return () => {
+            cancelAnimationFrame(raf);
+            observer.disconnect();
+        };
+    }, [topology]);
 
     // ── Data Fetching ────────────────────────────────────────────────────────
 
     const abortRef = useRef<AbortController | null>(null);
 
     const fetchTopology = useCallback(
-        (signal?: AbortSignal) => {
+        (signal?: AbortSignal, opts?: { force?: boolean }) => {
             if (!connectionId || !schema) {
+                lastLaidOutTopologyRef.current = null;
                 setTopology(null);
                 setPositions(new Map());
                 return;
             }
+            const force = opts?.force ?? false;
+            const cacheKey = `${connectionId}::${schema}`;
+            const cacheEntry = topologyCache.get(cacheKey);
+            if (
+                !force &&
+                cacheEntry &&
+                Date.now() - cacheEntry.cachedAt <= TOPOLOGY_CACHE_TTL_MS
+            ) {
+                setError(null);
+                setLoading(false);
+                setTopology(cacheEntry.data);
+                logTopologyPerf("cache-hit", {
+                    schema,
+                    nodes: cacheEntry.data.nodes.length,
+                    edges: cacheEntry.data.edges.length,
+                });
+                return;
+            }
+
+            if (force) topologyCache.delete(cacheKey);
             setLoading(true);
             setError(null);
+            const startedAt = performance.now();
+
             dbGetSchemaTopology(connectionId, schema)
                 .then((data) => {
                     if (signal?.aborted) return;
+                    topologyCache.set(cacheKey, { cachedAt: Date.now(), data });
                     setTopology(data);
+                    logTopologyPerf("fetch-success", {
+                        schema,
+                        durationMs: Math.round(performance.now() - startedAt),
+                        nodes: data.nodes.length,
+                        edges: data.edges.length,
+                    });
                 })
                 .catch((err) => {
                     if (signal?.aborted) return;
                     setError(String(err));
                     setTopology(null);
+                    logTopologyPerf("fetch-error", {
+                        schema,
+                        durationMs: Math.round(performance.now() - startedAt),
+                    });
                 })
                 .finally(() => {
                     if (signal?.aborted) return;
@@ -655,11 +776,14 @@ export function SchemaTopology({
     // ── Layout Computation ───────────────────────────────────────────────────
 
     useEffect(() => {
-        if (!topology?.nodes.length || !containerRef.current) return;
+        if (!topology?.nodes.length) return;
+        if (lastLaidOutTopologyRef.current === topology && positions.size > 0) return;
+        lastLaidOutTopologyRef.current = topology;
+
+        const layoutStartedAt = performance.now();
         const raw = runLayeredLayout(topology.nodes, topology.edges);
-        const { width: w, height: h } = containerRef.current.getBoundingClientRect();
-        const W = Math.max(400, w);
-        const H = Math.max(300, h);
+        const W = w;
+        const H = h;
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         const nodeMap = new Map(topology.nodes.map((n) => [nodeId(n.schema, n.table_name), n]));
         raw.forEach(({ x, y }, id) => {
@@ -684,7 +808,12 @@ export function SchemaTopology({
         const s = Math.max(0.2, Math.min(1.5, (W - 40) / bw, (H - 40) / bh));
         setScale(s);
         setTranslate({ x: 0, y: 0 });
-    }, [topology?.nodes, topology?.edges]);
+        logTopologyPerf("layout", {
+            nodes: topology.nodes.length,
+            edges: topology.edges.length,
+            durationMs: Math.round(performance.now() - layoutStartedAt),
+        });
+    }, [h, positions.size, topology, w]);
 
     // ── Search & Highlight ───────────────────────────────────────────────────
 
@@ -705,14 +834,14 @@ export function SchemaTopology({
         return s;
     }, [searchLower, topology]);
 
-    /** Set of column names that match the search (for intra-card highlighting) */
+    /** Set of fully-qualified columns that match the search (for intra-card highlighting) */
     const highlightedColumns = useMemo(() => {
         if (!searchLower) return new Set<string>();
         const s = new Set<string>();
         topology?.nodes.forEach((nd) => {
             nd.columns.forEach((col) => {
                 if (col.name.toLowerCase().includes(searchLower)) {
-                    s.add(col.name);
+                    s.add(`${nd.schema}.${nd.table_name}.${col.name}`);
                 }
             });
         });
@@ -736,31 +865,76 @@ export function SchemaTopology({
         [topology]
     );
 
+    const isDenseGraph = (topology?.nodes.length ?? 0) >= DENSE_GRAPH_NODE_THRESHOLD
+        || (topology?.edges.length ?? 0) >= DENSE_GRAPH_EDGE_THRESHOLD;
+    const edgeHoverEnabled = !isDenseGraph;
+    const edgeLimit = useMemo(() => {
+        if (scale < 0.55) return EDGE_LIMIT_ZOOMED_OUT;
+        if (scale < 0.75) return EDGE_LIMIT_MEDIUM_ZOOM;
+        return Number.MAX_SAFE_INTEGER;
+    }, [scale]);
+
+    const visibleBounds = useMemo(() => {
+        const safeScale = Math.max(0.01, scale);
+        const overscan = VIEWPORT_OVERSCAN / safeScale;
+        return {
+            minX: ((0 - translate.x - w / 2) / safeScale) + w / 2 - overscan,
+            maxX: ((w - translate.x - w / 2) / safeScale) + w / 2 + overscan,
+            minY: ((0 - translate.y - h / 2) / safeScale) + h / 2 - overscan,
+            maxY: ((h - translate.y - h / 2) / safeScale) + h / 2 + overscan,
+        };
+    }, [h, scale, translate.x, translate.y, w]);
+
+    const visibleNodes = useMemo(() => {
+        if (!topology || positions.size === 0) return [] as Array<{
+            id: string;
+            node: TopologyNode;
+            pos: { x: number; y: number };
+        }>;
+        const next: Array<{
+            id: string;
+            node: TopologyNode;
+            pos: { x: number; y: number };
+        }> = [];
+        for (const node of topology.nodes) {
+            const id = nodeId(node.schema, node.table_name);
+            const pos = positions.get(id);
+            if (!pos) continue;
+            const nodeH = nodeHeight(node);
+            if (pos.x + NODE_WIDTH / 2 < visibleBounds.minX) continue;
+            if (pos.x - NODE_WIDTH / 2 > visibleBounds.maxX) continue;
+            if (pos.y + nodeH / 2 < visibleBounds.minY) continue;
+            if (pos.y - nodeH / 2 > visibleBounds.maxY) continue;
+            next.push({ id, node, pos });
+        }
+        return next;
+    }, [positions, topology, visibleBounds.maxX, visibleBounds.maxY, visibleBounds.minX, visibleBounds.minY]);
+
+    const visibleNodeIds = useMemo(
+        () => new Set(visibleNodes.map((entry) => entry.id)),
+        [visibleNodes]
+    );
+
     const edgePaths = useMemo(() => {
-        if (!topology || positions.size === 0) return [];
-        return topology.edges.map((e) => {
-            const fromId = nodeId(e.from_schema, e.from_table);
-            const toId = nodeId(e.to_schema, e.to_table);
-            const from = positions.get(fromId);
-            const to = positions.get(toId);
-            const fromNode = nodeMap.get(fromId);
-            const toNode = nodeMap.get(toId);
-            if (!from || !to || !fromNode || !toNode) return null;
-            const { d, startX, startY, endX, endY } = edgeColumnToColumn(
-                from, to, fromNode, toNode, e.from_column, e.to_column
-            );
+        if (!topology || positions.size === 0) {
             return {
-                key: e.constraint_name,
-                d,
-                startX,
-                startY,
-                endX,
-                endY,
-                fromId,
-                toId,
-                label: `${e.from_column} → ${e.to_column}`,
+                paths: [] as Array<{
+                    key: string;
+                    d: string;
+                    startX: number;
+                    startY: number;
+                    endX: number;
+                    endY: number;
+                    fromId: string;
+                    toId: string;
+                    label: string;
+                }>,
+                totalConsidered: 0,
+                omitted: 0,
             };
-        }).filter(Boolean) as {
+        }
+
+        const paths: Array<{
             key: string;
             d: string;
             startX: number;
@@ -770,8 +944,77 @@ export function SchemaTopology({
             fromId: string;
             toId: string;
             label: string;
-        }[];
-    }, [topology?.edges, topology?.nodes, positions, nodeMap]);
+        }> = [];
+        let totalConsidered = 0;
+
+        for (const e of topology.edges) {
+            const fromId = nodeId(e.from_schema, e.from_table);
+            const toId = nodeId(e.to_schema, e.to_table);
+            if (!visibleNodeIds.has(fromId) && !visibleNodeIds.has(toId)) continue;
+            const from = positions.get(fromId);
+            const to = positions.get(toId);
+            const fromNode = nodeMap.get(fromId);
+            const toNode = nodeMap.get(toId);
+            if (!from || !to || !fromNode || !toNode) continue;
+            totalConsidered++;
+            if (paths.length >= edgeLimit) continue;
+
+            const { d, startX, startY, endX, endY } = edgeColumnToColumn(
+                from, to, fromNode, toNode, e.from_column, e.to_column
+            );
+            paths.push({
+                key: `${e.constraint_name}:${fromId}:${e.from_column}:${toId}:${e.to_column}`,
+                d,
+                startX,
+                startY,
+                endX,
+                endY,
+                fromId,
+                toId,
+                label: `${e.from_column} → ${e.to_column}`,
+            });
+        }
+
+        return {
+            paths,
+            totalConsidered,
+            omitted: Math.max(0, totalConsidered - paths.length),
+        };
+    }, [edgeLimit, nodeMap, positions, topology, visibleNodeIds]);
+
+    const activeEdge = selectedEdge ?? hoveredEdge;
+    const activeEdgeNodeIds = useMemo(() => {
+        const s = new Set<string>();
+        if (!activeEdge) return s;
+        s.add(activeEdge.fromId);
+        s.add(activeEdge.toId);
+        return s;
+    }, [activeEdge]);
+    const simplifyEdgeRendering = isDenseGraph && scale < 0.75;
+
+    useEffect(() => {
+        if (!topology) return;
+        logTopologyPerf("render-window", {
+            scale: Number(scale.toFixed(2)),
+            totalNodes: topology.nodes.length,
+            renderedNodes: visibleNodes.length,
+            totalEdges: topology.edges.length,
+            renderedEdges: edgePaths.paths.length,
+            omittedEdges: edgePaths.omitted,
+        });
+    }, [
+        edgePaths.omitted,
+        edgePaths.paths.length,
+        scale,
+        topology,
+        visibleNodes.length,
+    ]);
+
+    useEffect(() => {
+        if (!edgeHoverEnabled && hoveredEdge) {
+            setHoveredEdge(null);
+        }
+    }, [edgeHoverEnabled, hoveredEdge]);
 
     // ── Event Handlers ───────────────────────────────────────────────────────
 
@@ -805,12 +1048,16 @@ export function SchemaTopology({
                 setSelectedEdge(null);
                 const id = (nodeEl as HTMLElement).getAttribute("data-node-id");
                 if (id) {
+                    dragNodeRef.current = id;
+                    isPanningRef.current = false;
                     setDragNode(id);
                     dragStart.current = { x: e.clientX, y: e.clientY };
                     clickStartRef.current = { id, x: e.clientX, y: e.clientY };
                 }
             } else {
                 setSelectedEdge(null);
+                dragNodeRef.current = null;
+                isPanningRef.current = true;
                 setIsPanning(true);
                 panStart.current = { x: e.clientX - translate.x, y: e.clientY - translate.y };
             }
@@ -818,46 +1065,86 @@ export function SchemaTopology({
         [translate]
     );
 
-    const handlePointerMove = useCallback(
-        (e: React.PointerEvent) => {
-            if (dragNode) {
-                if (clickStartRef.current) {
-                    const d = Math.hypot(e.clientX - clickStartRef.current.x, e.clientY - clickStartRef.current.y);
-                    if (d > 8) clickStartRef.current = null;
-                }
-                const dx = (e.clientX - dragStart.current.x) / scale;
-                const dy = (e.clientY - dragStart.current.y) / scale;
-                dragStart.current = { x: e.clientX, y: e.clientY };
+    const flushInteractionFrame = useCallback(() => {
+        interactionRafRef.current = null;
+        const point = pendingPointerRef.current;
+        if (!point) return;
+        pendingPointerRef.current = null;
+
+        const activeDragNode = dragNodeRef.current;
+        if (activeDragNode) {
+            if (clickStartRef.current) {
+                const d = Math.hypot(
+                    point.x - clickStartRef.current.x,
+                    point.y - clickStartRef.current.y
+                );
+                if (d > 8) clickStartRef.current = null;
+            }
+            const dx = (point.x - dragStart.current.x) / scaleRef.current;
+            const dy = (point.y - dragStart.current.y) / scaleRef.current;
+            dragStart.current = { x: point.x, y: point.y };
+            if (dx !== 0 || dy !== 0) {
                 setPositions((prev) => {
                     const next = new Map(prev);
-                    const p = next.get(dragNode!);
-                    if (p) next.set(dragNode!, { x: p.x + dx, y: p.y + dy });
+                    const p = next.get(activeDragNode);
+                    if (p) next.set(activeDragNode, { x: p.x + dx, y: p.y + dy });
                     return next;
                 });
-            } else if (isPanning) {
-                setTranslate({
-                    x: e.clientX - panStart.current.x,
-                    y: e.clientY - panStart.current.y,
-                });
             }
+            return;
+        }
+
+        if (isPanningRef.current) {
+            setTranslate({
+                x: point.x - panStart.current.x,
+                y: point.y - panStart.current.y,
+            });
+        }
+    }, []);
+
+    const queueInteractionFrame = useCallback(
+        (x: number, y: number) => {
+            pendingPointerRef.current = { x, y };
+            if (interactionRafRef.current !== null) return;
+            interactionRafRef.current = requestAnimationFrame(flushInteractionFrame);
         },
-        [dragNode, isPanning, scale]
+        [flushInteractionFrame]
+    );
+
+    useEffect(() => () => {
+        if (interactionRafRef.current !== null) {
+            cancelAnimationFrame(interactionRafRef.current);
+        }
+    }, []);
+
+    const handlePointerMove = useCallback(
+        (e: React.PointerEvent) => {
+            if (!dragNodeRef.current && !isPanningRef.current) return;
+            queueInteractionFrame(e.clientX, e.clientY);
+        },
+        [queueInteractionFrame]
     );
 
     const handlePointerUp = useCallback(
         (e: React.PointerEvent) => {
-            if (clickStartRef.current && topology && containerRef.current) {
+            if (interactionRafRef.current !== null) {
+                cancelAnimationFrame(interactionRafRef.current);
+                interactionRafRef.current = null;
+            }
+            if (pendingPointerRef.current) {
+                flushInteractionFrame();
+            }
+
+            if (clickStartRef.current && containerRef.current) {
                 const { id, x: cx, y: cy } = clickStartRef.current;
                 const d = Math.hypot(e.clientX - cx, e.clientY - cy);
                 if (d <= 8) {
                     const pos = positions.get(id);
                     const rect = containerRef.current.getBoundingClientRect();
-                    const w = Math.max(400, rect.width);
-                    const h = Math.max(300, rect.height);
                     if (pos) {
                         const anchorX = rect.left + (pos.x - w / 2) * scale + w / 2 + translate.x;
                         const anchorY = rect.top + (pos.y - h / 2) * scale + h / 2 + translate.y;
-                        const node = topology.nodes.find((n) => nodeId(n.schema, n.table_name) === id);
+                        const node = nodeMap.get(id);
                         if (node) {
                             setColumnPopoverAnchor({ x: anchorX, y: anchorY });
                             setColumnPopoverNode(node);
@@ -866,13 +1153,22 @@ export function SchemaTopology({
                 }
             }
             clickStartRef.current = null;
+            dragNodeRef.current = null;
+            isPanningRef.current = false;
             setDragNode(null);
             setIsPanning(false);
         },
-        [topology, positions, scale, translate]
+        [flushInteractionFrame, h, nodeMap, positions, scale, translate, w]
     );
 
     const handleSvgPointerLeave = useCallback(() => {
+        if (interactionRafRef.current !== null) {
+            cancelAnimationFrame(interactionRafRef.current);
+            interactionRafRef.current = null;
+        }
+        pendingPointerRef.current = null;
+        dragNodeRef.current = null;
+        isPanningRef.current = false;
         setDragNode(null);
         setIsPanning(false);
         setHoveredEdge(null);
@@ -898,8 +1194,7 @@ export function SchemaTopology({
     }, [contextMenu]);
 
     const fitView = useCallback(() => {
-        if (positions.size === 0 || !containerRef.current) return;
-        const { width: w, height: h } = containerRef.current.getBoundingClientRect();
+        if (positions.size === 0) return;
         let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
         positions.forEach((p, id) => {
             const node = nodeMap.get(id);
@@ -916,7 +1211,7 @@ export function SchemaTopology({
         const s = Math.max(0.2, Math.min(1.5, (w - 40) / bw, (h - 40) / bh));
         setScale(s);
         setTranslate({ x: -(cx - w / 2) * s, y: -(cy - h / 2) * s });
-    }, [positions, nodeMap]);
+    }, [h, nodeMap, positions, w]);
 
     // ── Export ────────────────────────────────────────────────────────────────
 
@@ -1065,7 +1360,7 @@ export function SchemaTopology({
                         variant="outline"
                         size="sm"
                         className="mt-2 gap-1.5 text-xs"
-                        onClick={() => fetchTopology()}
+                        onClick={() => fetchTopology(undefined, { force: true })}
                     >
                         <RefreshCw className="h-3.5 w-3.5" />
                         Retry
@@ -1083,13 +1378,6 @@ export function SchemaTopology({
             </div>
         );
     }
-
-    const { width, height } = containerRef.current?.getBoundingClientRect() ?? {
-        width: 800,
-        height: 600,
-    };
-    const w = Math.max(400, width);
-    const h = Math.max(300, height);
 
     // ── Render ────────────────────────────────────────────────────────────────
 
@@ -1135,7 +1423,7 @@ export function SchemaTopology({
                     variant="ghost"
                     size="sm"
                     className="h-8 gap-1.5 text-xs shrink-0"
-                    onClick={() => fetchTopology()}
+                    onClick={() => fetchTopology(undefined, { force: true })}
                 >
                     <RefreshCw className="h-3 w-3" />
                     Refresh
@@ -1181,6 +1469,11 @@ export function SchemaTopology({
                         </DropdownMenuItem>
                     </DropdownMenuContent>
                 </DropdownMenu>
+                {edgePaths.omitted > 0 && (
+                    <span className="ml-auto text-[10px] text-muted-foreground">
+                        Showing {edgePaths.paths.length}/{edgePaths.totalConsidered} edges at this zoom
+                    </span>
+                )}
             </div>
 
             {/* Canvas */}
@@ -1208,15 +1501,15 @@ export function SchemaTopology({
                         transform={`translate(${w / 2 + translate.x}, ${h / 2 + translate.y}) scale(${scale}) translate(${-w / 2}, ${-h / 2})`}
                     >
                         {/* Edges */}
-                        {edgePaths.map(({ key, d, startX, startY, endX, endY, fromId, toId, label }) => {
+                        {edgePaths.paths.map(({ key, d, startX, startY, endX, endY, fromId, toId, label }) => {
                             const isSelected =
                                 selectedEdge?.fromId === fromId && selectedEdge?.toId === toId;
                             const isHovered =
                                 hoveredEdge?.fromId === fromId && hoveredEdge?.toId === toId;
                             const isActive = isSelected || isHovered;
                             const strokeClass = isActive
-                                ? "stroke-emerald-500 stroke-[2] transition-colors"
-                                : "stroke-muted-foreground/30 stroke-[1.5] transition-colors";
+                                ? "stroke-emerald-500 stroke-[2]"
+                                : "stroke-muted-foreground/30 stroke-[1.5]";
                             const markerFill = isActive ? "fill-emerald-500" : "fill-muted-foreground/30";
                             const markerStroke = isActive ? "stroke-emerald-500" : "stroke-muted-foreground/30";
                             return (
@@ -1225,41 +1518,51 @@ export function SchemaTopology({
                                     data-edge-from={fromId}
                                     data-edge-to={toId}
                                     className="cursor-pointer"
-                                    onPointerEnter={() => setHoveredEdge({ fromId, toId })}
-                                    onPointerLeave={() => setHoveredEdge(null)}
+                                    onPointerEnter={
+                                        edgeHoverEnabled
+                                            ? () => setHoveredEdge({ fromId, toId })
+                                            : undefined
+                                    }
+                                    onPointerLeave={edgeHoverEnabled ? () => setHoveredEdge(null) : undefined}
                                 >
                                     {/* Invisible hit area */}
-                                    <path
-                                        d={d}
-                                        fill="none"
-                                        strokeWidth={EDGE_HIT_WIDTH}
-                                        stroke="transparent"
-                                        strokeLinecap="round"
-                                    />
+                                    {!simplifyEdgeRendering && (
+                                        <path
+                                            d={d}
+                                            fill="none"
+                                            strokeWidth={EDGE_HIT_WIDTH}
+                                            stroke="transparent"
+                                            strokeLinecap="round"
+                                        />
+                                    )}
                                     {/* Visible edge */}
                                     <path
                                         d={d}
                                         fill="none"
                                         className={strokeClass}
                                     />
-                                    {/* FK (many) side: filled dot */}
-                                    <circle
-                                        cx={startX}
-                                        cy={startY}
-                                        r={EDGE_MARKER_R}
-                                        className={markerFill}
-                                    />
-                                    {/* PK (one) side: hollow circle */}
-                                    <circle
-                                        cx={endX}
-                                        cy={endY}
-                                        r={EDGE_MARKER_R}
-                                        fill="none"
-                                        strokeWidth={1.5}
-                                        className={markerStroke}
-                                    />
+                                    {!simplifyEdgeRendering && (
+                                        <>
+                                            {/* FK (many) side: filled dot */}
+                                            <circle
+                                                cx={startX}
+                                                cy={startY}
+                                                r={EDGE_MARKER_R}
+                                                className={markerFill}
+                                            />
+                                            {/* PK (one) side: hollow circle */}
+                                            <circle
+                                                cx={endX}
+                                                cy={endY}
+                                                r={EDGE_MARKER_R}
+                                                fill="none"
+                                                strokeWidth={1.5}
+                                                className={markerStroke}
+                                            />
+                                        </>
+                                    )}
                                     {/* Edge tooltip on hover */}
-                                    {isActive && (
+                                    {isActive && !simplifyEdgeRendering && (
                                         <text
                                             x={(startX + endX) / 2}
                                             y={(startY + endY) / 2 - 8}
@@ -1274,10 +1577,7 @@ export function SchemaTopology({
                         })}
 
                         {/* Nodes */}
-                        {topology.nodes.map((node) => {
-                            const id = nodeId(node.schema, node.table_name);
-                            const pos = positions.get(id);
-                            if (!pos) return null;
+                        {visibleNodes.map(({ id, node, pos }) => {
                             return (
                                 <g
                                     key={id}
@@ -1298,15 +1598,10 @@ export function SchemaTopology({
                                         x={pos.x}
                                         y={pos.y}
                                         isHighlighted={highlightedIds.has(id)}
-                                        isEdgeSelected={(() => {
-                                            const edge = selectedEdge ?? hoveredEdge;
-                                            return (
-                                                edge !== null &&
-                                                (id === edge.fromId || id === edge.toId)
-                                            );
-                                        })()}
+                                        isEdgeSelected={activeEdgeNodeIds.has(id)}
                                         fkColumns={fkColumns}
                                         highlightedColumns={highlightedColumns}
+                                        denseMode={isDenseGraph}
                                     />
                                 </g>
                             );
