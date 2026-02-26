@@ -1,7 +1,8 @@
 use tauri::{AppHandle, Manager, State};
 
+use crate::account_security_storage;
 use crate::connections_storage::{self, SavedConnection};
-use crate::db::types::{FilterCondition, ColumnStats};
+use crate::db::types::{ColumnStats, FilterCondition};
 use crate::db::{
     cache::MetadataCache,
     connection::ConnectionManager,
@@ -232,6 +233,38 @@ fn extract_rows_affected(result: &QueryResult) -> Option<i64> {
     None
 }
 
+fn reminder_scope_for_connection(state: &AppState, connection_id: &str) -> String {
+    let Some(connection_string) = state.conn_manager.get_connection_string(connection_id) else {
+        return connection_id.to_string();
+    };
+
+    let Ok(cfg) = connection_string.parse::<tokio_postgres::Config>() else {
+        return connection_id.to_string();
+    };
+
+    let host = cfg
+        .get_hosts()
+        .first()
+        .map(|host| match host {
+            tokio_postgres::config::Host::Tcp(value) => value.clone(),
+            #[cfg(unix)]
+            tokio_postgres::config::Host::Unix(path) => path.to_string_lossy().to_string(),
+        })
+        .unwrap_or_else(|| "localhost".to_string());
+
+    let port = cfg.get_ports().first().copied().unwrap_or(5432);
+    let db_name = cfg
+        .get_dbname()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "postgres".to_string());
+    let username = cfg
+        .get_user()
+        .map(|value| value.to_string())
+        .unwrap_or_else(|| "unknown".to_string());
+
+    format!("{}@{}:{}/{}", username, host, port, db_name)
+}
+
 /// Get paginated table data. When no sort is given, defaults to ORDER BY created_at (or similar) DESC so newest rows appear first.
 #[tauri::command]
 pub async fn db_get_table_data(
@@ -370,6 +403,237 @@ pub async fn db_list_databases(
     queries::list_databases(&pool).await
 }
 
+/// Return the access profile for the currently connected DB role.
+#[tauri::command]
+pub async fn db_get_access_profile(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<DatabaseAccessProfile, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::get_database_access_profile(&pool).await
+}
+
+/// List all available extensions, including install permission metadata.
+#[tauri::command]
+pub async fn db_list_extensions(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<Vec<DatabaseExtensionInfo>, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::list_database_extensions(&pool).await
+}
+
+/// Install an extension with server-side permission enforcement.
+#[tauri::command]
+pub async fn db_install_extension(
+    state: State<'_, AppState>,
+    connection_id: String,
+    extension_name: String,
+) -> Result<(), String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::install_database_extension(&pool, &extension_name).await
+}
+
+/// Get rich metadata for one extension (versions, owner, permissions).
+#[tauri::command]
+pub async fn db_get_extension_detail(
+    state: State<'_, AppState>,
+    connection_id: String,
+    extension_name: String,
+) -> Result<DatabaseExtensionDetail, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::get_database_extension_detail(&pool, &extension_name).await
+}
+
+/// Uninstall an extension with permission checks.
+#[tauri::command]
+pub async fn db_uninstall_extension(
+    state: State<'_, AppState>,
+    connection_id: String,
+    extension_name: String,
+) -> Result<(), String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::uninstall_database_extension(&pool, &extension_name).await
+}
+
+/// Update an installed extension to latest/default or a specific version.
+#[tauri::command]
+pub async fn db_update_extension(
+    state: State<'_, AppState>,
+    connection_id: String,
+    extension_name: String,
+    target_version: Option<String>,
+) -> Result<(), String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::update_database_extension(&pool, &extension_name, target_version.as_deref()).await
+}
+
+/// List all roles in the database cluster with RBAC assignment metadata.
+#[tauri::command]
+pub async fn db_list_database_roles(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<Vec<DatabaseRoleInfo>, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::list_database_roles(&pool).await
+}
+
+/// List database roles with account fields used by user-management views.
+#[tauri::command]
+pub async fn db_list_database_users(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<Vec<DatabaseUserInfo>, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::list_database_users(&pool).await
+}
+
+/// Create a custom NOLOGIN RBAC role.
+#[tauri::command]
+pub async fn db_create_database_role(
+    state: State<'_, AppState>,
+    connection_id: String,
+    request: CreateDatabaseRoleRequest,
+) -> Result<(), String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::create_database_role(&pool, &request).await
+}
+
+/// Get detailed metadata for one RBAC role.
+#[tauri::command]
+pub async fn db_get_database_role_detail(
+    state: State<'_, AppState>,
+    connection_id: String,
+    role_name: String,
+) -> Result<DatabaseRoleDetail, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::get_database_role_detail(&pool, &role_name).await
+}
+
+/// Grant role membership (optionally with ADMIN OPTION).
+#[tauri::command]
+pub async fn db_grant_database_role_membership(
+    state: State<'_, AppState>,
+    connection_id: String,
+    role_name: String,
+    member_name: String,
+    with_admin_option: bool,
+) -> Result<(), String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::grant_database_role_membership(
+        &pool,
+        &role_name,
+        &member_name,
+        with_admin_option,
+    )
+    .await
+}
+
+/// Revoke role membership.
+#[tauri::command]
+pub async fn db_revoke_database_role_membership(
+    state: State<'_, AppState>,
+    connection_id: String,
+    role_name: String,
+    member_name: String,
+) -> Result<(), String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::revoke_database_role_membership(&pool, &role_name, &member_name).await
+}
+
+/// Create a new login role and optional role memberships.
+#[tauri::command]
+pub async fn db_create_database_user(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    connection_id: String,
+    request: CreateDatabaseUserRequest,
+) -> Result<(), String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    let reminder = request
+        .password_reminder
+        .as_ref()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    let username = request.username.clone();
+
+    queries::create_database_user(&pool, &request).await?;
+
+    if let Some(reminder_text) = reminder {
+        let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+        let scope = reminder_scope_for_connection(&state, &connection_id);
+        account_security_storage::upsert_for_scope(
+            Some(app_data_dir),
+            &scope,
+            &username,
+            &reminder_text,
+        )?;
+    }
+
+    Ok(())
+}
+
+/// Set whether a database role can login (active/inactive account).
+#[tauri::command]
+pub async fn db_set_database_user_login(
+    state: State<'_, AppState>,
+    connection_id: String,
+    username: String,
+    can_login: bool,
+) -> Result<(), String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::set_database_user_login(&pool, &username, can_login).await
+}
+
+/// Update password for an existing database user.
+#[tauri::command]
+pub async fn db_set_database_user_password(
+    state: State<'_, AppState>,
+    connection_id: String,
+    username: String,
+    password: String,
+) -> Result<(), String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::set_database_user_password(&pool, &username, &password).await
+}
+
+/// Delete a database user role. Optionally reassign owned objects first.
+#[tauri::command]
+pub async fn db_delete_database_user(
+    state: State<'_, AppState>,
+    connection_id: String,
+    username: String,
+    reassign_owned_to: Option<String>,
+) -> Result<(), String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::delete_database_user(&pool, &username, reassign_owned_to.as_deref()).await
+}
+
+/// List locally stored password reminders for the current connection scope.
+#[tauri::command]
+pub async fn db_list_password_reminders(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<Vec<account_security_storage::PasswordReminder>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let scope = reminder_scope_for_connection(&state, &connection_id);
+    account_security_storage::list_for_scope(Some(app_data_dir), &scope)
+}
+
+/// Delete one local password reminder in the current connection scope.
+#[tauri::command]
+pub async fn db_delete_password_reminder(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    connection_id: String,
+    id: String,
+) -> Result<Vec<account_security_storage::PasswordReminder>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let scope = reminder_scope_for_connection(&state, &connection_id);
+    account_security_storage::delete_for_scope(Some(app_data_dir), &scope, &id)
+}
+
 /// Create a new database
 #[tauri::command]
 pub async fn db_create_database(
@@ -502,10 +766,8 @@ pub async fn db_insert_table_row(
     values: Vec<UpdateItem>,
 ) -> Result<u64, String> {
     let pool = state.conn_manager.get_pool(&connection_id)?;
-    let values_tuples: Vec<(String, Option<String>)> = values
-        .into_iter()
-        .map(|u| (u.column, u.value))
-        .collect();
+    let values_tuples: Vec<(String, Option<String>)> =
+        values.into_iter().map(|u| (u.column, u.value)).collect();
     queries::insert_table_row(&pool, &schema, &table, &values_tuples).await
 }
 
@@ -521,10 +783,8 @@ pub async fn db_update_table_row(
     updates: Vec<UpdateItem>,
 ) -> Result<u64, String> {
     let pool = state.conn_manager.get_pool(&connection_id)?;
-    let updates_tuples: Vec<(String, Option<String>)> = updates
-        .into_iter()
-        .map(|u| (u.column, u.value))
-        .collect();
+    let updates_tuples: Vec<(String, Option<String>)> =
+        updates.into_iter().map(|u| (u.column, u.value)).collect();
     queries::update_table_row(
         &pool,
         &schema,
@@ -631,7 +891,9 @@ pub async fn db_rename_column(
 ) -> Result<(), String> {
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::rename_column(&pool, &schema, &table, &column, &new_name).await?;
-    state.cache.invalidate_columns(&connection_id, &schema, &table);
+    state
+        .cache
+        .invalidate_columns(&connection_id, &schema, &table);
     Ok(())
 }
 
@@ -649,10 +911,18 @@ pub async fn db_alter_column(
 ) -> Result<(), String> {
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::alter_column(
-        &pool, &schema, &table, &column,
-        new_type.as_deref(), new_default.as_deref(), nullable,
-    ).await?;
-    state.cache.invalidate_columns(&connection_id, &schema, &table);
+        &pool,
+        &schema,
+        &table,
+        &column,
+        new_type.as_deref(),
+        new_default.as_deref(),
+        nullable,
+    )
+    .await?;
+    state
+        .cache
+        .invalidate_columns(&connection_id, &schema, &table);
     Ok(())
 }
 
@@ -670,10 +940,18 @@ pub async fn db_add_column(
 ) -> Result<(), String> {
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::add_column(
-        &pool, &schema, &table, &column,
-        &data_type, is_nullable, default_value.as_deref(),
-    ).await?;
-    state.cache.invalidate_columns(&connection_id, &schema, &table);
+        &pool,
+        &schema,
+        &table,
+        &column,
+        &data_type,
+        is_nullable,
+        default_value.as_deref(),
+    )
+    .await?;
+    state
+        .cache
+        .invalidate_columns(&connection_id, &schema, &table);
     Ok(())
 }
 
@@ -688,7 +966,9 @@ pub async fn db_drop_column(
 ) -> Result<(), String> {
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::drop_column(&pool, &schema, &table, &column).await?;
-    state.cache.invalidate_columns(&connection_id, &schema, &table);
+    state
+        .cache
+        .invalidate_columns(&connection_id, &schema, &table);
     Ok(())
 }
 
@@ -743,10 +1023,7 @@ pub async fn db_drop_table(
 
 #[tauri::command]
 pub async fn get_saved_connections(app: AppHandle) -> Result<Vec<SavedConnection>, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     connections_storage::load(Some(app_data_dir))
 }
 
@@ -755,10 +1032,7 @@ pub async fn save_connection(
     app: AppHandle,
     connection: SavedConnection,
 ) -> Result<Vec<SavedConnection>, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     connections_storage::save(Some(app_data_dir), connection)
 }
 
@@ -767,10 +1041,7 @@ pub async fn delete_saved_connection(
     app: AppHandle,
     id: String,
 ) -> Result<Vec<SavedConnection>, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     connections_storage::delete(Some(app_data_dir), &id)
 }
 
@@ -780,10 +1051,7 @@ pub async fn update_saved_connection_database_name(
     id: String,
     database_name: String,
 ) -> Result<Vec<SavedConnection>, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     connections_storage::update_database_name(Some(app_data_dir), &id, database_name)
 }
 
@@ -844,7 +1112,8 @@ pub async fn db_watch_table(
         .conn_manager
         .get_connection_string(&connection_id)
         .ok_or_else(|| format!("No connection found with ID: {connection_id}"))?;
-    state.watch_manager
+    state
+        .watch_manager
         .start_watch(app, connection_id, schema, table, conn_str)
         .await
 }
@@ -858,7 +1127,8 @@ pub async fn db_unwatch_table(
     table: String,
 ) -> Result<(), String> {
     let conn_str = state.conn_manager.get_connection_string(&connection_id);
-    state.watch_manager
+    state
+        .watch_manager
         .stop_watch(&connection_id, &schema, &table, conn_str.as_deref())
         .await;
     Ok(())
@@ -872,7 +1142,9 @@ pub async fn db_is_watching(
     schema: String,
     table: String,
 ) -> Result<bool, String> {
-    Ok(state.watch_manager.is_watching(&connection_id, &schema, &table))
+    Ok(state
+        .watch_manager
+        .is_watching(&connection_id, &schema, &table))
 }
 
 // ─── Session Monitor ──────────────────────────────────────────────────────
@@ -967,7 +1239,9 @@ pub async fn db_explain_query(
     let _ = client.execute("ROLLBACK", &[]).await;
 
     let rows = result.map_err(|e| e.to_string())?;
-    let row = rows.first().ok_or_else(|| "No output from EXPLAIN".to_string())?;
+    let row = rows
+        .first()
+        .ok_or_else(|| "No output from EXPLAIN".to_string())?;
     let json_val: serde_json::Value = row.get(0);
     Ok(json_val.to_string())
 }
@@ -988,10 +1262,7 @@ pub async fn db_sandbox_begin(
         .ok_or_else(|| format!("No connection found with ID: {connection_id}"))?;
 
     let sandbox_id = uuid::Uuid::new_v4().to_string();
-    state
-        .sandbox_manager
-        .begin(&sandbox_id, &conn_str)
-        .await?;
+    state.sandbox_manager.begin(&sandbox_id, &conn_str).await?;
     Ok(sandbox_id)
 }
 
@@ -1151,11 +1422,10 @@ pub async fn db_get_index_build_progress(
 // ─── Query Notes (persisted in app data dir) ──────────────────────────────
 
 #[tauri::command]
-pub async fn notes_load_all(app: AppHandle) -> Result<Vec<crate::notes_storage::QueryNote>, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+pub async fn notes_load_all(
+    app: AppHandle,
+) -> Result<Vec<crate::notes_storage::QueryNote>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     crate::notes_storage::load_all(Some(app_data_dir))
 }
 
@@ -1164,10 +1434,7 @@ pub async fn notes_save(
     app: AppHandle,
     note: crate::notes_storage::QueryNote,
 ) -> Result<Vec<crate::notes_storage::QueryNote>, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     crate::notes_storage::save_note(Some(app_data_dir), note)
 }
 
@@ -1176,10 +1443,7 @@ pub async fn notes_delete(
     app: AppHandle,
     id: String,
 ) -> Result<Vec<crate::notes_storage::QueryNote>, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     crate::notes_storage::delete_note(Some(app_data_dir), &id)
 }
 
@@ -1188,10 +1452,7 @@ pub async fn notes_search(
     app: AppHandle,
     query: String,
 ) -> Result<Vec<crate::notes_storage::QueryNote>, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     crate::notes_storage::search_notes(Some(app_data_dir), &query)
 }
 
@@ -1201,10 +1462,7 @@ pub async fn notes_search(
 pub async fn schema_designer_load_all(
     app: AppHandle,
 ) -> Result<Vec<crate::schema_designer_storage::SchemaProject>, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     crate::schema_designer_storage::load_all(Some(app_data_dir))
 }
 
@@ -1213,10 +1471,7 @@ pub async fn schema_designer_get_project(
     app: AppHandle,
     id: String,
 ) -> Result<Option<crate::schema_designer_storage::SchemaProject>, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     crate::schema_designer_storage::get_project(Some(app_data_dir), &id)
 }
 
@@ -1225,10 +1480,7 @@ pub async fn schema_designer_save_project(
     app: AppHandle,
     project: crate::schema_designer_storage::SchemaProject,
 ) -> Result<Vec<crate::schema_designer_storage::SchemaProject>, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     crate::schema_designer_storage::save_project(Some(app_data_dir), project)
 }
 
@@ -1237,10 +1489,7 @@ pub async fn schema_designer_delete_project(
     app: AppHandle,
     id: String,
 ) -> Result<Vec<crate::schema_designer_storage::SchemaProject>, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
     crate::schema_designer_storage::delete_project(Some(app_data_dir), &id)
 }
 
@@ -1251,13 +1500,12 @@ pub async fn query_history_list(
     app: AppHandle,
     filter: query_history_storage::QueryHistoryFilter,
 ) -> Result<query_history_storage::QueryHistoryListResponse, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    tokio::task::spawn_blocking(move || query_history_storage::list_queries(Some(app_data_dir), filter))
-        .await
-        .map_err(|e| format!("Query history worker failed: {}", e))?
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::list_queries(Some(app_data_dir), filter)
+    })
+    .await
+    .map_err(|e| format!("Query history worker failed: {}", e))?
 }
 
 #[tauri::command]
@@ -1265,13 +1513,12 @@ pub async fn query_history_get_detail(
     app: AppHandle,
     id: i64,
 ) -> Result<query_history_storage::QueryHistoryDetail, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    tokio::task::spawn_blocking(move || query_history_storage::get_query_detail(Some(app_data_dir), id))
-        .await
-        .map_err(|e| format!("Query history detail worker failed: {}", e))?
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::get_query_detail(Some(app_data_dir), id)
+    })
+    .await
+    .map_err(|e| format!("Query history detail worker failed: {}", e))?
 }
 
 #[tauri::command]
@@ -1279,13 +1526,12 @@ pub async fn query_history_get_dashboard(
     app: AppHandle,
     filter: query_history_storage::QueryHistoryDashboardFilter,
 ) -> Result<query_history_storage::QueryHistoryDashboard, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    tokio::task::spawn_blocking(move || query_history_storage::get_dashboard(Some(app_data_dir), filter))
-        .await
-        .map_err(|e| format!("Query history dashboard worker failed: {}", e))?
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::get_dashboard(Some(app_data_dir), filter)
+    })
+    .await
+    .map_err(|e| format!("Query history dashboard worker failed: {}", e))?
 }
 
 #[tauri::command]
@@ -1294,13 +1540,12 @@ pub async fn query_history_save_ai_analysis(
     id: i64,
     analysis_json: String,
 ) -> Result<(), String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    tokio::task::spawn_blocking(move || query_history_storage::save_ai_analysis(Some(app_data_dir), id, analysis_json))
-        .await
-        .map_err(|e| format!("Query history AI analysis worker failed: {}", e))?
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::save_ai_analysis(Some(app_data_dir), id, analysis_json)
+    })
+    .await
+    .map_err(|e| format!("Query history AI analysis worker failed: {}", e))?
 }
 
 #[tauri::command]
@@ -1309,13 +1554,12 @@ pub async fn query_history_save_explain(
     id: i64,
     explain_json: String,
 ) -> Result<(), String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    tokio::task::spawn_blocking(move || query_history_storage::save_explain_json(Some(app_data_dir), id, explain_json))
-        .await
-        .map_err(|e| format!("Query history explain worker failed: {}", e))?
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::save_explain_json(Some(app_data_dir), id, explain_json)
+    })
+    .await
+    .map_err(|e| format!("Query history explain worker failed: {}", e))?
 }
 
 #[tauri::command]
@@ -1324,13 +1568,12 @@ pub async fn query_history_toggle_bookmark(
     id: i64,
     bookmark: bool,
 ) -> Result<(), String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    tokio::task::spawn_blocking(move || query_history_storage::toggle_bookmark(Some(app_data_dir), id, bookmark))
-        .await
-        .map_err(|e| format!("Query history bookmark worker failed: {}", e))?
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::toggle_bookmark(Some(app_data_dir), id, bookmark)
+    })
+    .await
+    .map_err(|e| format!("Query history bookmark worker failed: {}", e))?
 }
 
 #[tauri::command]
@@ -1339,13 +1582,12 @@ pub async fn query_history_save_note(
     id: i64,
     note: Option<String>,
 ) -> Result<(), String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    tokio::task::spawn_blocking(move || query_history_storage::save_note(Some(app_data_dir), id, note))
-        .await
-        .map_err(|e| format!("Query history note worker failed: {}", e))?
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::save_note(Some(app_data_dir), id, note)
+    })
+    .await
+    .map_err(|e| format!("Query history note worker failed: {}", e))?
 }
 
 #[tauri::command]
@@ -1353,11 +1595,10 @@ pub async fn query_history_export_csv(
     app: AppHandle,
     filter: query_history_storage::QueryHistoryFilter,
 ) -> Result<String, String> {
-    let app_data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?;
-    tokio::task::spawn_blocking(move || query_history_storage::export_csv(Some(app_data_dir), filter))
-        .await
-        .map_err(|e| format!("Query history CSV export worker failed: {}", e))?
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::export_csv(Some(app_data_dir), filter)
+    })
+    .await
+    .map_err(|e| format!("Query history CSV export worker failed: {}", e))?
 }

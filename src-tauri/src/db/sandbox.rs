@@ -1,4 +1,6 @@
 use dashmap::DashMap;
+use native_tls::TlsConnector;
+use postgres_native_tls::MakeTlsConnector;
 use rust_decimal::Decimal;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -6,8 +8,6 @@ use std::time::Instant;
 use tokio::sync::Mutex;
 use tokio_postgres::types::Type;
 use tokio_postgres::{Client, NoTls, Row};
-use native_tls::TlsConnector;
-use postgres_native_tls::MakeTlsConnector;
 
 // ─── Public types ─────────────────────────────────────────────────────────────
 
@@ -68,7 +68,8 @@ impl SandboxManager {
             sandbox_id.to_string(),
             Arc::new(Mutex::new(SandboxSession { client })),
         );
-        self.started_at.insert(sandbox_id.to_string(), Instant::now());
+        self.started_at
+            .insert(sandbox_id.to_string(), Instant::now());
         Ok(())
     }
 
@@ -227,9 +228,9 @@ async fn execute_multi_statements(
     let mut any_missing_where = false;
 
     for (i, stmt) in stmts.iter().enumerate() {
-        let result = execute_single_statement(client, stmt).await.map_err(|e| {
-            format!("Statement {} failed: {}", i + 1, e)
-        })?;
+        let result = execute_single_statement(client, stmt)
+            .await
+            .map_err(|e| format!("Statement {} failed: {}", i + 1, e))?;
         combined_affected += result.rows_affected;
         all_diffs.extend(result.diff_rows);
         if !result.columns.is_empty() {
@@ -262,7 +263,10 @@ async fn execute_single_statement(client: &mut Client, sql: &str) -> Result<Sand
     match first_word {
         // ── SELECT / read-only ────────────────────────────────────────────────
         "SELECT" | "WITH" | "SHOW" | "EXPLAIN" | "TABLE" => {
-            let rows = client.query(trimmed, &[]).await.map_err(|e| e.to_string())?;
+            let rows = client
+                .query(trimmed, &[])
+                .await
+                .map_err(|e| e.to_string())?;
             let columns = col_names_from_rows(&rows);
             let select_rows: Vec<Vec<Option<String>>> =
                 rows.iter().map(|r| row_to_strings(r)).collect();
@@ -315,20 +319,21 @@ async fn execute_single_statement(client: &mut Client, sql: &str) -> Result<Sand
             let missing_where = !upper.contains(" WHERE ");
             let mut warnings = vec![];
             if missing_where {
-                warnings.push(
-                    "No WHERE clause — this will affect ALL rows in the table!".to_string(),
-                );
+                warnings
+                    .push("No WHERE clause — this will affect ALL rows in the table!".to_string());
             }
 
             // Capture before-state via SELECT
-            let (before_cols, before_rows) =
-                match extract_update_select(trimmed) {
-                    Some(sel) => match client.query(&sel, &[]).await {
-                        Ok(rows) => (col_names_from_rows(&rows), rows.iter().map(row_to_strings).collect::<Vec<_>>()),
-                        Err(_) => (vec![], vec![]),
-                    },
-                    None => (vec![], vec![]),
-                };
+            let (before_cols, before_rows) = match extract_update_select(trimmed) {
+                Some(sel) => match client.query(&sel, &[]).await {
+                    Ok(rows) => (
+                        col_names_from_rows(&rows),
+                        rows.iter().map(row_to_strings).collect::<Vec<_>>(),
+                    ),
+                    Err(_) => (vec![], vec![]),
+                },
+                None => (vec![], vec![]),
+            };
 
             // Run UPDATE with RETURNING to get after-state
             let update_sql = if upper.contains(" RETURNING ") {
@@ -380,14 +385,16 @@ async fn execute_single_statement(client: &mut Client, sql: &str) -> Result<Sand
             }
 
             // Capture rows about to be deleted
-            let (before_cols, before_rows) =
-                match extract_delete_select(trimmed) {
-                    Some(sel) => match client.query(&sel, &[]).await {
-                        Ok(rows) => (col_names_from_rows(&rows), rows.iter().map(row_to_strings).collect::<Vec<_>>()),
-                        Err(_) => (vec![], vec![]),
-                    },
-                    None => (vec![], vec![]),
-                };
+            let (before_cols, before_rows) = match extract_delete_select(trimmed) {
+                Some(sel) => match client.query(&sel, &[]).await {
+                    Ok(rows) => (
+                        col_names_from_rows(&rows),
+                        rows.iter().map(row_to_strings).collect::<Vec<_>>(),
+                    ),
+                    Err(_) => (vec![], vec![]),
+                },
+                None => (vec![], vec![]),
+            };
 
             let rows_affected = client
                 .execute(trimmed, &[])
@@ -426,9 +433,7 @@ async fn execute_single_statement(client: &mut Client, sql: &str) -> Result<Sand
                 diff_rows: vec![],
                 columns: vec![],
                 query_type: "TRUNCATE".to_string(),
-                warnings: vec![
-                    "TRUNCATE removes ALL rows from the table!".to_string(),
-                ],
+                warnings: vec!["TRUNCATE removes ALL rows from the table!".to_string()],
                 missing_where: false,
                 select_columns: vec![],
                 select_rows: vec![],
@@ -447,7 +452,8 @@ async fn execute_single_statement(client: &mut Client, sql: &str) -> Result<Sand
                 columns: vec![],
                 query_type: "DROP".to_string(),
                 warnings: vec![
-                    "DROP executed inside sandbox — will be rolled back unless committed.".to_string(),
+                    "DROP executed inside sandbox — will be rolled back unless committed."
+                        .to_string(),
                 ],
                 missing_where: false,
                 select_columns: vec![],

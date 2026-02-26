@@ -1,12 +1,21 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
     ConnectionResponse,
+    CreateDatabaseRoleRequest,
+    CreateDatabaseUserRequest,
     SchemaInfo,
     TableInfo,
     TopologyData,
     ColumnInfo,
     QueryResult,
     SavedConnection,
+    DatabaseAccessProfile,
+    DatabaseExtensionDetail,
+    DatabaseExtensionInfo,
+    DatabaseRoleInfo,
+    DatabaseRoleDetail,
+    DatabaseUserInfo,
+    PasswordReminder,
     EventTriggerInfo,
     FunctionInfo,
     TypeInfo,
@@ -150,6 +159,183 @@ export async function dbListDatabases(
     connectionId: string
 ): Promise<string[]> {
     return invoke<string[]>("db_list_databases", { connectionId });
+}
+
+/** Access profile for the current DB role */
+export async function dbGetAccessProfile(
+    connectionId: string
+): Promise<DatabaseAccessProfile> {
+    return invoke<DatabaseAccessProfile>("db_get_access_profile", { connectionId });
+}
+
+/** List available extensions with install permission metadata */
+export async function dbListExtensions(
+    connectionId: string
+): Promise<DatabaseExtensionInfo[]> {
+    return invoke<DatabaseExtensionInfo[]>("db_list_extensions", { connectionId });
+}
+
+/** Install one extension if current role is permitted */
+export async function dbInstallExtension(
+    connectionId: string,
+    extensionName: string
+): Promise<void> {
+    return invoke<void>("db_install_extension", { connectionId, extensionName });
+}
+
+/** Load one extension detail (versions, owner, action permissions) */
+export async function dbGetExtensionDetail(
+    connectionId: string,
+    extensionName: string
+): Promise<DatabaseExtensionDetail> {
+    return invoke<DatabaseExtensionDetail>("db_get_extension_detail", {
+        connectionId,
+        extensionName,
+    });
+}
+
+/** Uninstall an installed extension */
+export async function dbUninstallExtension(
+    connectionId: string,
+    extensionName: string
+): Promise<void> {
+    return invoke<void>("db_uninstall_extension", { connectionId, extensionName });
+}
+
+/** Update an extension to latest/default or a target version */
+export async function dbUpdateExtension(
+    connectionId: string,
+    extensionName: string,
+    targetVersion?: string | null
+): Promise<void> {
+    return invoke<void>("db_update_extension", {
+        connectionId,
+        extensionName,
+        targetVersion: targetVersion ?? null,
+    });
+}
+
+/** List roles for RBAC management */
+export async function dbListDatabaseRoles(
+    connectionId: string
+): Promise<DatabaseRoleInfo[]> {
+    return invoke<DatabaseRoleInfo[]>("db_list_database_roles", { connectionId });
+}
+
+/** List login users and memberships */
+export async function dbListDatabaseUsers(
+    connectionId: string
+): Promise<DatabaseUserInfo[]> {
+    return invoke<DatabaseUserInfo[]>("db_list_database_users", { connectionId });
+}
+
+/** Create a custom NOLOGIN RBAC role */
+export async function dbCreateDatabaseRole(
+    connectionId: string,
+    request: CreateDatabaseRoleRequest
+): Promise<void> {
+    return invoke<void>("db_create_database_role", { connectionId, request });
+}
+
+/** Load one role detail payload with member/member-of data */
+export async function dbGetDatabaseRoleDetail(
+    connectionId: string,
+    roleName: string
+): Promise<DatabaseRoleDetail> {
+    return invoke<DatabaseRoleDetail>("db_get_database_role_detail", {
+        connectionId,
+        roleName,
+    });
+}
+
+/** Grant role membership to a target user/role */
+export async function dbGrantDatabaseRoleMembership(
+    connectionId: string,
+    roleName: string,
+    memberName: string,
+    withAdminOption = false
+): Promise<void> {
+    return invoke<void>("db_grant_database_role_membership", {
+        connectionId,
+        roleName,
+        memberName,
+        withAdminOption,
+    });
+}
+
+/** Revoke role membership from a target user/role */
+export async function dbRevokeDatabaseRoleMembership(
+    connectionId: string,
+    roleName: string,
+    memberName: string
+): Promise<void> {
+    return invoke<void>("db_revoke_database_role_membership", {
+        connectionId,
+        roleName,
+        memberName,
+    });
+}
+
+/** Create a new database login user with optional role memberships */
+export async function dbCreateDatabaseUser(
+    connectionId: string,
+    request: CreateDatabaseUserRequest
+): Promise<void> {
+    return invoke<void>("db_create_database_user", { connectionId, request });
+}
+
+/** Enable/disable login for a user role */
+export async function dbSetDatabaseUserLogin(
+    connectionId: string,
+    username: string,
+    canLogin: boolean
+): Promise<void> {
+    return invoke<void>("db_set_database_user_login", {
+        connectionId,
+        username,
+        canLogin,
+    });
+}
+
+/** Reset password for an existing user */
+export async function dbSetDatabaseUserPassword(
+    connectionId: string,
+    username: string,
+    password: string
+): Promise<void> {
+    return invoke<void>("db_set_database_user_password", {
+        connectionId,
+        username,
+        password,
+    });
+}
+
+/** Delete a database user role (optionally reassign owned objects first) */
+export async function dbDeleteDatabaseUser(
+    connectionId: string,
+    username: string,
+    reassignOwnedTo?: string | null
+): Promise<void> {
+    return invoke<void>("db_delete_database_user", {
+        connectionId,
+        username,
+        reassignOwnedTo: reassignOwnedTo ?? null,
+    });
+}
+
+/** List local password reminders for the current connection target */
+export async function dbListPasswordReminders(
+    connectionId: string
+): Promise<PasswordReminder[]> {
+    return invoke<PasswordReminder[]>("db_list_password_reminders", { connectionId });
+}
+
+/** Delete one local password reminder */
+export async function dbDeletePasswordReminder(
+    connectionId: string,
+    id: string
+): Promise<PasswordReminder[]> {
+    return invoke<PasswordReminder[]>("db_delete_password_reminder", { connectionId, id });
 }
 
 /** Create a new database */

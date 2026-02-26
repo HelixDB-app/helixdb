@@ -69,10 +69,7 @@ pub fn save(
 }
 
 /// Delete a connection by id.
-pub fn delete(
-    app_data_dir: Option<PathBuf>,
-    id: &str,
-) -> Result<Vec<SavedConnection>, String> {
+pub fn delete(app_data_dir: Option<PathBuf>, id: &str) -> Result<Vec<SavedConnection>, String> {
     let path = connections_path(app_data_dir)?;
     let mut file = load_raw(&path)?;
     file.connections.retain(|c| c.id != id);

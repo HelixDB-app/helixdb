@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useEffect, useState } from "react";
 import { useConnectionStore } from "@/stores/connection-store";
 import { APP_NAME } from "@/lib/app-config";
@@ -39,6 +40,7 @@ import {
     Clock3,
     Search,
     Settings,
+    ShieldCheck,
     Bug,
     Sparkles,
     Table2,
@@ -145,7 +147,13 @@ export default function Home() {
                         onClick={() => !isConnected && setShowConnectionDialog(true)}
                         className="flex items-center gap-2 group"
                     >
-                        <img src="/logo.png" alt="" className="h-6 w-6 rounded-md object-contain shrink-0" />
+                        <Image
+                            src="/logo.png"
+                            alt=""
+                            width={24}
+                            height={24}
+                            className="h-6 w-6 rounded-md object-contain shrink-0"
+                        />
                         <span className="font-bold text-sm bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">
                             {APP_NAME}
                         </span>
@@ -335,6 +343,23 @@ export default function Home() {
                             </Button>
                         </TooltipTrigger>
                         <TooltipContent>Open Query History & Performance Intelligence</TooltipContent>
+                    </Tooltip>
+
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                asChild
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 gap-1.5 px-2.5 text-xs text-muted-foreground/60 hover:text-foreground border border-border/20 hover:border-border/40 bg-muted/20 hover:bg-muted/40 transition-all"
+                            >
+                                <Link href="/extensions-management">
+                                    <ShieldCheck className="h-3.5 w-3.5" />
+                                    <span className="hidden sm:inline">Extensions</span>
+                                </Link>
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Open Extensions & User Management</TooltipContent>
                     </Tooltip>
 
                     <Tooltip>

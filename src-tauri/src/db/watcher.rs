@@ -4,9 +4,9 @@
 //! A background tokio task listens on that channel and forwards events to the
 //! Tauri frontend via `app.emit`.
 
-use std::future::poll_fn;
 use dashmap::DashMap;
 use serde::{Deserialize, Serialize};
+use std::future::poll_fn;
 use tauri::{AppHandle, Emitter};
 use tokio::sync::oneshot;
 use tokio_postgres::{AsyncMessage, NoTls};
@@ -16,7 +16,13 @@ use tokio_postgres::{AsyncMessage, NoTls};
 /// Sanitise a schema/table name: keep alphanumeric + underscore, lowercase.
 fn sanitize(s: &str) -> String {
     s.chars()
-        .map(|c| if c.is_alphanumeric() || c == '_' { c.to_ascii_lowercase() } else { '_' })
+        .map(|c| {
+            if c.is_alphanumeric() || c == '_' {
+                c.to_ascii_lowercase()
+            } else {
+                '_'
+            }
+        })
         .collect()
 }
 
@@ -24,7 +30,11 @@ fn sanitize(s: &str) -> String {
 pub fn channel_name(schema: &str, table: &str) -> String {
     let s = format!("helix_{}_{}", sanitize(schema), sanitize(table));
     // PostgreSQL NOTIFY channel idents are case-insensitive and limited to 63 bytes
-    if s.len() > 63 { s[..63].to_string() } else { s }
+    if s.len() > 63 {
+        s[..63].to_string()
+    } else {
+        s
+    }
 }
 
 /// The Tauri event name the frontend listens to.
@@ -33,7 +43,13 @@ pub fn channel_name(schema: &str, table: &str) -> String {
 pub fn watch_event_name(connection_id: &str, schema: &str, table: &str) -> String {
     let safe = |s: &str| -> String {
         s.chars()
-            .map(|c| if c.is_alphanumeric() || c == '-' || c == '_' { c } else { '_' })
+            .map(|c| {
+                if c.is_alphanumeric() || c == '-' || c == '_' {
+                    c
+                } else {
+                    '_'
+                }
+            })
             .collect()
     };
     format!("tw/{}/{}/{}", connection_id, safe(schema), safe(table))
@@ -70,7 +86,9 @@ pub struct WatchManager {
 
 impl WatchManager {
     pub fn new() -> Self {
-        Self { watches: DashMap::new() }
+        Self {
+            watches: DashMap::new(),
+        }
     }
 
     fn key(connection_id: &str, schema: &str, table: &str) -> String {
@@ -78,7 +96,8 @@ impl WatchManager {
     }
 
     pub fn is_watching(&self, connection_id: &str, schema: &str, table: &str) -> bool {
-        self.watches.contains_key(&Self::key(connection_id, schema, table))
+        self.watches
+            .contains_key(&Self::key(connection_id, schema, table))
     }
 
     /// Install the trigger on the table and start a background LISTEN task.
@@ -96,11 +115,14 @@ impl WatchManager {
         }
 
         // ── create trigger ─────────────────────────────────────────────────
-        let (setup_client, setup_conn) = tokio_postgres::connect(&connection_string, NoTls)
-            .await
-            .map_err(|e| format!("Watch setup connection failed: {e}"))?;
+        let (setup_client, setup_conn) =
+            tokio_postgres::connect(&connection_string, NoTls)
+                .await
+                .map_err(|e| format!("Watch setup connection failed: {e}"))?;
         tokio::spawn(async move {
-            if let Err(e) = setup_conn.await { eprintln!("watch-setup conn error: {e}"); }
+            if let Err(e) = setup_conn.await {
+                eprintln!("watch-setup conn error: {e}");
+            }
         });
         create_trigger(&setup_client, &schema, &table)
             .await
@@ -117,8 +139,16 @@ impl WatchManager {
             let conn_str = connection_string.clone();
             tokio::spawn(async move {
                 if let Err(e) = run_listener(
-                    app, connection_id, schema, table, conn_str, channel, abort_rx,
-                ).await {
+                    app,
+                    connection_id,
+                    schema,
+                    table,
+                    conn_str,
+                    channel,
+                    abort_rx,
+                )
+                .await
+                {
                     eprintln!("watch listener error: {e}");
                 }
             });
@@ -143,7 +173,9 @@ impl WatchManager {
         if let Some(conn_str) = connection_string {
             if let Ok((client, conn)) = tokio_postgres::connect(conn_str, NoTls).await {
                 tokio::spawn(async move {
-                    if let Err(e) = conn.await { eprintln!("watch-cleanup conn error: {e}"); }
+                    if let Err(e) = conn.await {
+                        eprintln!("watch-cleanup conn error: {e}");
+                    }
                 });
                 let _ = drop_trigger(&client, schema, table).await;
             }
@@ -153,7 +185,8 @@ impl WatchManager {
     /// Abort all watches belonging to a connection (called on disconnect).
     pub fn stop_all_for_connection(&self, connection_id: &str) {
         let prefix = format!("{}\0", connection_id);
-        let keys: Vec<String> = self.watches
+        let keys: Vec<String> = self
+            .watches
             .iter()
             .filter(|e| e.key().starts_with(&prefix))
             .map(|e| e.key().clone())
@@ -173,8 +206,8 @@ async fn create_trigger(
     schema: &str,
     table: &str,
 ) -> Result<(), tokio_postgres::Error> {
-    let channel  = channel_name(schema, table);
-    let fn_name  = format!("helix_notify_{}", sanitize(table));
+    let channel = channel_name(schema, table);
+    let fn_name = format!("helix_notify_{}", sanitize(table));
     let trig_name = format!("helix_watch_{}", sanitize(table));
 
     // AFTER trigger function — serialises row to JSON, respects 7900-byte limit
@@ -201,9 +234,7 @@ async fn create_trigger(
         $BODY$;"#,
     );
 
-    let drop_trig = format!(
-        r#"DROP TRIGGER IF EXISTS "{trig_name}" ON "{schema}"."{table}";"#,
-    );
+    let drop_trig = format!(r#"DROP TRIGGER IF EXISTS "{trig_name}" ON "{schema}"."{table}";"#,);
     let create_trig = format!(
         r#"CREATE TRIGGER "{trig_name}"
           AFTER INSERT OR UPDATE OR DELETE ON "{schema}"."{table}"
@@ -221,14 +252,18 @@ async fn drop_trigger(
     schema: &str,
     table: &str,
 ) -> Result<(), tokio_postgres::Error> {
-    let fn_name  = format!("helix_notify_{}", sanitize(table));
+    let fn_name = format!("helix_notify_{}", sanitize(table));
     let trig_name = format!("helix_watch_{}", sanitize(table));
-    let _ = client.batch_execute(
-        &format!(r#"DROP TRIGGER IF EXISTS "{trig_name}" ON "{schema}"."{table}";"#)
-    ).await;
-    let _ = client.batch_execute(
-        &format!(r#"DROP FUNCTION IF EXISTS "{schema}"."{fn_name}"();"#)
-    ).await;
+    let _ = client
+        .batch_execute(&format!(
+            r#"DROP TRIGGER IF EXISTS "{trig_name}" ON "{schema}"."{table}";"#
+        ))
+        .await;
+    let _ = client
+        .batch_execute(&format!(
+            r#"DROP FUNCTION IF EXISTS "{schema}"."{fn_name}"();"#
+        ))
+        .await;
     Ok(())
 }
 
@@ -255,16 +290,22 @@ async fn run_listener(
         loop {
             match poll_fn(|cx| connection.as_mut().poll_message(cx)).await {
                 Some(Ok(AsyncMessage::Notification(n))) => {
-                    if notif_tx.send(n).is_err() { break; }
+                    if notif_tx.send(n).is_err() {
+                        break;
+                    }
                 }
                 Some(Ok(_)) => {}
-                Some(Err(e)) => { eprintln!("listener conn error: {e}"); break; }
+                Some(Err(e)) => {
+                    eprintln!("listener conn error: {e}");
+                    break;
+                }
                 None => break,
             }
         }
     });
 
-    client.batch_execute(&format!(r#"LISTEN "{channel}""#))
+    client
+        .batch_execute(&format!(r#"LISTEN "{channel}""#))
         .await
         .map_err(|e| e.to_string())?;
 

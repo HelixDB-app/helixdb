@@ -2,8 +2,8 @@
 //! Data stays on device (app data directory) and is optimized for read-heavy UI workloads.
 
 use chrono::{Duration, Local, TimeZone};
-use rusqlite::{params, params_from_iter, Connection};
 use rusqlite::types::Value;
+use rusqlite::{params, params_from_iter, Connection};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -211,7 +211,8 @@ fn history_db_path(app_data_dir: Option<PathBuf>) -> Result<PathBuf, String> {
 
 fn open_history_db(app_data_dir: Option<PathBuf>) -> Result<Connection, String> {
     let path = history_db_path(app_data_dir)?;
-    let conn = Connection::open(path).map_err(|e| format!("Failed to open query history DB: {}", e))?;
+    let conn =
+        Connection::open(path).map_err(|e| format!("Failed to open query history DB: {}", e))?;
 
     conn.pragma_update(None, "journal_mode", "WAL")
         .map_err(|e| format!("Failed to set WAL mode: {}", e))?;
@@ -398,7 +399,8 @@ fn extract_tables(sql: &str) -> Vec<String> {
     let mut i = 0usize;
     while i < tokens.len() {
         let tk = tokens[i].to_ascii_lowercase();
-        let follows_object_keyword = matches!(tk.as_str(), "from" | "join" | "update" | "into" | "table");
+        let follows_object_keyword =
+            matches!(tk.as_str(), "from" | "join" | "update" | "into" | "table");
 
         if follows_object_keyword && i + 1 < tokens.len() {
             let mut raw = strip_identifier_quotes(&tokens[i + 1]);
@@ -453,7 +455,9 @@ fn numeric_search_bound(input: &str) -> Option<(char, f64)> {
 fn start_of_today_ms() -> i64 {
     let now = Local::now();
     let date = now.date_naive();
-    let midnight = date.and_hms_opt(0, 0, 0).unwrap_or_else(|| now.naive_local());
+    let midnight = date
+        .and_hms_opt(0, 0, 0)
+        .unwrap_or_else(|| now.naive_local());
     Local
         .from_local_datetime(&midnight)
         .earliest()
@@ -540,7 +544,11 @@ fn build_filter_parts(filter: &QueryHistoryFilter) -> SqlFilterParts {
 
     let search_overrides = parse_search_overrides(filter.search_text.as_deref());
 
-    if let Some(conn_id) = filter.connection_id.as_ref().filter(|s| !s.trim().is_empty()) {
+    if let Some(conn_id) = filter
+        .connection_id
+        .as_ref()
+        .filter(|s| !s.trim().is_empty())
+    {
         clauses.push("connection_id = ?".to_string());
         params.push(Value::Text(conn_id.trim().to_string()));
     }
@@ -612,7 +620,10 @@ fn build_filter_parts(filter: &QueryHistoryFilter) -> SqlFilterParts {
     if let Some(search_text) = search_overrides.fts_text.filter(|s| !s.trim().is_empty()) {
         let fts_query = to_fts_query(&search_text);
         if !fts_query.trim().is_empty() {
-            clauses.push("id IN (SELECT rowid FROM query_history_fts WHERE query_history_fts MATCH ?)".to_string());
+            clauses.push(
+                "id IN (SELECT rowid FROM query_history_fts WHERE query_history_fts MATCH ?)"
+                    .to_string(),
+            );
             params.push(Value::Text(fts_query));
         }
     }
@@ -675,7 +686,10 @@ fn sort_clause(sort_by: Option<&str>, sort_dir: Option<&str>) -> String {
     }
 }
 
-pub fn record_query(app_data_dir: Option<PathBuf>, entry: QueryHistoryRecordInput) -> Result<i64, String> {
+pub fn record_query(
+    app_data_dir: Option<PathBuf>,
+    entry: QueryHistoryRecordInput,
+) -> Result<i64, String> {
     let conn = open_history_db(app_data_dir)?;
 
     let normalized = normalize_sql(&entry.query_text);
@@ -798,8 +812,7 @@ pub fn list_queries(
         ORDER BY {}, executed_at DESC
         LIMIT ? OFFSET ?
         "#,
-        filter_parts.where_sql,
-        order_by,
+        filter_parts.where_sql, order_by,
     );
 
     let mut stmt = conn
@@ -812,7 +825,10 @@ pub fn list_queries(
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to read query history rows: {}", e))?;
 
-    let count_sql = format!("SELECT COUNT(*) FROM query_history {}", filter_parts.where_sql);
+    let count_sql = format!(
+        "SELECT COUNT(*) FROM query_history {}",
+        filter_parts.where_sql
+    );
     let total_count: i64 = conn
         .query_row(
             &count_sql,
@@ -835,7 +851,13 @@ pub fn list_queries(
         filter_parts.where_sql,
     );
 
-    let (total_queries, avg_time_ms, slowest_ms, failed_count, cached_count): (i64, f64, f64, i64, i64) = conn
+    let (total_queries, avg_time_ms, slowest_ms, failed_count, cached_count): (
+        i64,
+        f64,
+        f64,
+        i64,
+        i64,
+    ) = conn
         .query_row(
             &stats_sql,
             params_from_iter(filter_parts.params.iter()),
@@ -864,7 +886,9 @@ pub fn list_queries(
 
     let today_sql = format!("SELECT COUNT(*) FROM query_history {}", today_where);
     let today_count: i64 = conn
-        .query_row(&today_sql, params_from_iter(today_params.iter()), |row| row.get(0))
+        .query_row(&today_sql, params_from_iter(today_params.iter()), |row| {
+            row.get(0)
+        })
         .map_err(|e| format!("Failed to compute today query history count: {}", e))?;
 
     let mut conn_stmt = conn
@@ -905,7 +929,10 @@ pub fn list_queries(
     })
 }
 
-pub fn get_query_detail(app_data_dir: Option<PathBuf>, id: i64) -> Result<QueryHistoryDetail, String> {
+pub fn get_query_detail(
+    app_data_dir: Option<PathBuf>,
+    id: i64,
+) -> Result<QueryHistoryDetail, String> {
     let conn = open_history_db(app_data_dir)?;
 
     let mut stmt = conn
@@ -956,7 +983,8 @@ pub fn get_query_detail(app_data_dir: Option<PathBuf>, id: i64) -> Result<QueryH
         .map_err(|e| format!("Failed to read query detail row: {}", e))?
         .ok_or_else(|| format!("No query history record found with id {}", id))?;
 
-    let item = row_to_summary(row).map_err(|e| format!("Failed to parse query detail row: {}", e))?;
+    let item =
+        row_to_summary(row).map_err(|e| format!("Failed to parse query detail row: {}", e))?;
     let explain_json: Option<String> = row.get(14).ok();
     let ai_analysis: Option<String> = row.get(21).ok();
     let query_normalized: String = row.get(22).unwrap_or_default();
@@ -1045,10 +1073,17 @@ fn range_or_default(range: &QueryHistoryDashboardFilter) -> (i64, i64) {
 
 fn dashboard_where(range: &QueryHistoryDashboardFilter) -> (String, Vec<Value>) {
     let (from, to) = range_or_default(range);
-    let mut clauses = vec!["executed_at >= ?".to_string(), "executed_at <= ?".to_string()];
+    let mut clauses = vec![
+        "executed_at >= ?".to_string(),
+        "executed_at <= ?".to_string(),
+    ];
     let mut params = vec![Value::Integer(from), Value::Integer(to)];
 
-    if let Some(conn) = range.connection_id.as_ref().filter(|s| !s.trim().is_empty()) {
+    if let Some(conn) = range
+        .connection_id
+        .as_ref()
+        .filter(|s| !s.trim().is_empty())
+    {
         clauses.push("connection_id = ?".to_string());
         params.push(Value::Text(conn.trim().to_string()));
     }
@@ -1086,7 +1121,10 @@ pub fn get_dashboard(
         where_sql
     );
 
-    let mut trend_params = vec![Value::Integer(bucket_size_ms), Value::Integer(bucket_size_ms)];
+    let mut trend_params = vec![
+        Value::Integer(bucket_size_ms),
+        Value::Integer(bucket_size_ms),
+    ];
     trend_params.extend(base_params.clone());
 
     let mut trend_stmt = conn
@@ -1201,7 +1239,9 @@ pub fn get_dashboard(
         .map_err(|e| format!("Failed to prepare table-frequency SQL: {}", e))?;
 
     let table_rows = table_freq_stmt
-        .query_map(params_from_iter(base_params.iter()), |row| row.get::<_, String>(0))
+        .query_map(params_from_iter(base_params.iter()), |row| {
+            row.get::<_, String>(0)
+        })
         .map_err(|e| format!("Failed to query table-frequency rows: {}", e))?
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| format!("Failed to read table-frequency rows: {}", e))?;
@@ -1229,7 +1269,11 @@ pub fn get_dashboard(
         "executed_at <= ?".to_string(),
     ];
     let mut anomaly_params = vec![Value::Integer(baseline_from), Value::Integer(to)];
-    if let Some(conn_id) = range.connection_id.as_ref().filter(|s| !s.trim().is_empty()) {
+    if let Some(conn_id) = range
+        .connection_id
+        .as_ref()
+        .filter(|s| !s.trim().is_empty())
+    {
         anomaly_clauses.push("connection_id = ?".to_string());
         anomaly_params.push(Value::Text(conn_id.trim().to_string()));
     }
@@ -1303,7 +1347,11 @@ pub fn get_dashboard(
         }
     }
 
-    anomalies.sort_by(|a, b| b.delta_factor.partial_cmp(&a.delta_factor).unwrap_or(std::cmp::Ordering::Equal));
+    anomalies.sort_by(|a, b| {
+        b.delta_factor
+            .partial_cmp(&a.delta_factor)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
     anomalies.truncate(10);
 
     Ok(QueryHistoryDashboard {
@@ -1315,7 +1363,11 @@ pub fn get_dashboard(
     })
 }
 
-pub fn save_ai_analysis(app_data_dir: Option<PathBuf>, id: i64, analysis_json: String) -> Result<(), String> {
+pub fn save_ai_analysis(
+    app_data_dir: Option<PathBuf>,
+    id: i64,
+    analysis_json: String,
+) -> Result<(), String> {
     let conn = open_history_db(app_data_dir)?;
     conn.execute(
         "UPDATE query_history SET ai_analysis = ? WHERE id = ?",
@@ -1325,7 +1377,11 @@ pub fn save_ai_analysis(app_data_dir: Option<PathBuf>, id: i64, analysis_json: S
     Ok(())
 }
 
-pub fn save_explain_json(app_data_dir: Option<PathBuf>, id: i64, explain_json: String) -> Result<(), String> {
+pub fn save_explain_json(
+    app_data_dir: Option<PathBuf>,
+    id: i64,
+    explain_json: String,
+) -> Result<(), String> {
     let conn = open_history_db(app_data_dir)?;
     conn.execute(
         "UPDATE query_history SET explain_json = ? WHERE id = ?",
@@ -1335,7 +1391,11 @@ pub fn save_explain_json(app_data_dir: Option<PathBuf>, id: i64, explain_json: S
     Ok(())
 }
 
-pub fn toggle_bookmark(app_data_dir: Option<PathBuf>, id: i64, bookmark: bool) -> Result<(), String> {
+pub fn toggle_bookmark(
+    app_data_dir: Option<PathBuf>,
+    id: i64,
+    bookmark: bool,
+) -> Result<(), String> {
     let conn = open_history_db(app_data_dir)?;
     conn.execute(
         "UPDATE query_history SET bookmark = ? WHERE id = ?",
@@ -1345,7 +1405,11 @@ pub fn toggle_bookmark(app_data_dir: Option<PathBuf>, id: i64, bookmark: bool) -
     Ok(())
 }
 
-pub fn save_note(app_data_dir: Option<PathBuf>, id: i64, note: Option<String>) -> Result<(), String> {
+pub fn save_note(
+    app_data_dir: Option<PathBuf>,
+    id: i64,
+    note: Option<String>,
+) -> Result<(), String> {
     let conn = open_history_db(app_data_dir)?;
     conn.execute(
         "UPDATE query_history SET note = ? WHERE id = ?",
@@ -1355,7 +1419,10 @@ pub fn save_note(app_data_dir: Option<PathBuf>, id: i64, note: Option<String>) -
     Ok(())
 }
 
-pub fn export_csv(app_data_dir: Option<PathBuf>, filter: QueryHistoryFilter) -> Result<String, String> {
+pub fn export_csv(
+    app_data_dir: Option<PathBuf>,
+    filter: QueryHistoryFilter,
+) -> Result<String, String> {
     let conn = open_history_db(app_data_dir)?;
     let filter_parts = build_filter_parts(&filter);
 
@@ -1415,15 +1482,37 @@ pub fn export_csv(app_data_dir: Option<PathBuf>, filter: QueryHistoryFilter) -> 
             csv_escape(&row.get::<_, String>(5).unwrap_or_default()),
             row.get::<_, f64>(6).unwrap_or_default().to_string(),
             row.get::<_, f64>(7).unwrap_or_default().to_string(),
-            row.get::<_, Option<f64>>(8).unwrap_or(None).map(|v| v.to_string()).unwrap_or_default(),
-            row.get::<_, Option<i64>>(9).unwrap_or(None).map(|v| v.to_string()).unwrap_or_default(),
-            row.get::<_, Option<i64>>(10).unwrap_or(None).map(|v| v.to_string()).unwrap_or_default(),
+            row.get::<_, Option<f64>>(8)
+                .unwrap_or(None)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            row.get::<_, Option<i64>>(9)
+                .unwrap_or(None)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            row.get::<_, Option<i64>>(10)
+                .unwrap_or(None)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
             csv_escape(&row.get::<_, String>(11).unwrap_or_default()),
-            csv_escape(&row.get::<_, Option<String>>(12).unwrap_or(None).unwrap_or_default()),
+            csv_escape(
+                &row.get::<_, Option<String>>(12)
+                    .unwrap_or(None)
+                    .unwrap_or_default(),
+            ),
             csv_escape(&error_message.unwrap_or_default()),
-            row.get::<_, Option<i64>>(14).unwrap_or(None).map(|v| v.to_string()).unwrap_or_default(),
-            row.get::<_, Option<i64>>(15).unwrap_or(None).map(|v| v.to_string()).unwrap_or_default(),
-            row.get::<_, Option<i64>>(16).unwrap_or(None).map(|v| v.to_string()).unwrap_or_default(),
+            row.get::<_, Option<i64>>(14)
+                .unwrap_or(None)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            row.get::<_, Option<i64>>(15)
+                .unwrap_or(None)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
+            row.get::<_, Option<i64>>(16)
+                .unwrap_or(None)
+                .map(|v| v.to_string())
+                .unwrap_or_default(),
             csv_escape(&tables_touched.unwrap_or_default()),
             row.get::<_, i64>(18).unwrap_or_default().to_string(),
         ];

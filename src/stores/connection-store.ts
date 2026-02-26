@@ -120,6 +120,7 @@ interface ConnectionState {
     databaseName: string;
     serverVersion: string;
     isConnected: boolean;
+    postConnectRedirectPending: boolean;
     isConnecting: boolean;
     connectionError: string | null;
 
@@ -174,6 +175,7 @@ interface ConnectionState {
     loadSchemaObjects: (schema: string, force?: boolean) => Promise<void>;
     setConnectionString: (s: string) => void;
     clearError: () => void;
+    markPostConnectRedirectConsumed: () => void;
 }
 
 export const useConnectionStore = create<ConnectionState>((set, get) => {
@@ -314,6 +316,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
         databaseName: "",
         serverVersion: "",
         isConnected: false,
+        postConnectRedirectPending: false,
         isConnecting: false,
         connectionError: null,
         databases: [],
@@ -342,6 +345,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
 
         setConnectionString: (s) => set({ connectionString: s }),
         clearError: () => set({ connectionError: null }),
+        markPostConnectRedirectConsumed: () => set({ postConnectRedirectPending: false }),
 
         connect: async (connectionString, savedConnectionId) => {
             clearPendingLoads();
@@ -367,6 +371,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                     databaseName: response.database_name,
                     serverVersion: response.server_version,
                     isConnected: true,
+                    postConnectRedirectPending: true,
                     isConnecting: false,
                     isLoadingSchemas: false,
                     schemas,
@@ -408,6 +413,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                 set({
                     isConnecting: false,
                     isLoadingSchemas: false,
+                    postConnectRedirectPending: false,
                     connectionError: parseConnectionError(String(error)),
                 });
             }
@@ -427,6 +433,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
             set({
                 connectionId: null,
                 isConnected: false,
+                postConnectRedirectPending: false,
                 connectionString: "",
                 databaseName: "",
                 serverVersion: "",
@@ -538,6 +545,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                     databaseName: response.database_name,
                     serverVersion: response.server_version,
                     isConnected: true,
+                    postConnectRedirectPending: true,
                     isSwitchingDatabase: false,
                     isLoadingSchemas: false,
                     schemas,

@@ -25,17 +25,13 @@ pub struct InstallProgress {
 // ── Helpers ────────────────────────────────────────────────────────────────
 
 fn run_cmd_raw(program: &str, args: &[&str]) -> Option<(bool, String, String)> {
-    StdCommand::new(program)
-        .args(args)
-        .output()
-        .ok()
-        .map(|o| {
-            (
-                o.status.success(),
-                String::from_utf8_lossy(&o.stdout).trim().to_string(),
-                String::from_utf8_lossy(&o.stderr).trim().to_string(),
-            )
-        })
+    StdCommand::new(program).args(args).output().ok().map(|o| {
+        (
+            o.status.success(),
+            String::from_utf8_lossy(&o.stdout).trim().to_string(),
+            String::from_utf8_lossy(&o.stderr).trim().to_string(),
+        )
+    })
 }
 
 fn run_cmd(program: &str, args: &[&str]) -> Option<String> {
@@ -369,7 +365,13 @@ pub async fn install_local_postgres(app: &tauri::AppHandle) -> Result<LocalPostg
 
             emit(30, "Installing PostgreSQL...", None);
             let out = StdCommand::new("sudo")
-                .args(["apt-get", "install", "-y", "postgresql", "postgresql-contrib"])
+                .args([
+                    "apt-get",
+                    "install",
+                    "-y",
+                    "postgresql",
+                    "postgresql-contrib",
+                ])
                 .output()
                 .map_err(|e| format!("apt install failed: {e}"))?;
 
@@ -396,7 +398,13 @@ pub async fn install_local_postgres(app: &tauri::AppHandle) -> Result<LocalPostg
         if which("dnf").is_some() {
             emit(5, "Installing PostgreSQL via dnf...", None);
             let out = StdCommand::new("sudo")
-                .args(["dnf", "install", "-y", "postgresql-server", "postgresql-contrib"])
+                .args([
+                    "dnf",
+                    "install",
+                    "-y",
+                    "postgresql-server",
+                    "postgresql-contrib",
+                ])
                 .output()
                 .map_err(|e| format!("dnf install failed: {e}"))?;
 

@@ -1,3 +1,4 @@
+mod account_security_storage;
 mod commands;
 mod connections_storage;
 mod db;
@@ -27,6 +28,24 @@ pub fn run() {
             commands::db_execute_query,
             commands::db_refresh_cache,
             commands::db_list_databases,
+            commands::db_get_access_profile,
+            commands::db_list_extensions,
+            commands::db_install_extension,
+            commands::db_get_extension_detail,
+            commands::db_uninstall_extension,
+            commands::db_update_extension,
+            commands::db_list_database_roles,
+            commands::db_list_database_users,
+            commands::db_create_database_role,
+            commands::db_get_database_role_detail,
+            commands::db_grant_database_role_membership,
+            commands::db_revoke_database_role_membership,
+            commands::db_create_database_user,
+            commands::db_set_database_user_login,
+            commands::db_set_database_user_password,
+            commands::db_delete_database_user,
+            commands::db_list_password_reminders,
+            commands::db_delete_password_reminder,
             commands::db_create_database,
             commands::db_drop_database,
             commands::db_list_event_triggers,

@@ -90,6 +90,146 @@ pub struct ConnectionResponse {
     pub pg_version_num: u32,
 }
 
+/// Access capabilities of the currently connected PostgreSQL role.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseAccessProfile {
+    pub current_user: String,
+    pub is_superuser: bool,
+    pub can_create_db: bool,
+    pub can_create_role: bool,
+    pub can_create_in_database: bool,
+    pub is_admin: bool,
+}
+
+/// One extension in pg_available_extensions plus install permissions.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseExtensionInfo {
+    pub name: String,
+    pub default_version: Option<String>,
+    pub installed_version: Option<String>,
+    pub comment: Option<String>,
+    pub requires_superuser: bool,
+    pub trusted: bool,
+    pub can_install: bool,
+    pub install_block_reason: Option<String>,
+}
+
+/// A database role (login or group) with RBAC assignment capability metadata.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseRoleInfo {
+    pub name: String,
+    pub can_login: bool,
+    pub is_superuser: bool,
+    pub can_create_db: bool,
+    pub can_create_role: bool,
+    pub is_system_role: bool,
+    pub is_assignable: bool,
+}
+
+/// One member attached to a role (for detailed RBAC views).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseRoleMemberInfo {
+    pub name: String,
+    pub can_login: bool,
+    pub is_superuser: bool,
+    pub is_system_role: bool,
+    pub admin_option: bool,
+}
+
+/// Rich metadata for one role in RBAC management views.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseRoleDetail {
+    pub name: String,
+    pub can_login: bool,
+    pub is_superuser: bool,
+    pub can_create_db: bool,
+    pub can_create_role: bool,
+    pub can_replicate: bool,
+    pub can_bypass_rls: bool,
+    pub inherit: bool,
+    pub valid_until: Option<String>,
+    pub comment: Option<String>,
+    pub is_system_role: bool,
+    pub is_assignable: bool,
+    pub can_grant_membership: bool,
+    pub can_revoke_membership: bool,
+    pub manage_block_reason: Option<String>,
+    pub member_of: Vec<String>,
+    pub members: Vec<DatabaseRoleMemberInfo>,
+}
+
+/// A login account with role attributes and memberships.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseUserInfo {
+    pub username: String,
+    pub can_login: bool,
+    pub is_superuser: bool,
+    pub can_create_db: bool,
+    pub can_create_role: bool,
+    pub can_replicate: bool,
+    pub can_bypass_rls: bool,
+    pub is_system_role: bool,
+    pub valid_until: Option<String>,
+    pub member_of: Vec<String>,
+}
+
+/// Rich metadata for one extension detail view.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DatabaseExtensionDetail {
+    pub name: String,
+    pub default_version: Option<String>,
+    pub installed_version: Option<String>,
+    pub installed_schema: Option<String>,
+    pub installed_owner: Option<String>,
+    pub comment: Option<String>,
+    pub requires_superuser: bool,
+    pub trusted: bool,
+    pub available_versions: Vec<String>,
+    pub can_install: bool,
+    pub can_uninstall: bool,
+    pub can_update: bool,
+    pub install_block_reason: Option<String>,
+    pub uninstall_block_reason: Option<String>,
+    pub update_block_reason: Option<String>,
+}
+
+/// Request payload for creating a database user through GUI.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateDatabaseUserRequest {
+    pub username: String,
+    pub password: String,
+    #[serde(default)]
+    pub role_memberships: Vec<String>,
+    #[serde(default)]
+    pub can_create_db: bool,
+    #[serde(default)]
+    pub can_create_role: bool,
+    #[serde(default)]
+    pub is_superuser: bool,
+    #[serde(default = "default_true")]
+    pub inherit: bool,
+    #[serde(default)]
+    pub replication: bool,
+    #[serde(default)]
+    pub bypass_rls: bool,
+    pub valid_until: Option<String>,
+    pub password_reminder: Option<String>,
+}
+
+/// Request payload for creating a custom NOLOGIN RBAC role.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CreateDatabaseRoleRequest {
+    pub role_name: String,
+    #[serde(default = "default_true")]
+    pub inherit: bool,
+    #[serde(default)]
+    pub memberships: Vec<String>,
+}
+
+fn default_true() -> bool {
+    true
+}
+
 /// Event trigger (cluster/database level) — available since PG 9.3
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EventTriggerInfo {

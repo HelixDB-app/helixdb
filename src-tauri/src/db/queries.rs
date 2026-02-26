@@ -1,10 +1,11 @@
 use deadpool_postgres::Pool;
 use log::{debug, warn};
+use rust_decimal::Decimal;
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_postgres::types::Type;
 use tokio_postgres::Row;
-use rust_decimal::Decimal;
 
 use super::types::*;
 
@@ -66,12 +67,10 @@ fn convert_cell(row: &Row, idx: usize, pg_type: &Type) -> CellValue {
             Ok(Some(v)) => CellValue::DateTime(v.format("%Y-%m-%d %H:%M:%S%.f").to_string()),
             _ => CellValue::Null,
         },
-        &Type::TIMESTAMPTZ => {
-            match row.try_get::<_, Option<chrono::DateTime<chrono::Utc>>>(idx) {
-                Ok(Some(v)) => CellValue::DateTime(v.to_rfc3339()),
-                _ => CellValue::Null,
-            }
-        }
+        &Type::TIMESTAMPTZ => match row.try_get::<_, Option<chrono::DateTime<chrono::Utc>>>(idx) {
+            Ok(Some(v)) => CellValue::DateTime(v.to_rfc3339()),
+            _ => CellValue::Null,
+        },
         &Type::DATE => match row.try_get::<_, Option<chrono::NaiveDate>>(idx) {
             Ok(Some(v)) => CellValue::Date(v.format("%Y-%m-%d").to_string()),
             _ => CellValue::Null,
@@ -82,12 +81,10 @@ fn convert_cell(row: &Row, idx: usize, pg_type: &Type) -> CellValue {
         },
         // INTERVAL: tokio-postgres does not expose a native Rust type for this;
         // fall through to the generic String fallback below.
-        &Type::JSON | &Type::JSONB => {
-            match row.try_get::<_, Option<serde_json::Value>>(idx) {
-                Ok(Some(v)) => CellValue::Json(v),
-                _ => CellValue::Null,
-            }
-        }
+        &Type::JSON | &Type::JSONB => match row.try_get::<_, Option<serde_json::Value>>(idx) {
+            Ok(Some(v)) => CellValue::Json(v),
+            _ => CellValue::Null,
+        },
         &Type::BYTEA => match row.try_get::<_, Option<Vec<u8>>>(idx) {
             Ok(Some(v)) => CellValue::Bytes(v),
             _ => CellValue::Null,
@@ -103,7 +100,6 @@ fn convert_cell(row: &Row, idx: usize, pg_type: &Type) -> CellValue {
         },
     }
 }
-
 
 fn pg_type_to_string(pg_type: &Type) -> String {
     match pg_type {
@@ -165,9 +161,7 @@ pub async fn list_schemas(pool: &Arc<Pool>) -> Result<Vec<SchemaInfo>, String> {
 
 /// List event triggers (PG 9.3+).
 /// Returns richer metadata: event name, firing state, and trigger function name.
-pub async fn list_event_triggers(
-    pool: &Arc<Pool>,
-) -> Result<Vec<EventTriggerInfo>, String> {
+pub async fn list_event_triggers(pool: &Arc<Pool>) -> Result<Vec<EventTriggerInfo>, String> {
     let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
 
     let rows = client
@@ -304,10 +298,7 @@ pub async fn list_functions(
 /// Because the `typtype` column has always existed, a single query works across
 /// all supported versions; versions that lack range/multirange will just
 /// return no rows for those typtype values.
-pub async fn list_types(
-    pool: &Arc<Pool>,
-    schema: &str,
-) -> Result<Vec<TypeInfo>, String> {
+pub async fn list_types(pool: &Arc<Pool>, schema: &str) -> Result<Vec<TypeInfo>, String> {
     let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
 
     let rows = client
@@ -513,7 +504,10 @@ pub async fn create_enum(
         literals.join(", ")
     );
     let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
-    client.execute(&sql, &[]).await.map_err(|e| format!("{}", e))?;
+    client
+        .execute(&sql, &[])
+        .await
+        .map_err(|e| format!("{}", e))?;
     Ok(())
 }
 
@@ -913,54 +907,55 @@ pub async fn apply_documentation_comments(
         let comment_lit = quote_literal(comment);
         let kind = patch.kind.trim().to_ascii_lowercase();
 
-        let sql = match kind.as_str() {
-            "table" => {
-                let table = patch
-                    .table
-                    .as_ref()
-                    .map(|v| v.as_str())
-                    .ok_or_else(|| "Missing table name for table comment patch".to_string())?;
-                format!(
-                    "COMMENT ON TABLE {}.{} IS {}",
-                    schema_q,
-                    quote_ident(table),
-                    comment_lit
-                )
-            }
-            "column" => {
-                let table = patch
-                    .table
-                    .as_ref()
-                    .map(|v| v.as_str())
-                    .ok_or_else(|| "Missing table name for column comment patch".to_string())?;
-                let column = patch
-                    .column
-                    .as_ref()
-                    .map(|v| v.as_str())
-                    .ok_or_else(|| "Missing column name for column comment patch".to_string())?;
-                format!(
-                    "COMMENT ON COLUMN {}.{}.{} IS {}",
-                    schema_q,
-                    quote_ident(table),
-                    quote_ident(column),
-                    comment_lit
-                )
-            }
-            "index" => {
-                let index = patch
-                    .index
-                    .as_ref()
-                    .map(|v| v.as_str())
-                    .ok_or_else(|| "Missing index name for index comment patch".to_string())?;
-                format!(
-                    "COMMENT ON INDEX {}.{} IS {}",
-                    schema_q,
-                    quote_ident(index),
-                    comment_lit
-                )
-            }
-            _ => return Err(format!("Unsupported documentation patch kind: {}", patch.kind)),
-        };
+        let sql =
+            match kind.as_str() {
+                "table" => {
+                    let table =
+                        patch.table.as_ref().map(|v| v.as_str()).ok_or_else(|| {
+                            "Missing table name for table comment patch".to_string()
+                        })?;
+                    format!(
+                        "COMMENT ON TABLE {}.{} IS {}",
+                        schema_q,
+                        quote_ident(table),
+                        comment_lit
+                    )
+                }
+                "column" => {
+                    let table =
+                        patch.table.as_ref().map(|v| v.as_str()).ok_or_else(|| {
+                            "Missing table name for column comment patch".to_string()
+                        })?;
+                    let column = patch.column.as_ref().map(|v| v.as_str()).ok_or_else(|| {
+                        "Missing column name for column comment patch".to_string()
+                    })?;
+                    format!(
+                        "COMMENT ON COLUMN {}.{}.{} IS {}",
+                        schema_q,
+                        quote_ident(table),
+                        quote_ident(column),
+                        comment_lit
+                    )
+                }
+                "index" => {
+                    let index =
+                        patch.index.as_ref().map(|v| v.as_str()).ok_or_else(|| {
+                            "Missing index name for index comment patch".to_string()
+                        })?;
+                    format!(
+                        "COMMENT ON INDEX {}.{} IS {}",
+                        schema_q,
+                        quote_ident(index),
+                        comment_lit
+                    )
+                }
+                _ => {
+                    return Err(format!(
+                        "Unsupported documentation patch kind: {}",
+                        patch.kind
+                    ))
+                }
+            };
 
         tx.execute(&sql, &[])
             .await
@@ -1004,7 +999,11 @@ pub async fn get_table_data(
     {
         Ok(row) => {
             let count: i64 = row.get(0);
-            if count < 0 { 0 } else { count }
+            if count < 0 {
+                0
+            } else {
+                count
+            }
         }
         Err(_) => {
             let count_result = client
@@ -1037,10 +1036,20 @@ pub async fn get_table_data(
                     let lower = c.name.to_lowercase();
                     matches!(
                         lower.as_str(),
-                        "created_at" | "createdat" | "create_date" | "creation_date" | "date_created" | "created"
+                        "created_at"
+                            | "createdat"
+                            | "create_date"
+                            | "creation_date"
+                            | "date_created"
+                            | "created"
                     )
                 })
-                .map(|c| format!("ORDER BY \"{}\" DESC NULLS LAST", sanitize_identifier(&c.name)))
+                .map(|c| {
+                    format!(
+                        "ORDER BY \"{}\" DESC NULLS LAST",
+                        sanitize_identifier(&c.name)
+                    )
+                })
                 .unwrap_or_default(),
             _ => String::new(),
         }
@@ -1128,7 +1137,10 @@ fn max_parameter_index(sql: &str) -> usize {
             while end < bytes.len() && bytes[end].is_ascii_digit() {
                 end += 1;
             }
-            if let Ok(n) = std::str::from_utf8(&bytes[start..end]).unwrap_or("0").parse::<usize>() {
+            if let Ok(n) = std::str::from_utf8(&bytes[start..end])
+                .unwrap_or("0")
+                .parse::<usize>()
+            {
                 if n > max {
                     max = n;
                 }
@@ -1198,7 +1210,11 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
 
     // Single statement: existing behaviour (prepared statement compatible).
     if statements.len() <= 1 {
-        let stmt = if statements.is_empty() { trimmed } else { &statements[0] };
+        let stmt = if statements.is_empty() {
+            trimmed
+        } else {
+            &statements[0]
+        };
         let upper = stmt.to_uppercase();
         let is_select = upper.starts_with("SELECT")
             || upper.starts_with("WITH")
@@ -1230,7 +1246,8 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
                     } else {
                         Vec::new()
                     };
-                    let data: Vec<Vec<CellValue>> = rows.iter().map(|row| row_to_cells(row)).collect();
+                    let data: Vec<Vec<CellValue>> =
+                        rows.iter().map(|row| row_to_cells(row)).collect();
                     let row_count = data.len();
                     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
                     return Ok(QueryResult {
@@ -1332,7 +1349,8 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
                     } else {
                         Vec::new()
                     };
-                    let data: Vec<Vec<CellValue>> = rows.iter().map(|row| row_to_cells(row)).collect();
+                    let data: Vec<Vec<CellValue>> =
+                        rows.iter().map(|row| row_to_cells(row)).collect();
                     let row_count = data.len();
                     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
                     last_select_result = Some(QueryResult {
@@ -1377,7 +1395,11 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
                     page_size: None,
                     query: trimmed.to_string(),
                     is_error: true,
-                    error_message: Some(format!("Statement {}: {}", idx + 1, format_query_error(&e))),
+                    error_message: Some(format!(
+                        "Statement {}: {}",
+                        idx + 1,
+                        format_query_error(&e)
+                    )),
                 });
             }
         }
@@ -1471,6 +1493,1291 @@ pub async fn get_server_info(pool: &Arc<Pool>) -> Result<(String, String), Strin
     let db_name: String = db_row.get(0);
 
     Ok((db_name, version))
+}
+
+pub async fn get_database_access_profile(
+    pool: &Arc<Pool>,
+) -> Result<DatabaseAccessProfile, String> {
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let row = client
+        .query_one(
+            "SELECT
+                current_user::text,
+                r.rolsuper,
+                r.rolcreatedb,
+                r.rolcreaterole,
+                has_database_privilege(current_user, current_database(), 'CREATE')
+             FROM pg_roles r
+             WHERE r.rolname = current_user",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("Failed to read access profile: {}", e))?;
+
+    let current_user: String = row.get(0);
+    let is_superuser: bool = row.get(1);
+    let can_create_db: bool = row.get(2);
+    let can_create_role: bool = row.get(3);
+    let can_create_in_database: bool = row.get(4);
+
+    Ok(DatabaseAccessProfile {
+        current_user,
+        is_superuser,
+        can_create_db,
+        can_create_role,
+        can_create_in_database,
+        is_admin: is_superuser || can_create_role,
+    })
+}
+
+fn extension_block_reason(
+    profile: &DatabaseAccessProfile,
+    installed_version: &Option<String>,
+    requires_superuser: bool,
+    trusted: bool,
+) -> Option<String> {
+    if installed_version.is_some() {
+        return Some("Extension is already installed.".to_string());
+    }
+    if profile.is_superuser {
+        return None;
+    }
+    if !profile.can_create_in_database {
+        return Some("Current role lacks CREATE privilege on this database.".to_string());
+    }
+    if requires_superuser && !trusted {
+        return Some(
+            "Extension requires superuser privileges and is not trusted for non-superusers."
+                .to_string(),
+        );
+    }
+    None
+}
+
+pub async fn list_database_extensions(
+    pool: &Arc<Pool>,
+) -> Result<Vec<DatabaseExtensionInfo>, String> {
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let profile = get_database_access_profile(pool).await?;
+
+    let has_trusted_column: bool = client
+        .query_one(
+            "SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'pg_catalog'
+                  AND table_name = 'pg_available_extension_versions'
+                  AND column_name = 'trusted'
+            )",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("Failed to inspect extension metadata: {}", e))?
+        .get(0);
+
+    let rows = if has_trusted_column {
+        client
+            .query(
+                "SELECT
+                    e.name,
+                    e.default_version,
+                    e.installed_version,
+                    e.comment,
+                    COALESCE(bool_and(v.superuser), true) AS requires_superuser,
+                    COALESCE(bool_or(v.trusted), false) AS trusted
+                 FROM pg_available_extensions e
+                 LEFT JOIN pg_available_extension_versions v
+                    ON v.name = e.name
+                 GROUP BY e.name, e.default_version, e.installed_version, e.comment
+                 ORDER BY e.name",
+                &[],
+            )
+            .await
+            .map_err(|e| format!("Failed to list extensions: {}", e))?
+    } else {
+        client
+            .query(
+                "SELECT
+                    e.name,
+                    e.default_version,
+                    e.installed_version,
+                    e.comment,
+                    COALESCE(bool_and(v.superuser), true) AS requires_superuser,
+                    false AS trusted
+                 FROM pg_available_extensions e
+                 LEFT JOIN pg_available_extension_versions v
+                    ON v.name = e.name
+                 GROUP BY e.name, e.default_version, e.installed_version, e.comment
+                 ORDER BY e.name",
+                &[],
+            )
+            .await
+            .map_err(|e| format!("Failed to list extensions: {}", e))?
+    };
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let installed_version: Option<String> = row.get(2);
+            let requires_superuser: bool = row.get(4);
+            let trusted: bool = row.get(5);
+            let block_reason =
+                extension_block_reason(&profile, &installed_version, requires_superuser, trusted);
+
+            DatabaseExtensionInfo {
+                name: row.get(0),
+                default_version: row.get(1),
+                installed_version,
+                comment: row.get(3),
+                requires_superuser,
+                trusted,
+                can_install: block_reason.is_none(),
+                install_block_reason: block_reason,
+            }
+        })
+        .collect())
+}
+
+fn validate_extension_name(name: &str) -> Result<String, String> {
+    let value = name.trim();
+    if value.is_empty() || value.len() > 63 {
+        return Err("Extension name must be between 1 and 63 characters".to_string());
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
+    {
+        return Err(
+            "Extension name must contain only letters, numbers, underscores, or hyphens."
+                .to_string(),
+        );
+    }
+    Ok(value.to_string())
+}
+
+pub async fn install_database_extension(
+    pool: &Arc<Pool>,
+    extension_name: &str,
+) -> Result<(), String> {
+    let extension_name = validate_extension_name(extension_name)?;
+    let extension_catalog = list_database_extensions(pool).await?;
+    let ext = extension_catalog
+        .iter()
+        .find(|item| item.name == extension_name)
+        .ok_or_else(|| {
+            format!(
+                "Extension '{}' is not available on this server.",
+                extension_name
+            )
+        })?;
+
+    if let Some(reason) = &ext.install_block_reason {
+        return Err(format!("Permission denied: {}", reason));
+    }
+
+    if ext.installed_version.is_some() {
+        return Ok(());
+    }
+
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let sql = format!(
+        "CREATE EXTENSION IF NOT EXISTS {}",
+        quote_ident(&extension_name)
+    );
+    client.execute(&sql, &[]).await.map_err(|e| {
+        let raw = e.to_string();
+        if raw.contains("permission denied") || raw.contains("must be superuser") {
+            format!(
+                "Permission denied while installing extension '{}': {}",
+                extension_name, raw
+            )
+        } else {
+            format!("Failed to install extension '{}': {}", extension_name, raw)
+        }
+    })?;
+
+    Ok(())
+}
+
+fn validate_extension_version(version: &str) -> Result<String, String> {
+    let value = version.trim();
+    if value.is_empty() {
+        return Err("Extension version cannot be empty.".to_string());
+    }
+    if value.len() > 64 {
+        return Err("Extension version is too long.".to_string());
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-' || ch == '.' || ch == '+')
+    {
+        return Err("Extension version contains unsupported characters.".to_string());
+    }
+    Ok(value.to_string())
+}
+
+fn extension_manage_block_reason(
+    profile: &DatabaseAccessProfile,
+    installed_version: &Option<String>,
+    installed_owner: &Option<String>,
+    action_label: &str,
+) -> Option<String> {
+    if installed_version.is_none() {
+        return Some("Extension is not installed.".to_string());
+    }
+    if profile.is_superuser {
+        return None;
+    }
+    if installed_owner
+        .as_ref()
+        .is_some_and(|owner| owner == &profile.current_user)
+    {
+        return None;
+    }
+    Some(format!(
+        "Only superusers or extension owners can {} this extension.",
+        action_label
+    ))
+}
+
+pub async fn get_database_extension_detail(
+    pool: &Arc<Pool>,
+    extension_name: &str,
+) -> Result<DatabaseExtensionDetail, String> {
+    let extension_name = validate_extension_name(extension_name)?;
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let profile = get_database_access_profile(pool).await?;
+
+    let has_trusted_column: bool = client
+        .query_one(
+            "SELECT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'pg_catalog'
+                  AND table_name = 'pg_available_extension_versions'
+                  AND column_name = 'trusted'
+            )",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("Failed to inspect extension metadata: {}", e))?
+        .get(0);
+
+    let row = if has_trusted_column {
+        client
+            .query_opt(
+                "SELECT
+                    e.name,
+                    e.default_version,
+                    e.installed_version,
+                    e.comment,
+                    COALESCE(bool_and(v.superuser), true) AS requires_superuser,
+                    COALESCE(bool_or(v.trusted), false) AS trusted,
+                    ext.extversion,
+                    n.nspname AS installed_schema,
+                    owner_role.rolname AS installed_owner
+                 FROM pg_available_extensions e
+                 LEFT JOIN pg_available_extension_versions v
+                    ON v.name = e.name
+                 LEFT JOIN pg_extension ext
+                    ON ext.extname = e.name
+                 LEFT JOIN pg_namespace n
+                    ON n.oid = ext.extnamespace
+                 LEFT JOIN pg_roles owner_role
+                    ON owner_role.oid = ext.extowner
+                 WHERE e.name = $1
+                 GROUP BY
+                    e.name,
+                    e.default_version,
+                    e.installed_version,
+                    e.comment,
+                    ext.extversion,
+                    n.nspname,
+                    owner_role.rolname",
+                &[&extension_name],
+            )
+            .await
+            .map_err(|e| format!("Failed to load extension detail: {}", e))?
+    } else {
+        client
+            .query_opt(
+                "SELECT
+                    e.name,
+                    e.default_version,
+                    e.installed_version,
+                    e.comment,
+                    COALESCE(bool_and(v.superuser), true) AS requires_superuser,
+                    false AS trusted,
+                    ext.extversion,
+                    n.nspname AS installed_schema,
+                    owner_role.rolname AS installed_owner
+                 FROM pg_available_extensions e
+                 LEFT JOIN pg_available_extension_versions v
+                    ON v.name = e.name
+                 LEFT JOIN pg_extension ext
+                    ON ext.extname = e.name
+                 LEFT JOIN pg_namespace n
+                    ON n.oid = ext.extnamespace
+                 LEFT JOIN pg_roles owner_role
+                    ON owner_role.oid = ext.extowner
+                 WHERE e.name = $1
+                 GROUP BY
+                    e.name,
+                    e.default_version,
+                    e.installed_version,
+                    e.comment,
+                    ext.extversion,
+                    n.nspname,
+                    owner_role.rolname",
+                &[&extension_name],
+            )
+            .await
+            .map_err(|e| format!("Failed to load extension detail: {}", e))?
+    };
+
+    let row = row.ok_or_else(|| {
+        format!(
+            "Extension '{}' is not available on this server.",
+            extension_name
+        )
+    })?;
+
+    let installed_version: Option<String> = row.get(2);
+    let requires_superuser: bool = row.get(4);
+    let trusted: bool = row.get(5);
+    let installed_schema: Option<String> = row.get(7);
+    let installed_owner: Option<String> = row.get(8);
+
+    let available_versions_rows = client
+        .query(
+            "SELECT version
+             FROM pg_available_extension_versions
+             WHERE name = $1
+             ORDER BY version DESC",
+            &[&extension_name],
+        )
+        .await
+        .map_err(|e| format!("Failed to list extension versions: {}", e))?;
+    let available_versions: Vec<String> = available_versions_rows
+        .into_iter()
+        .map(|r| r.get::<_, String>(0))
+        .collect();
+
+    let install_block_reason =
+        extension_block_reason(&profile, &installed_version, requires_superuser, trusted);
+    let uninstall_block_reason =
+        extension_manage_block_reason(&profile, &installed_version, &installed_owner, "uninstall");
+    let update_block_reason =
+        extension_manage_block_reason(&profile, &installed_version, &installed_owner, "update");
+
+    Ok(DatabaseExtensionDetail {
+        name: row.get(0),
+        default_version: row.get(1),
+        installed_version,
+        installed_schema,
+        installed_owner,
+        comment: row.get(3),
+        requires_superuser,
+        trusted,
+        available_versions,
+        can_install: install_block_reason.is_none(),
+        can_uninstall: uninstall_block_reason.is_none(),
+        can_update: update_block_reason.is_none(),
+        install_block_reason,
+        uninstall_block_reason,
+        update_block_reason,
+    })
+}
+
+pub async fn uninstall_database_extension(
+    pool: &Arc<Pool>,
+    extension_name: &str,
+) -> Result<(), String> {
+    let extension_name = validate_extension_name(extension_name)?;
+    let detail = get_database_extension_detail(pool, &extension_name).await?;
+    if let Some(reason) = detail.uninstall_block_reason {
+        return Err(format!("Permission denied: {}", reason));
+    }
+
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let sql = format!("DROP EXTENSION IF EXISTS {}", quote_ident(&extension_name));
+    client.execute(&sql, &[]).await.map_err(|e| {
+        let raw = e.to_string();
+        if raw.contains("cannot drop extension") || raw.contains("depends on extension") {
+            format!(
+                "Failed to uninstall extension '{}'. Existing objects depend on it: {}",
+                extension_name, raw
+            )
+        } else if raw.contains("permission denied") || raw.contains("must be owner") {
+            format!(
+                "Permission denied while uninstalling extension '{}': {}",
+                extension_name, raw
+            )
+        } else {
+            format!(
+                "Failed to uninstall extension '{}': {}",
+                extension_name, raw
+            )
+        }
+    })?;
+    Ok(())
+}
+
+pub async fn update_database_extension(
+    pool: &Arc<Pool>,
+    extension_name: &str,
+    target_version: Option<&str>,
+) -> Result<(), String> {
+    let extension_name = validate_extension_name(extension_name)?;
+    let detail = get_database_extension_detail(pool, &extension_name).await?;
+    if let Some(reason) = detail.update_block_reason {
+        return Err(format!("Permission denied: {}", reason));
+    }
+
+    let requested_version = target_version.map(validate_extension_version).transpose()?;
+
+    if let Some(requested) = &requested_version {
+        if !detail.available_versions.iter().any(|v| v == requested) {
+            return Err(format!(
+                "Version '{}' is not available for extension '{}'.",
+                requested, extension_name
+            ));
+        }
+        if detail
+            .installed_version
+            .as_ref()
+            .is_some_and(|installed| installed == requested)
+        {
+            return Ok(());
+        }
+    }
+
+    let mut sql = format!("ALTER EXTENSION {} UPDATE", quote_ident(&extension_name));
+    if let Some(version) = requested_version {
+        let escaped = version.replace('\'', "''");
+        sql.push_str(&format!(" TO '{}'", escaped));
+    }
+
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    client.execute(&sql, &[]).await.map_err(|e| {
+        let raw = e.to_string();
+        if raw.contains("permission denied") || raw.contains("must be owner") {
+            format!(
+                "Permission denied while updating extension '{}': {}",
+                extension_name, raw
+            )
+        } else {
+            format!("Failed to update extension '{}': {}", extension_name, raw)
+        }
+    })?;
+    Ok(())
+}
+
+pub async fn list_database_roles(pool: &Arc<Pool>) -> Result<Vec<DatabaseRoleInfo>, String> {
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let rows = client
+        .query(
+            "WITH me AS (
+                SELECT oid, rolsuper FROM pg_roles WHERE rolname = current_user
+            )
+            SELECT
+                r.rolname,
+                r.rolcanlogin,
+                r.rolsuper,
+                r.rolcreatedb,
+                r.rolcreaterole,
+                (r.rolname LIKE 'pg\\_%') AS is_system_role,
+                CASE
+                    WHEN me.rolsuper THEN true
+                    WHEN r.rolname = current_user THEN false
+                    ELSE EXISTS (
+                        SELECT 1
+                        FROM pg_auth_members am
+                        WHERE am.roleid = r.oid
+                          AND am.member = me.oid
+                          AND am.admin_option
+                    )
+                END AS is_assignable
+            FROM pg_roles r
+            CROSS JOIN me
+            ORDER BY r.rolname",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("Failed to list roles: {}", e))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| DatabaseRoleInfo {
+            name: row.get(0),
+            can_login: row.get(1),
+            is_superuser: row.get(2),
+            can_create_db: row.get(3),
+            can_create_role: row.get(4),
+            is_system_role: row.get(5),
+            is_assignable: row.get(6),
+        })
+        .collect())
+}
+
+pub async fn list_database_users(pool: &Arc<Pool>) -> Result<Vec<DatabaseUserInfo>, String> {
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let rows = client
+        .query(
+            "SELECT
+                r.rolname,
+                r.rolcanlogin,
+                r.rolsuper,
+                r.rolcreatedb,
+                r.rolcreaterole,
+                r.rolreplication,
+                r.rolbypassrls,
+                (r.rolname LIKE 'pg\\_%') AS is_system_role,
+                r.rolvaliduntil::text,
+                COALESCE(ARRAY(
+                    SELECT parent.rolname
+                    FROM pg_auth_members am
+                    JOIN pg_roles parent ON parent.oid = am.roleid
+                    WHERE am.member = r.oid
+                    ORDER BY parent.rolname
+                ), ARRAY[]::text[]) AS member_of
+            FROM pg_roles r
+            ORDER BY r.rolname",
+            &[],
+        )
+        .await
+        .map_err(|e| format!("Failed to list users: {}", e))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| DatabaseUserInfo {
+            username: row.get(0),
+            can_login: row.get(1),
+            is_superuser: row.get(2),
+            can_create_db: row.get(3),
+            can_create_role: row.get(4),
+            can_replicate: row.get(5),
+            can_bypass_rls: row.get(6),
+            is_system_role: row.get(7),
+            valid_until: row.get(8),
+            member_of: row.get(9),
+        })
+        .collect())
+}
+
+fn validate_role_identifier(name: &str, kind: &str) -> Result<String, String> {
+    let value = name.trim();
+    if value.is_empty() || value.len() > 63 {
+        return Err(format!("{} must be between 1 and 63 characters", kind));
+    }
+    let mut chars = value.chars();
+    match chars.next() {
+        Some(first) if first.is_ascii_alphabetic() || first == '_' => {}
+        _ => return Err(format!("{} must start with a letter or underscore", kind)),
+    }
+    if !chars.all(|ch| ch.is_ascii_alphanumeric() || ch == '_') {
+        return Err(format!(
+            "{} must contain only letters, numbers, and underscores",
+            kind
+        ));
+    }
+    Ok(value.to_string())
+}
+
+fn normalize_memberships(memberships: &[String]) -> Result<Vec<String>, String> {
+    let mut seen: HashSet<String> = HashSet::new();
+    let mut normalized: Vec<String> = Vec::new();
+    for item in memberships {
+        let role_name = validate_role_identifier(item, "Role membership")?;
+        if seen.insert(role_name.clone()) {
+            normalized.push(role_name);
+        }
+    }
+    Ok(normalized)
+}
+
+fn validate_custom_role_name(name: &str, kind: &str) -> Result<String, String> {
+    let role_name = validate_role_identifier(name, kind)?;
+    if role_name.starts_with("pg_") {
+        return Err(format!(
+            "{} cannot start with 'pg_' because that prefix is reserved.",
+            kind
+        ));
+    }
+    Ok(role_name)
+}
+
+#[derive(Debug, Clone)]
+struct RoleActionTarget {
+    name: String,
+    is_superuser: bool,
+    is_system_role: bool,
+    is_assignable: bool,
+}
+
+fn role_manage_block_reason(
+    profile: &DatabaseAccessProfile,
+    is_system_role: bool,
+    is_assignable: bool,
+) -> Option<String> {
+    if is_system_role {
+        return Some("System roles cannot be managed from this page.".to_string());
+    }
+    if !profile.is_admin {
+        return Some("Current role is not allowed to manage role memberships.".to_string());
+    }
+    if !profile.is_superuser && !is_assignable {
+        return Some(
+            "Current role needs ADMIN OPTION on this role to grant or revoke memberships."
+                .to_string(),
+        );
+    }
+    None
+}
+
+async fn inspect_role_target(
+    pool: &Arc<Pool>,
+    role_name: &str,
+    label: &str,
+) -> Result<RoleActionTarget, String> {
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let row = client
+        .query_opt(
+            "WITH me AS (
+                SELECT oid, rolsuper
+                FROM pg_roles
+                WHERE rolname = current_user
+            )
+            SELECT
+                r.rolname,
+                r.rolsuper,
+                (r.rolname LIKE 'pg\\_%') AS is_system_role,
+                CASE
+                    WHEN me.rolsuper THEN true
+                    WHEN r.rolname = current_user THEN false
+                    ELSE EXISTS (
+                        SELECT 1
+                        FROM pg_auth_members am
+                        WHERE am.roleid = r.oid
+                          AND am.member = me.oid
+                          AND am.admin_option
+                    )
+                END AS is_assignable
+            FROM pg_roles r
+            CROSS JOIN me
+            WHERE r.rolname = $1",
+            &[&role_name],
+        )
+        .await
+        .map_err(|e| format!("Failed to inspect {} '{}': {}", label, role_name, e))?
+        .ok_or_else(|| format!("{} '{}' does not exist.", label, role_name))?;
+
+    Ok(RoleActionTarget {
+        name: row.get(0),
+        is_superuser: row.get(1),
+        is_system_role: row.get(2),
+        is_assignable: row.get(3),
+    })
+}
+
+async fn validate_role_membership_change(
+    pool: &Arc<Pool>,
+    role_name: &str,
+    member_name: &str,
+) -> Result<(RoleActionTarget, RoleActionTarget), String> {
+    let profile = get_database_access_profile(pool).await?;
+    if !profile.is_admin {
+        return Err("Current role is not allowed to manage role memberships.".to_string());
+    }
+
+    let role = inspect_role_target(pool, role_name, "Role").await?;
+    let member = inspect_role_target(pool, member_name, "Member").await?;
+
+    if role.is_system_role {
+        return Err("System roles cannot be granted or revoked from this view.".to_string());
+    }
+    if member.is_system_role {
+        return Err("System roles cannot be used as membership members in this view.".to_string());
+    }
+    if role.name == member.name {
+        return Err("A role cannot be granted to itself.".to_string());
+    }
+    if !profile.is_superuser && !role.is_assignable {
+        return Err(format!(
+            "Current role is not allowed to grant or revoke membership for '{}'.",
+            role.name
+        ));
+    }
+    if member.is_superuser && !profile.is_superuser {
+        return Err("Only superusers can manage memberships for superuser roles.".to_string());
+    }
+
+    Ok((role, member))
+}
+
+pub async fn create_database_user(
+    pool: &Arc<Pool>,
+    request: &CreateDatabaseUserRequest,
+) -> Result<(), String> {
+    let profile = get_database_access_profile(pool).await?;
+    if !profile.is_admin {
+        return Err("Current role is not allowed to create database users.".to_string());
+    }
+
+    let username = validate_role_identifier(&request.username, "Username")?;
+    if request.password.len() < 8 {
+        return Err("Password must be at least 8 characters long.".to_string());
+    }
+
+    if !profile.is_superuser && (request.is_superuser || request.replication || request.bypass_rls)
+    {
+        return Err(
+            "Only superusers can set SUPERUSER, REPLICATION, or BYPASSRLS role options."
+                .to_string(),
+        );
+    }
+
+    let memberships = normalize_memberships(&request.role_memberships)?;
+    let roles = list_database_roles(pool).await?;
+    let all_roles: HashSet<String> = roles.iter().map(|r| r.name.clone()).collect();
+    let assignable_roles: HashSet<String> = roles
+        .iter()
+        .filter(|role| role.is_assignable)
+        .map(|role| role.name.clone())
+        .collect();
+
+    for role in &memberships {
+        if !all_roles.contains(role) {
+            return Err(format!("Role '{}' does not exist.", role));
+        }
+        if !profile.is_superuser && !assignable_roles.contains(role) {
+            return Err(format!(
+                "Current role is not allowed to grant membership for '{}'.",
+                role
+            ));
+        }
+    }
+
+    let mut client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| format!("Failed to start transaction: {}", e))?;
+
+    let mut options: Vec<&str> = vec!["LOGIN"];
+    options.push(if request.inherit {
+        "INHERIT"
+    } else {
+        "NOINHERIT"
+    });
+    options.push(if request.can_create_db {
+        "CREATEDB"
+    } else {
+        "NOCREATEDB"
+    });
+    options.push(if request.can_create_role {
+        "CREATEROLE"
+    } else {
+        "NOCREATEROLE"
+    });
+    options.push(if request.is_superuser {
+        "SUPERUSER"
+    } else {
+        "NOSUPERUSER"
+    });
+    options.push(if request.replication {
+        "REPLICATION"
+    } else {
+        "NOREPLICATION"
+    });
+    options.push(if request.bypass_rls {
+        "BYPASSRLS"
+    } else {
+        "NOBYPASSRLS"
+    });
+
+    let mut create_sql = format!(
+        "CREATE ROLE {} WITH {} PASSWORD $1",
+        quote_ident(&username),
+        options.join(" ")
+    );
+    if request
+        .valid_until
+        .as_ref()
+        .is_some_and(|v| !v.trim().is_empty())
+    {
+        create_sql.push_str(" VALID UNTIL $2");
+    }
+
+    match request
+        .valid_until
+        .as_ref()
+        .filter(|v| !v.trim().is_empty())
+    {
+        Some(valid_until) => {
+            tx.execute(&create_sql, &[&request.password, valid_until])
+                .await
+                .map_err(|e| format!("Failed to create role '{}': {}", username, e))?;
+        }
+        None => {
+            tx.execute(&create_sql, &[&request.password])
+                .await
+                .map_err(|e| format!("Failed to create role '{}': {}", username, e))?;
+        }
+    }
+
+    for role in memberships {
+        let grant_sql = format!("GRANT {} TO {}", quote_ident(&role), quote_ident(&username));
+        tx.execute(&grant_sql, &[])
+            .await
+            .map_err(|e| format!("Failed to grant '{}' to '{}': {}", role, username, e))?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to finalize user creation: {}", e))?;
+
+    Ok(())
+}
+
+pub async fn create_database_role(
+    pool: &Arc<Pool>,
+    request: &CreateDatabaseRoleRequest,
+) -> Result<(), String> {
+    let profile = get_database_access_profile(pool).await?;
+    if !profile.is_admin {
+        return Err("Current role is not allowed to create custom RBAC roles.".to_string());
+    }
+
+    let role_name = validate_custom_role_name(&request.role_name, "Role name")?;
+    let memberships = normalize_memberships(&request.memberships)?;
+
+    if memberships.iter().any(|item| item == &role_name) {
+        return Err("A role cannot be a member of itself.".to_string());
+    }
+
+    let roles = list_database_roles(pool).await?;
+    let all_roles: HashSet<String> = roles.iter().map(|r| r.name.clone()).collect();
+    let assignable_roles: HashSet<String> = roles
+        .iter()
+        .filter(|role| role.is_assignable)
+        .map(|role| role.name.clone())
+        .collect();
+    let system_roles: HashSet<String> = roles
+        .iter()
+        .filter(|role| role.is_system_role)
+        .map(|role| role.name.clone())
+        .collect();
+
+    if all_roles.contains(&role_name) {
+        return Err(format!("Role '{}' already exists.", role_name));
+    }
+
+    for parent_role in &memberships {
+        if !all_roles.contains(parent_role) {
+            return Err(format!("Role '{}' does not exist.", parent_role));
+        }
+        if system_roles.contains(parent_role) {
+            return Err(format!(
+                "System role '{}' cannot be used as a custom RBAC parent role.",
+                parent_role
+            ));
+        }
+        if !profile.is_superuser && !assignable_roles.contains(parent_role) {
+            return Err(format!(
+                "Current role is not allowed to grant membership for '{}'.",
+                parent_role
+            ));
+        }
+    }
+
+    let mut client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| format!("Failed to start transaction: {}", e))?;
+
+    let mut options: Vec<&str> = vec!["NOLOGIN"];
+    options.push(if request.inherit {
+        "INHERIT"
+    } else {
+        "NOINHERIT"
+    });
+    options.extend([
+        "NOCREATEDB",
+        "NOCREATEROLE",
+        "NOSUPERUSER",
+        "NOREPLICATION",
+        "NOBYPASSRLS",
+    ]);
+
+    let create_sql = format!(
+        "CREATE ROLE {} WITH {}",
+        quote_ident(&role_name),
+        options.join(" ")
+    );
+    tx.execute(&create_sql, &[])
+        .await
+        .map_err(|e| format!("Failed to create role '{}': {}", role_name, e))?;
+
+    for parent_role in memberships {
+        let grant_sql = format!(
+            "GRANT {} TO {}",
+            quote_ident(&parent_role),
+            quote_ident(&role_name)
+        );
+        tx.execute(&grant_sql, &[]).await.map_err(|e| {
+            format!(
+                "Failed to grant '{}' to '{}': {}",
+                parent_role, role_name, e
+            )
+        })?;
+    }
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to finalize role creation: {}", e))?;
+    Ok(())
+}
+
+pub async fn get_database_role_detail(
+    pool: &Arc<Pool>,
+    role_name: &str,
+) -> Result<DatabaseRoleDetail, String> {
+    let role_name = validate_role_identifier(role_name, "Role name")?;
+    let profile = get_database_access_profile(pool).await?;
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+
+    let row = client
+        .query_opt(
+            "WITH me AS (
+                SELECT oid, rolsuper
+                FROM pg_roles
+                WHERE rolname = current_user
+            )
+            SELECT
+                r.rolname,
+                r.rolcanlogin,
+                r.rolsuper,
+                r.rolcreatedb,
+                r.rolcreaterole,
+                r.rolreplication,
+                r.rolbypassrls,
+                r.rolinherit,
+                r.rolvaliduntil::text,
+                sd.description,
+                (r.rolname LIKE 'pg\\_%') AS is_system_role,
+                CASE
+                    WHEN me.rolsuper THEN true
+                    WHEN r.rolname = current_user THEN false
+                    ELSE EXISTS (
+                        SELECT 1
+                        FROM pg_auth_members am
+                        WHERE am.roleid = r.oid
+                          AND am.member = me.oid
+                          AND am.admin_option
+                    )
+                END AS is_assignable
+            FROM pg_roles r
+            LEFT JOIN pg_shdescription sd
+              ON sd.objoid = r.oid
+             AND sd.classoid = 'pg_authid'::regclass::oid
+            CROSS JOIN me
+            WHERE r.rolname = $1",
+            &[&role_name],
+        )
+        .await
+        .map_err(|e| format!("Failed to load role detail '{}': {}", role_name, e))?
+        .ok_or_else(|| format!("Role '{}' does not exist.", role_name))?;
+
+    let member_of_rows = client
+        .query(
+            "SELECT parent.rolname
+             FROM pg_auth_members am
+             JOIN pg_roles member_role
+               ON member_role.oid = am.member
+             JOIN pg_roles parent
+               ON parent.oid = am.roleid
+             WHERE member_role.rolname = $1
+             ORDER BY parent.rolname",
+            &[&role_name],
+        )
+        .await
+        .map_err(|e| format!("Failed to load parent memberships for '{}': {}", role_name, e))?;
+    let member_of: Vec<String> = member_of_rows
+        .into_iter()
+        .map(|item| item.get::<_, String>(0))
+        .collect();
+
+    let members_rows = client
+        .query(
+            "SELECT
+                member_role.rolname,
+                member_role.rolcanlogin,
+                member_role.rolsuper,
+                (member_role.rolname LIKE 'pg\\_%') AS is_system_role,
+                am.admin_option
+             FROM pg_auth_members am
+             JOIN pg_roles target
+               ON target.oid = am.roleid
+             JOIN pg_roles member_role
+               ON member_role.oid = am.member
+             WHERE target.rolname = $1
+             ORDER BY member_role.rolname",
+            &[&role_name],
+        )
+        .await
+        .map_err(|e| format!("Failed to load role members for '{}': {}", role_name, e))?;
+    let members: Vec<DatabaseRoleMemberInfo> = members_rows
+        .into_iter()
+        .map(|item| DatabaseRoleMemberInfo {
+            name: item.get(0),
+            can_login: item.get(1),
+            is_superuser: item.get(2),
+            is_system_role: item.get(3),
+            admin_option: item.get(4),
+        })
+        .collect();
+
+    let is_system_role: bool = row.get(10);
+    let is_assignable: bool = row.get(11);
+    let manage_block_reason = role_manage_block_reason(&profile, is_system_role, is_assignable);
+
+    Ok(DatabaseRoleDetail {
+        name: row.get(0),
+        can_login: row.get(1),
+        is_superuser: row.get(2),
+        can_create_db: row.get(3),
+        can_create_role: row.get(4),
+        can_replicate: row.get(5),
+        can_bypass_rls: row.get(6),
+        inherit: row.get(7),
+        valid_until: row.get(8),
+        comment: row.get(9),
+        is_system_role,
+        is_assignable,
+        can_grant_membership: manage_block_reason.is_none(),
+        can_revoke_membership: manage_block_reason.is_none(),
+        manage_block_reason,
+        member_of,
+        members,
+    })
+}
+
+pub async fn grant_database_role_membership(
+    pool: &Arc<Pool>,
+    role_name: &str,
+    member_name: &str,
+    with_admin_option: bool,
+) -> Result<(), String> {
+    let role_name = validate_role_identifier(role_name, "Role")?;
+    let member_name = validate_role_identifier(member_name, "Member")?;
+    let (role, member) = validate_role_membership_change(pool, &role_name, &member_name).await?;
+
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let mut sql = format!(
+        "GRANT {} TO {}",
+        quote_ident(&role.name),
+        quote_ident(&member.name)
+    );
+    if with_admin_option {
+        sql.push_str(" WITH ADMIN OPTION");
+    }
+    client.execute(&sql, &[]).await.map_err(|e| {
+        format!(
+            "Failed to grant role '{}' to '{}': {}",
+            role.name, member.name, e
+        )
+    })?;
+    Ok(())
+}
+
+pub async fn revoke_database_role_membership(
+    pool: &Arc<Pool>,
+    role_name: &str,
+    member_name: &str,
+) -> Result<(), String> {
+    let role_name = validate_role_identifier(role_name, "Role")?;
+    let member_name = validate_role_identifier(member_name, "Member")?;
+    let (role, member) = validate_role_membership_change(pool, &role_name, &member_name).await?;
+
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let sql = format!(
+        "REVOKE {} FROM {}",
+        quote_ident(&role.name),
+        quote_ident(&member.name)
+    );
+    client.execute(&sql, &[]).await.map_err(|e| {
+        format!(
+            "Failed to revoke role '{}' from '{}': {}",
+            role.name, member.name, e
+        )
+    })?;
+    Ok(())
+}
+
+async fn validate_target_user_action(
+    pool: &Arc<Pool>,
+    username: &str,
+    allow_self: bool,
+) -> Result<(DatabaseAccessProfile, bool, bool), String> {
+    let profile = get_database_access_profile(pool).await?;
+    if !profile.is_admin {
+        return Err("Current role is not allowed to manage database users.".to_string());
+    }
+
+    let username = validate_role_identifier(username, "Username")?;
+    if !allow_self && profile.current_user == username {
+        return Err("This action cannot be applied to the current connected user.".to_string());
+    }
+
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let role = client
+        .query_opt(
+            "SELECT rolsuper, (rolname LIKE 'pg\\_%') AS is_system_role
+             FROM pg_roles
+             WHERE rolname = $1",
+            &[&username],
+        )
+        .await
+        .map_err(|e| format!("Failed to inspect user '{}': {}", username, e))?
+        .ok_or_else(|| format!("User '{}' does not exist.", username))?;
+
+    let target_superuser: bool = role.get(0);
+    let target_system_role: bool = role.get(1);
+
+    if target_system_role {
+        return Err("System roles cannot be modified in this view.".to_string());
+    }
+    if target_superuser && !profile.is_superuser {
+        return Err("Only superusers can manage other superuser accounts.".to_string());
+    }
+
+    Ok((profile, target_superuser, target_system_role))
+}
+
+pub async fn set_database_user_login(
+    pool: &Arc<Pool>,
+    username: &str,
+    can_login: bool,
+) -> Result<(), String> {
+    let username = validate_role_identifier(username, "Username")?;
+    let _ = validate_target_user_action(pool, &username, false).await?;
+
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let sql = if can_login {
+        format!("ALTER ROLE {} LOGIN", quote_ident(&username))
+    } else {
+        format!("ALTER ROLE {} NOLOGIN", quote_ident(&username))
+    };
+    client
+        .execute(&sql, &[])
+        .await
+        .map_err(|e| format!("Failed to update login state for '{}': {}", username, e))?;
+    Ok(())
+}
+
+pub async fn set_database_user_password(
+    pool: &Arc<Pool>,
+    username: &str,
+    password: &str,
+) -> Result<(), String> {
+    if password.len() < 8 {
+        return Err("Password must be at least 8 characters long.".to_string());
+    }
+
+    let username = validate_role_identifier(username, "Username")?;
+    let _ = validate_target_user_action(pool, &username, true).await?;
+
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let sql = format!("ALTER ROLE {} PASSWORD $1", quote_ident(&username));
+    client
+        .execute(&sql, &[&password])
+        .await
+        .map_err(|e| format!("Failed to update password for '{}': {}", username, e))?;
+    Ok(())
+}
+
+pub async fn delete_database_user(
+    pool: &Arc<Pool>,
+    username: &str,
+    reassign_owned_to: Option<&str>,
+) -> Result<(), String> {
+    let username = validate_role_identifier(username, "Username")?;
+    let _ = validate_target_user_action(pool, &username, false).await?;
+
+    let reassigned_target = reassign_owned_to
+        .map(|name| validate_role_identifier(name, "Reassign target role"))
+        .transpose()?;
+
+    if reassigned_target
+        .as_ref()
+        .is_some_and(|target| target == &username)
+    {
+        return Err("Reassign target cannot be the same as the user being deleted.".to_string());
+    }
+
+    if let Some(reassign_to) = &reassigned_target {
+        let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+        let exists = client
+            .query_opt("SELECT 1 FROM pg_roles WHERE rolname = $1", &[reassign_to])
+            .await
+            .map_err(|e| {
+                format!(
+                    "Failed to validate reassign target '{}': {}",
+                    reassign_to, e
+                )
+            })?
+            .is_some();
+        if !exists {
+            return Err(format!(
+                "Reassign target role '{}' does not exist.",
+                reassign_to
+            ));
+        }
+    }
+
+    let mut client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let tx = client
+        .transaction()
+        .await
+        .map_err(|e| format!("Failed to start transaction: {}", e))?;
+
+    if let Some(reassign_to) = &reassigned_target {
+        let reassign_sql = format!(
+            "REASSIGN OWNED BY {} TO {}",
+            quote_ident(&username),
+            quote_ident(reassign_to)
+        );
+        tx.execute(&reassign_sql, &[]).await.map_err(|e| {
+            format!(
+                "Failed to reassign objects from '{}' to '{}': {}",
+                username, reassign_to, e
+            )
+        })?;
+        let drop_owned_sql = format!("DROP OWNED BY {}", quote_ident(&username));
+        tx.execute(&drop_owned_sql, &[])
+            .await
+            .map_err(|e| format!("Failed to drop owned privileges for '{}': {}", username, e))?;
+    }
+
+    let drop_role_sql = format!("DROP ROLE {}", quote_ident(&username));
+    tx.execute(&drop_role_sql, &[]).await.map_err(|e| {
+        let raw = e.to_string();
+        if raw.contains("dependent objects") {
+            format!(
+                "Cannot delete '{}': dependent objects exist. Reassign ownership first and retry.",
+                username
+            )
+        } else {
+            format!("Failed to delete user '{}': {}", username, raw)
+        }
+    })?;
+
+    tx.commit()
+        .await
+        .map_err(|e| format!("Failed to finalize user deletion: {}", e))?;
+    Ok(())
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1665,7 +2972,8 @@ pub async fn delete_table_rows(
                 .enumerate()
                 .map(|(col_i, col)| {
                     let param_idx = start + col_i + 1;
-                    let cast = pg_cast_type(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
+                    let cast =
+                        pg_cast_type(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
                     format!("${}::{}", param_idx, cast)
                 })
                 .collect();
@@ -1686,9 +2994,7 @@ pub async fn delete_table_rows(
     // Trim PK values so whitespace from the UI does not prevent matching
     let params: Vec<Option<String>> = rows_pk_values
         .iter()
-        .flat_map(|r| {
-            r.iter().map(|v| v.as_ref().map(|s| s.trim().to_string()))
-        })
+        .flat_map(|r| r.iter().map(|v| v.as_ref().map(|s| s.trim().to_string())))
         .collect();
     let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = params
         .iter()
@@ -1906,7 +3212,11 @@ pub async fn get_table_details(
                 constraint_type: row.get(1),
                 columns: cols,
                 foreign_table: row.get(3),
-                foreign_columns: if foreign_cols.is_empty() { None } else { Some(foreign_cols) },
+                foreign_columns: if foreign_cols.is_empty() {
+                    None
+                } else {
+                    Some(foreign_cols)
+                },
                 check_clause: row.get(5),
             }
         })
@@ -1949,9 +3259,7 @@ pub async fn get_table_details(
             is_unique: row.get(1),
             is_primary: row.get(2),
             index_type: row.get(3),
-            columns: row
-                .try_get::<_, Vec<String>>(4)
-                .unwrap_or_default(),
+            columns: row.try_get::<_, Vec<String>>(4).unwrap_or_default(),
             definition: row.get(5),
             comment: row.get(6),
         })
@@ -2027,13 +3335,21 @@ pub async fn get_table_details(
                 row.get::<_, String>(5),
             )
         } else {
-            (0i64, "0 bytes".to_string(), "0 bytes".to_string(), "0 bytes".to_string(), None, "r".to_string())
+            (
+                0i64,
+                "0 bytes".to_string(),
+                "0 bytes".to_string(),
+                "0 bytes".to_string(),
+                None,
+                "r".to_string(),
+            )
         };
 
     let table_type = match rel_kind.as_str() {
         "v" | "m" => "VIEW",
         _ => "BASE TABLE",
-    }.to_string();
+    }
+    .to_string();
 
     Ok(TableDetails {
         schema: schema.to_string(),
@@ -2069,7 +3385,10 @@ pub async fn rename_table(
         "ALTER TABLE \"{}\".\"{}\" RENAME TO \"{}\"",
         safe_schema, safe_table, safe_new
     );
-    client.execute(&sql, &[]).await.map_err(|e| format!("Rename table error: {}", e))?;
+    client
+        .execute(&sql, &[])
+        .await
+        .map_err(|e| format!("Rename table error: {}", e))?;
     Ok(())
 }
 
@@ -2089,7 +3408,10 @@ pub async fn rename_column(
         "ALTER TABLE \"{}\".\"{}\" RENAME COLUMN \"{}\" TO \"{}\"",
         safe_schema, safe_table, safe_col, safe_new
     );
-    client.execute(&sql, &[]).await.map_err(|e| format!("Rename column error: {}", e))?;
+    client
+        .execute(&sql, &[])
+        .await
+        .map_err(|e| format!("Rename column error: {}", e))?;
     Ok(())
 }
 
@@ -2149,9 +3471,14 @@ pub async fn alter_column(
 
     let sql = format!(
         "ALTER TABLE \"{}\".\"{}\" {}",
-        safe_schema, safe_table, parts.join(", ")
+        safe_schema,
+        safe_table,
+        parts.join(", ")
     );
-    client.execute(&sql, &[]).await.map_err(|e| format!("Alter column error: {}", e))?;
+    client
+        .execute(&sql, &[])
+        .await
+        .map_err(|e| format!("Alter column error: {}", e))?;
     Ok(())
 }
 
@@ -2183,7 +3510,10 @@ pub async fn add_column(
         "ALTER TABLE \"{}\".\"{}\" ADD COLUMN \"{}\" {}{}{}",
         safe_schema, safe_table, safe_col, safe_type, null_clause, default_clause
     );
-    client.execute(&sql, &[]).await.map_err(|e| format!("Add column error: {}", e))?;
+    client
+        .execute(&sql, &[])
+        .await
+        .map_err(|e| format!("Add column error: {}", e))?;
     Ok(())
 }
 
@@ -2201,20 +3531,25 @@ pub async fn drop_column(
         "ALTER TABLE \"{}\".\"{}\" DROP COLUMN IF EXISTS \"{}\" CASCADE",
         safe_schema, safe_table, safe_col
     );
-    client.execute(&sql, &[]).await.map_err(|e| format!("Drop column error: {}", e))?;
+    client
+        .execute(&sql, &[])
+        .await
+        .map_err(|e| format!("Drop column error: {}", e))?;
     Ok(())
 }
 
-pub async fn truncate_table(
-    pool: &Arc<Pool>,
-    schema: &str,
-    table: &str,
-) -> Result<(), String> {
+pub async fn truncate_table(pool: &Arc<Pool>, schema: &str, table: &str) -> Result<(), String> {
     let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
     let safe_schema = sanitize_identifier(schema);
     let safe_table = sanitize_identifier(table);
-    let sql = format!("TRUNCATE TABLE \"{}\".\"{}\" RESTART IDENTITY CASCADE", safe_schema, safe_table);
-    client.execute(&sql, &[]).await.map_err(|e| format!("Truncate error: {}", e))?;
+    let sql = format!(
+        "TRUNCATE TABLE \"{}\".\"{}\" RESTART IDENTITY CASCADE",
+        safe_schema, safe_table
+    );
+    client
+        .execute(&sql, &[])
+        .await
+        .map_err(|e| format!("Truncate error: {}", e))?;
     Ok(())
 }
 
@@ -2228,8 +3563,14 @@ pub async fn drop_table(
     let safe_schema = sanitize_identifier(schema);
     let safe_table = sanitize_identifier(table);
     let cascade_clause = if cascade { " CASCADE" } else { "" };
-    let sql = format!("DROP TABLE IF EXISTS \"{}\".\"{}\"{}",  safe_schema, safe_table, cascade_clause);
-    client.execute(&sql, &[]).await.map_err(|e| format!("Drop table error: {}", e))?;
+    let sql = format!(
+        "DROP TABLE IF EXISTS \"{}\".\"{}\"{}",
+        safe_schema, safe_table, cascade_clause
+    );
+    client
+        .execute(&sql, &[])
+        .await
+        .map_err(|e| format!("Drop table error: {}", e))?;
     Ok(())
 }
 
@@ -2278,7 +3619,10 @@ pub async fn create_table(
         // Append length/precision when provided (digits and commas only)
         let type_str = match &col.length {
             Some(len) if !len.trim().is_empty() => {
-                let safe_len: String = len.chars().filter(|c| c.is_ascii_digit() || *c == ',').collect();
+                let safe_len: String = len
+                    .chars()
+                    .filter(|c| c.is_ascii_digit() || *c == ',')
+                    .collect();
                 if safe_len.is_empty() {
                     safe_type
                 } else {
@@ -2481,9 +3825,19 @@ pub async fn search_table_data_multi(
     let safe_table = sanitize_identifier(table);
 
     const VALID_OPS: &[&str] = &[
-        "=", "!=", "<>", ">", "<", ">=", "<=",
-        "LIKE", "NOT LIKE", "ILIKE", "NOT ILIKE",
-        "IS NULL", "IS NOT NULL",
+        "=",
+        "!=",
+        "<>",
+        ">",
+        "<",
+        ">=",
+        "<=",
+        "LIKE",
+        "NOT LIKE",
+        "ILIKE",
+        "NOT ILIKE",
+        "IS NULL",
+        "IS NOT NULL",
     ];
     const NULL_OPS: &[&str] = &["IS NULL", "IS NOT NULL"];
     const VALID_LOGICAL: &[&str] = &["AND", "OR"];
@@ -2533,7 +3887,11 @@ pub async fn search_table_data_multi(
     let order_clause = match sort_column {
         Some(col) if !col.is_empty() => {
             let safe_sort_col = sanitize_identifier(col);
-            let safe_dir = if sort_direction.to_uppercase() == "DESC" { "DESC" } else { "ASC" };
+            let safe_dir = if sort_direction.to_uppercase() == "DESC" {
+                "DESC"
+            } else {
+                "ASC"
+            };
             format!("ORDER BY \"{}\" {} NULLS LAST", safe_sort_col, safe_dir)
         }
         _ => String::new(),
@@ -2742,7 +4100,10 @@ pub async fn get_pg_stat_statements_status(
     let mut can_query = false;
     let mut probe_error: Option<String> = None;
     if extension_installed {
-        match client.query_opt("SELECT 1 FROM pg_stat_statements LIMIT 1", &[]).await {
+        match client
+            .query_opt("SELECT 1 FROM pg_stat_statements LIMIT 1", &[])
+            .await
+        {
             Ok(_) => can_query = true,
             Err(err) => {
                 probe_error = Some(err.to_string());
@@ -2752,7 +4113,8 @@ pub async fn get_pg_stat_statements_status(
 
     let mut messages: Vec<String> = Vec::new();
     if !extension_installed {
-        messages.push("pg_stat_statements extension is not installed in this database.".to_string());
+        messages
+            .push("pg_stat_statements extension is not installed in this database.".to_string());
     }
     if !preload_enabled {
         messages.push(
@@ -2762,8 +4124,15 @@ pub async fn get_pg_stat_statements_status(
     if extension_installed && preload_enabled && !can_query {
         messages.push(
             probe_error
-                .map(|e| format!("pg_stat_statements is configured but cannot be queried: {}", e))
-                .unwrap_or_else(|| "pg_stat_statements is configured but cannot be queried.".to_string()),
+                .map(|e| {
+                    format!(
+                        "pg_stat_statements is configured but cannot be queried: {}",
+                        e
+                    )
+                })
+                .unwrap_or_else(|| {
+                    "pg_stat_statements is configured but cannot be queried.".to_string()
+                }),
         );
     }
 
@@ -2832,16 +4201,15 @@ pub async fn list_pg_stat_statements(
 
     let limit = filter.limit.unwrap_or(100).clamp(1, 500);
     let offset = filter.offset.unwrap_or(0);
-    let sort_clause = pg_stat_statements_sort_clause(filter.sort_by.as_deref(), filter.sort_dir.as_deref());
+    let sort_clause =
+        pg_stat_statements_sort_clause(filter.sort_by.as_deref(), filter.sort_dir.as_deref());
 
     let search_text = filter
         .search_text
         .as_ref()
         .map(|v| v.trim().to_string())
         .filter(|v| !v.is_empty());
-    let min_mean_ms = filter
-        .min_mean_ms
-        .filter(|v| v.is_finite() && *v >= 0.0);
+    let min_mean_ms = filter.min_mean_ms.filter(|v| v.is_finite() && *v >= 0.0);
 
     let total_count: i64 = client
         .query_one(
@@ -2953,7 +4321,9 @@ pub async fn get_indexes_with_stats(
 ) -> Result<Vec<super::types::IndexStats>, String> {
     let client = pool.get().await.map_err(|e| e.to_string())?;
     // Prevent this query from hanging (e.g. on very large catalogs).
-    let _ = client.execute("SET LOCAL statement_timeout = '20s'", &[]).await;
+    let _ = client
+        .execute("SET LOCAL statement_timeout = '20s'", &[])
+        .await;
 
     // Use COALESCE for days_since_reset and stats_reset to avoid NULL/version issues.
     // Use COALESCE(array_agg(...), ARRAY[]::text[]) so columns is never NULL.
@@ -3157,13 +4527,18 @@ pub async fn get_index_impact(
         let explain_sql = format!(
             "EXPLAIN (FORMAT JSON) {}",
             // Truncate to first 500 chars to avoid huge queries; wrap in a safe context
-            if query.len() > 500 { &query[..500] } else { &query }
+            if query.len() > 500 {
+                &query[..500]
+            } else {
+                &query
+            }
         );
 
         let explain_result = client.query_opt(&explain_sql, &[]).await;
         let has_seq_scan = match explain_result {
             Ok(Some(explain_row)) => {
-                let plan_json: serde_json::Value = explain_row.try_get(0).unwrap_or(serde_json::Value::Null);
+                let plan_json: serde_json::Value =
+                    explain_row.try_get(0).unwrap_or(serde_json::Value::Null);
                 let plan_str = plan_json.to_string().to_lowercase();
                 plan_str.contains("seq scan") && plan_str.contains(&table.to_lowercase())
             }
@@ -3354,10 +4729,7 @@ pub async fn get_index_build_progress(
 
 /// Fetch nodes (tables + row count + columns with types/PK) and edges (FKs) for a schema.
 /// Uses a 15-second timeout and runs all 4 queries concurrently for performance.
-pub async fn get_schema_topology(
-    pool: &Arc<Pool>,
-    schema: &str,
-) -> Result<TopologyData, String> {
+pub async fn get_schema_topology(pool: &Arc<Pool>, schema: &str) -> Result<TopologyData, String> {
     const TIMEOUT: Duration = Duration::from_secs(15);
     let started_at = Instant::now();
 

@@ -258,6 +258,133 @@ export interface ConnectionResponse {
     pg_version_num: number;
 }
 
+/** Access profile for the currently connected DB role. */
+export interface DatabaseAccessProfile {
+    current_user: string;
+    is_superuser: boolean;
+    can_create_db: boolean;
+    can_create_role: boolean;
+    can_create_in_database: boolean;
+    is_admin: boolean;
+}
+
+/** Extension metadata and install permission status. */
+export interface DatabaseExtensionInfo {
+    name: string;
+    default_version: string | null;
+    installed_version: string | null;
+    comment: string | null;
+    requires_superuser: boolean;
+    trusted: boolean;
+    can_install: boolean;
+    install_block_reason: string | null;
+}
+
+/** Role metadata for RBAC assignment. */
+export interface DatabaseRoleInfo {
+    name: string;
+    can_login: boolean;
+    is_superuser: boolean;
+    can_create_db: boolean;
+    can_create_role: boolean;
+    is_system_role: boolean;
+    is_assignable: boolean;
+}
+
+/** One member attached to a role in RBAC detail views. */
+export interface DatabaseRoleMemberInfo {
+    name: string;
+    can_login: boolean;
+    is_superuser: boolean;
+    is_system_role: boolean;
+    admin_option: boolean;
+}
+
+/** Rich role metadata for membership management dialogs. */
+export interface DatabaseRoleDetail {
+    name: string;
+    can_login: boolean;
+    is_superuser: boolean;
+    can_create_db: boolean;
+    can_create_role: boolean;
+    can_replicate: boolean;
+    can_bypass_rls: boolean;
+    inherit: boolean;
+    valid_until: string | null;
+    comment: string | null;
+    is_system_role: boolean;
+    is_assignable: boolean;
+    can_grant_membership: boolean;
+    can_revoke_membership: boolean;
+    manage_block_reason: string | null;
+    member_of: string[];
+    members: DatabaseRoleMemberInfo[];
+}
+
+/** Database login account details. */
+export interface DatabaseUserInfo {
+    username: string;
+    can_login: boolean;
+    is_superuser: boolean;
+    can_create_db: boolean;
+    can_create_role: boolean;
+    can_replicate: boolean;
+    can_bypass_rls: boolean;
+    is_system_role: boolean;
+    valid_until: string | null;
+    member_of: string[];
+}
+
+/** Detailed metadata for a selected extension. */
+export interface DatabaseExtensionDetail {
+    name: string;
+    default_version: string | null;
+    installed_version: string | null;
+    installed_schema: string | null;
+    installed_owner: string | null;
+    comment: string | null;
+    requires_superuser: boolean;
+    trusted: boolean;
+    available_versions: string[];
+    can_install: boolean;
+    can_uninstall: boolean;
+    can_update: boolean;
+    install_block_reason: string | null;
+    uninstall_block_reason: string | null;
+    update_block_reason: string | null;
+}
+
+/** Payload to create a database user via GUI. */
+export interface CreateDatabaseUserRequest {
+    username: string;
+    password: string;
+    role_memberships: string[];
+    can_create_db: boolean;
+    can_create_role: boolean;
+    is_superuser: boolean;
+    inherit: boolean;
+    replication: boolean;
+    bypass_rls: boolean;
+    valid_until: string | null;
+    password_reminder: string | null;
+}
+
+/** Payload to create a custom NOLOGIN role for RBAC memberships. */
+export interface CreateDatabaseRoleRequest {
+    role_name: string;
+    inherit: boolean;
+    memberships: string[];
+}
+
+/** Locally stored password reminder metadata (password itself is never stored). */
+export interface PasswordReminder {
+    id: string;
+    username: string;
+    reminder: string;
+    created_at: number;
+    updated_at: number;
+}
+
 /** Saved connection persisted in app data dir */
 export interface SavedConnection {
     id: string;

@@ -116,12 +116,16 @@ fn save_raw(path: &PathBuf, file: &ProjectsFile) -> Result<(), String> {
 pub fn load_all(app_data_dir: Option<PathBuf>) -> Result<Vec<SchemaProject>, String> {
     let path = projects_path(app_data_dir)?;
     let mut file = load_raw(&path)?;
-    file.projects.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    file.projects
+        .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(file.projects)
 }
 
 /// Get a single project by ID.
-pub fn get_project(app_data_dir: Option<PathBuf>, id: &str) -> Result<Option<SchemaProject>, String> {
+pub fn get_project(
+    app_data_dir: Option<PathBuf>,
+    id: &str,
+) -> Result<Option<SchemaProject>, String> {
     let path = projects_path(app_data_dir)?;
     let file = load_raw(&path)?;
     Ok(file.projects.into_iter().find(|p| p.id == id))
@@ -144,7 +148,8 @@ pub fn save_project(
     } else {
         file.projects.push(project);
     }
-    file.projects.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
+    file.projects
+        .sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     save_raw(&path, &file)?;
     Ok(file.projects)
 }

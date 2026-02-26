@@ -21,7 +21,11 @@ impl ConnectionManager {
 
     /// Create a connection pool and probe the server version.
     /// Returns the connection ID on success.
-    pub async fn connect(&self, connection_id: &str, connection_string: &str) -> Result<(), String> {
+    pub async fn connect(
+        &self,
+        connection_id: &str,
+        connection_string: &str,
+    ) -> Result<(), String> {
         let config = connection_string
             .parse::<tokio_postgres::Config>()
             .map_err(|e| format!("Invalid connection string: {}", e))?;
@@ -75,7 +79,10 @@ impl ConnectionManager {
 
         let pg_version = Self::probe_version(&client).await.unwrap_or(90600);
 
-        self.pools.insert(connection_id.to_string(), (pool, pg_version, connection_string.to_string()));
+        self.pools.insert(
+            connection_id.to_string(),
+            (pool, pg_version, connection_string.to_string()),
+        );
         Ok(())
     }
 
@@ -94,10 +101,7 @@ impl ConnectionManager {
     /// Returns the integer form, e.g. 160004 for PostgreSQL 16.4.
     async fn probe_version(client: &deadpool_postgres::Object) -> Result<u32, String> {
         let row = client
-            .query_one(
-                "SELECT current_setting('server_version_num')::integer",
-                &[],
-            )
+            .query_one("SELECT current_setting('server_version_num')::integer", &[])
             .await
             .map_err(|e| e.to_string())?;
         let v: i32 = row.get(0);

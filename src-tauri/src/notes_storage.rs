@@ -54,10 +54,7 @@ pub fn load_all(app_data_dir: Option<PathBuf>) -> Result<Vec<QueryNote>, String>
 }
 
 /// Save a single note (create or update by id). Returns updated list.
-pub fn save_note(
-    app_data_dir: Option<PathBuf>,
-    note: QueryNote,
-) -> Result<Vec<QueryNote>, String> {
+pub fn save_note(app_data_dir: Option<PathBuf>, note: QueryNote) -> Result<Vec<QueryNote>, String> {
     let path = notes_path(app_data_dir)?;
     let mut file = load_raw(&path)?;
     if let Some(existing) = file.notes.iter_mut().find(|n| n.id == note.id) {
@@ -74,10 +71,7 @@ pub fn save_note(
 }
 
 /// Delete a note by id. Returns updated list.
-pub fn delete_note(
-    app_data_dir: Option<PathBuf>,
-    id: &str,
-) -> Result<Vec<QueryNote>, String> {
+pub fn delete_note(app_data_dir: Option<PathBuf>, id: &str) -> Result<Vec<QueryNote>, String> {
     let path = notes_path(app_data_dir)?;
     let mut file = load_raw(&path)?;
     file.notes.retain(|n| n.id != id);
@@ -86,16 +80,12 @@ pub fn delete_note(
 }
 
 /// Search notes by query string (case-insensitive substring match on title and sql).
-pub fn search_notes(
-    app_data_dir: Option<PathBuf>,
-    query: &str,
-) -> Result<Vec<QueryNote>, String> {
+pub fn search_notes(app_data_dir: Option<PathBuf>, query: &str) -> Result<Vec<QueryNote>, String> {
     let path = notes_path(app_data_dir)?;
     let mut file = load_raw(&path)?;
     let q = query.to_lowercase();
-    file.notes.retain(|n| {
-        n.title.to_lowercase().contains(&q) || n.sql.to_lowercase().contains(&q)
-    });
+    file.notes
+        .retain(|n| n.title.to_lowercase().contains(&q) || n.sql.to_lowercase().contains(&q));
     file.notes.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
     Ok(file.notes)
 }
