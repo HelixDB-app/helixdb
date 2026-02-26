@@ -2,12 +2,24 @@ use deadpool_postgres::Pool;
 use log::{debug, warn};
 use rust_decimal::Decimal;
 use std::collections::HashSet;
+use std::error::Error as StdError;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_postgres::types::Type;
 use tokio_postgres::Row;
 
 use super::types::*;
+
+/// Extract a user-facing message from a Postgres/connection error (avoids generic "db error").
+fn pg_error_message(e: &impl StdError) -> String {
+    let msg = e.to_string();
+    if msg.is_empty() || msg == "db error" {
+        if let Some(src) = e.source() {
+            return src.to_string();
+        }
+    }
+    msg
+}
 
 // ──────────────────────────────────────────────────────────────────────────────
 // Row / cell helpers
@@ -1153,35 +1165,133 @@ fn max_parameter_index(sql: &str) -> usize {
     max
 }
 
-/// Split SQL into statements by `;`, ignoring semicolons inside single-quoted strings.
+/// Split SQL into statements by `;`, ignoring semicolons inside comments,
+/// single/double-quoted strings, and dollar-quoted bodies (e.g. function bodies).
 fn split_sql_statements(sql: &str) -> Vec<String> {
     let mut statements = Vec::new();
     let mut current = String::new();
-    let mut in_single = false;
     let mut i = 0;
     let chars: Vec<char> = sql.chars().collect();
-    while i < chars.len() {
+    let n = chars.len();
+
+    while i < n {
         let c = chars[i];
-        if in_single {
-            if c == '\'' && i + 1 < chars.len() && chars[i + 1] == '\'' {
-                current.push(c);
+
+        // Line comment: skip until newline
+        if c == '-' && i + 1 < n && chars[i + 1] == '-' {
+            current.push(c);
+            current.push(chars[i + 1]);
+            i += 2;
+            while i < n && chars[i] != '\n' {
+                current.push(chars[i]);
+                i += 1;
+            }
+            if i < n {
+                current.push(chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+
+        // Block comment: skip until */
+        if c == '/' && i + 1 < n && chars[i + 1] == '*' {
+            current.push(c);
+            current.push(chars[i + 1]);
+            i += 2;
+            while i + 1 < n && !(chars[i] == '*' && chars[i + 1] == '/') {
+                current.push(chars[i]);
+                i += 1;
+            }
+            if i + 1 < n {
+                current.push(chars[i]);
                 current.push(chars[i + 1]);
                 i += 2;
-                continue;
             }
-            if c == '\'' {
-                in_single = false;
-            }
-            current.push(c);
-            i += 1;
             continue;
         }
+
+        // Single-quoted string (with '' escape)
         if c == '\'' {
-            in_single = true;
             current.push(c);
             i += 1;
+            while i < n {
+                let q = chars[i];
+                if q == '\'' && i + 1 < n && chars[i + 1] == '\'' {
+                    current.push(q);
+                    current.push(chars[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                if q == '\'' {
+                    current.push(q);
+                    i += 1;
+                    break;
+                }
+                current.push(q);
+                i += 1;
+            }
             continue;
         }
+
+        // Double-quoted identifier
+        if c == '"' {
+            current.push(c);
+            i += 1;
+            while i < n && chars[i] != '"' {
+                if chars[i] == '\\' && i + 1 < n {
+                    current.push(chars[i]);
+                    current.push(chars[i + 1]);
+                    i += 2;
+                    continue;
+                }
+                current.push(chars[i]);
+                i += 1;
+            }
+            if i < n {
+                current.push(chars[i]);
+                i += 1;
+            }
+            continue;
+        }
+
+        // Dollar-quoted string: $tag$ ... $tag$
+        if c == '$' && i + 1 < n {
+            i += 1;
+            let mut tag = String::new();
+            while i < n && chars[i] != '$' {
+                tag.push(chars[i]);
+                i += 1;
+            }
+            if i < n {
+                i += 1; // closing $
+                let tag_len = tag.chars().count();
+                let delim_len = tag_len + 2; // $tag$
+                current.push('$');
+                current.push_str(&tag);
+                current.push('$');
+                loop {
+                    if i + delim_len <= n {
+                        let peek: String = chars[i..i + delim_len].iter().collect();
+                        let expected = format!("${}$", tag);
+                        if peek == expected {
+                            current.push_str(&peek);
+                            i += delim_len;
+                            break;
+                        }
+                    }
+                    if i >= n {
+                        break;
+                    }
+                    current.push(chars[i]);
+                    i += 1;
+                }
+            } else {
+                current.push(c);
+            }
+            continue;
+        }
+
+        // Statement terminator
         if c == ';' {
             let stmt = current.trim().to_string();
             if !stmt.is_empty() {
@@ -1191,9 +1301,11 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
             i += 1;
             continue;
         }
+
         current.push(c);
         i += 1;
     }
+
     let stmt = current.trim().to_string();
     if !stmt.is_empty() {
         statements.push(stmt);
@@ -2784,9 +2896,15 @@ pub async fn delete_database_user(
 // Table row update / delete (for data grid edit)
 // ──────────────────────────────────────────────────────────────────────────────
 
-/// Map information_schema data_type to a safe PostgreSQL cast type for bind params.
+/// Map pg_catalog.format_type output to a safe PostgreSQL cast type for bind params.
+/// Handles types with precision/length e.g. "numeric(10,2)", "character varying(255)".
 fn pg_cast_type(data_type: &str) -> &'static str {
-    match data_type.to_lowercase().as_str() {
+    let lower = data_type.trim().to_lowercase();
+    let base: &str = lower.split('(').next().map(|s| s.trim()).unwrap_or(lower.as_str());
+    if base.is_empty() {
+        return "text";
+    }
+    match base {
         "smallint" | "int2" => "smallint",
         "integer" | "int4" => "integer",
         "bigint" | "int8" => "bigint",
@@ -2929,8 +3047,71 @@ pub async fn insert_table_row(
     let count = client
         .execute(&query, &param_refs)
         .await
-        .map_err(|e| format!("Insert error: {}", e))?;
+        .map_err(|e| pg_error_message(&e))?;
     Ok(count)
+}
+
+/// Insert multiple table rows in a single transaction. All-or-nothing.
+pub async fn insert_table_rows_bulk(
+    pool: &Arc<Pool>,
+    schema: &str,
+    table: &str,
+    rows: &[Vec<(String, Option<String>)>],
+) -> Result<u64, String> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let mut client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let txn = client
+        .transaction()
+        .await
+        .map_err(|e| format!("Transaction begin: {}", e))?;
+    let columns = get_columns(pool, schema, table)
+        .await
+        .map_err(|e| format!("Columns: {}", e))?;
+    let col_type_map: std::collections::HashMap<String, String> = columns
+        .iter()
+        .map(|c| (c.name.clone(), c.data_type.clone()))
+        .collect();
+    let safe_schema = sanitize_identifier(schema);
+    let safe_table = sanitize_identifier(table);
+    let mut total = 0u64;
+    for values in rows {
+        if values.is_empty() {
+            continue;
+        }
+        let col_names: Vec<&String> = values.iter().map(|(c, _)| c).collect();
+        let safe_cols: Vec<String> = col_names
+            .iter()
+            .map(|c| format!("\"{}\"", sanitize_identifier(c)))
+            .collect();
+        let cols_clause = safe_cols.join(", ");
+        let placeholders: Vec<String> = values
+            .iter()
+            .enumerate()
+            .map(|(i, (col, _))| {
+                let cast = pg_cast_type(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
+                format!("${}::{}", i + 1, cast)
+            })
+            .collect();
+        let values_clause = placeholders.join(", ");
+        let query = format!(
+            "INSERT INTO \"{}\".\"{}\" ({}) VALUES ({})",
+            safe_schema, safe_table, cols_clause, values_clause
+        );
+        let params: Vec<Option<String>> = values.iter().map(|(_, v)| v.clone()).collect();
+        let param_refs: Vec<&(dyn tokio_postgres::types::ToSql + Sync)> = params
+            .iter()
+            .map(|p| p as &(dyn tokio_postgres::types::ToSql + Sync))
+            .collect();
+        let n = txn
+            .execute(&query, &param_refs)
+            .await
+            .map_err(|e| pg_error_message(&e))?;
+        total += n;
+    }
+    txn.commit().await.map_err(|e| pg_error_message(&e))?;
+    Ok(total)
 }
 
 /// Delete table rows by primary key. Each row in `rows_pk_values` is one row's PK values (same order as pk_columns).

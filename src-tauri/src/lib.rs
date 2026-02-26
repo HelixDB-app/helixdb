@@ -58,6 +58,7 @@ pub fn run() {
             commands::db_alter_enum_values,
             commands::db_search_table_data,
             commands::db_insert_table_row,
+            commands::db_insert_table_rows_bulk,
             commands::db_update_table_row,
             commands::db_delete_table_rows,
             commands::db_get_table_details,

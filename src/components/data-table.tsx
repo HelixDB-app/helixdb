@@ -90,6 +90,7 @@ import {
     Database,
     Radio,
     RadioTower,
+    Sparkles,
 } from "lucide-react";
 import {
     ContextMenu,
@@ -122,6 +123,7 @@ import {
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { InsertRowDialog } from "@/components/insert-row-dialog";
+import { SeedDataDialog } from "@/components/seed-data-dialog";
 import { FunctionEditInline } from "@/components/function-edit-dialog";
 
 // ── Export / copy helpers ────────────────────────────────────────────────
@@ -421,6 +423,7 @@ export function DataTable() {
     const [isDeleting, setIsDeleting] = useState(false);
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [insertDialogOpen, setInsertDialogOpen] = useState(false);
+    const [seedDialogOpen, setSeedDialogOpen] = useState(false);
 
     // ── Live Watch mode ───────────────────────────────────────────────────────
     const [watchMode, setWatchMode] = useState(false);
@@ -945,6 +948,7 @@ export function DataTable() {
                 scrollMode={scrollMode} onScrollModeChange={setScrollMode}
                 rowsLoaded={scrollMode === "infinite" ? accumulatedRows.length : undefined}
                 onAddRow={canEditDelete ? () => setInsertDialogOpen(true) : undefined}
+                onSeedData={canEditDelete ? () => setSeedDialogOpen(true) : undefined}
                 filterCount={filterConditions.length}
                 filterBarOpen={filterBarOpen}
                 onToggleFilterBar={() => setFilterBarOpen((v) => !v)}
@@ -985,15 +989,25 @@ export function DataTable() {
             )}
 
             {previewSelection?.kind === "table" && (
-                <InsertRowDialog
-                    open={insertDialogOpen}
-                    onOpenChange={setInsertDialogOpen}
-                    connectionId={connectionId}
-                    schema={selectedSchema ?? ""}
-                    table={selectedTable ?? ""}
-                    columns={tableColumns ?? []}
-                    onSuccess={fetchData}
-                />
+                <>
+                    <InsertRowDialog
+                        open={insertDialogOpen}
+                        onOpenChange={setInsertDialogOpen}
+                        connectionId={connectionId}
+                        schema={selectedSchema ?? ""}
+                        table={selectedTable ?? ""}
+                        columns={tableColumns ?? []}
+                        onSuccess={fetchData}
+                    />
+                    <SeedDataDialog
+                        open={seedDialogOpen}
+                        onOpenChange={setSeedDialogOpen}
+                        connectionId={connectionId}
+                        schema={selectedSchema ?? undefined}
+                        table={selectedTable ?? undefined}
+                        onSuccess={fetchData}
+                    />
+                </>
             )}
 
             {/* Saving indicator */}
@@ -1490,6 +1504,7 @@ function TableToolbar({
     onScrollModeChange,
     rowsLoaded,
     onAddRow,
+    onSeedData,
     filterCount,
     filterBarOpen,
     onToggleFilterBar,
@@ -1513,6 +1528,7 @@ function TableToolbar({
     hasRows?: boolean;
     rowsLoaded?: number;
     onAddRow?: () => void;
+    onSeedData?: () => void;
     filterCount?: number;
     filterBarOpen?: boolean;
     onToggleFilterBar?: () => void;
@@ -1627,6 +1643,22 @@ function TableToolbar({
                             </Button>
                         </TooltipTrigger>
                         <TooltipContent>Insert a new row into this table</TooltipContent>
+                    </Tooltip>
+                )}
+                {onSeedData && (
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 gap-1.5 px-2.5 text-xs border-amber-500/30 text-amber-400/90 hover:bg-amber-500/10"
+                                onClick={onSeedData}
+                            >
+                                <Sparkles className="h-3.5 w-3.5" />
+                                Seed data
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Generate and insert sample data with AI</TooltipContent>
                     </Tooltip>
                 )}
                 {/* Scroll mode toggle */}

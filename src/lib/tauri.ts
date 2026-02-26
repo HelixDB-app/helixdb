@@ -500,6 +500,23 @@ export async function dbInsertTableRow(
     });
 }
 
+/** Insert multiple table rows in a single transaction. Returns total rows inserted. */
+export async function dbInsertTableRowsBulk(
+    connectionId: string,
+    schema: string,
+    table: string,
+    rows: { column: string; value: string | null }[][]
+): Promise<number> {
+    return invoke<number>("db_insert_table_rows_bulk", {
+        connectionId,
+        schema,
+        table,
+        rows: rows.map((values) =>
+            values.map(({ column, value }) => ({ column, value: value ?? null }))
+        ),
+    });
+}
+
 /** Update one table row by primary key. Returns rows affected (0 or 1). */
 export async function dbUpdateTableRow(
     connectionId: string,

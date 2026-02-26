@@ -768,6 +768,158 @@ export interface QueryNote {
     tags: string[];
 }
 
+// ── Database Replica Management ────────────────────────────────────────────
+
+/** Replication mode for a replica */
+export type ReplicationMode = "streaming" | "logical" | "cascading";
+
+/** Current sync status of a replica */
+export type ReplicaStatus = "active" | "syncing" | "failed" | "lagging" | "paused" | "unknown";
+
+/** Health state of a replica connection */
+export type ReplicaHealth = "healthy" | "degraded" | "critical" | "offline";
+
+/** Automated failover configuration */
+export interface FailoverConfig {
+    enabled: boolean;
+    /** Lag threshold in seconds before failover triggers */
+    lag_threshold_secs: number;
+    /** Seconds to wait before triggering failover */
+    cooldown_secs: number;
+    /** Notify-only mode — alerts but doesn't auto-promote */
+    notify_only: boolean;
+}
+
+/** Scheduled replication check configuration */
+export interface ReplicationSchedule {
+    enabled: boolean;
+    /** Cron-style interval label: "1m" | "5m" | "15m" | "30m" | "1h" */
+    interval: string;
+    /** Epoch ms of last scheduled check */
+    last_check_at: number | null;
+    /** Epoch ms of next scheduled check */
+    next_check_at: number | null;
+}
+
+/** Alert notification settings for a replica */
+export interface ReplicaAlertConfig {
+    /** Alert when lag exceeds this many seconds */
+    lag_alert_threshold_secs: number;
+    /** Alert when replica has been offline for this many seconds */
+    offline_alert_threshold_secs: number;
+    /** Enable email notifications (placeholder for future integration) */
+    email_alerts: boolean;
+    /** Enable in-app toast notifications */
+    in_app_alerts: boolean;
+}
+
+/** Auto-recovery settings */
+export interface AutoRecoveryConfig {
+    enabled: boolean;
+    /** Max number of automatic reconnect attempts */
+    max_retries: number;
+    /** Seconds between reconnect attempts */
+    retry_interval_secs: number;
+}
+
+/** Performance metrics snapshot for a replica */
+export interface ReplicaMetrics {
+    /** Replication lag in seconds */
+    lag_secs: number | null;
+    /** Replication lag in bytes */
+    lag_bytes: number | null;
+    /** Epoch ms of last successful sync */
+    last_sync_at: number | null;
+    /** Bytes sent per second (approximate) */
+    bytes_per_sec: number | null;
+    /** Average query latency on the replica in ms */
+    avg_query_latency_ms: number | null;
+    /** Number of queries executed on replica in last interval */
+    queries_per_sec: number | null;
+    /** Connection health (0–100) */
+    connection_health_score: number;
+    /** History of lag readings for sparkline chart [epoch_ms, lag_secs][] */
+    lag_history: [number, number][];
+}
+
+/** RBAC permission flags for replica actions */
+export interface ReplicaPermissions {
+    can_create: boolean;
+    can_delete: boolean;
+    can_promote: boolean;
+    can_pause: boolean;
+    can_resume: boolean;
+    can_configure: boolean;
+    reason: string | null;
+}
+
+/** A single managed database replica */
+export interface ReplicaInfo {
+    id: string;
+    name: string;
+    host: string;
+    port: number;
+    /** Name of the database being replicated */
+    database_name: string;
+    /** Role/user used for replication connection */
+    replication_slot: string | null;
+    mode: ReplicationMode;
+    status: ReplicaStatus;
+    health: ReplicaHealth;
+    metrics: ReplicaMetrics;
+    failover: FailoverConfig;
+    schedule: ReplicationSchedule;
+    alerts: ReplicaAlertConfig;
+    auto_recovery: AutoRecoveryConfig;
+    /** Whether this replica is the primary target for reads */
+    is_read_replica: boolean;
+    /** ISO timestamp when this replica was added */
+    created_at: string;
+    /** ISO timestamp of last config change */
+    updated_at: string;
+    /** Free-form notes */
+    notes: string | null;
+}
+
+/** Payload to create a new replica */
+export interface CreateReplicaRequest {
+    name: string;
+    host: string;
+    port: number;
+    database_name: string;
+    replication_user: string;
+    replication_password: string;
+    mode: ReplicationMode;
+    is_read_replica: boolean;
+    failover: FailoverConfig;
+    schedule: ReplicationSchedule;
+    alerts: ReplicaAlertConfig;
+    auto_recovery: AutoRecoveryConfig;
+    notes: string | null;
+}
+
+/** Summary of all replicas for the overview cards */
+export interface ReplicaSummary {
+    total: number;
+    active: number;
+    lagging: number;
+    failed: number;
+    paused: number;
+    avg_lag_secs: number | null;
+    max_lag_secs: number | null;
+}
+
+/** A single health check event in the audit log */
+export interface ReplicaHealthEvent {
+    id: string;
+    replica_id: string;
+    replica_name: string;
+    event_type: "check" | "failover" | "recovery" | "alert" | "promotion" | "pause" | "resume" | "create" | "delete";
+    status: "ok" | "warning" | "error" | "info";
+    message: string;
+    occurred_at: number;
+}
+
 // ── Schema Designer ────────────────────────────────────────────────────────
 
 export interface ForeignKeyRef {

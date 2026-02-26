@@ -771,6 +771,23 @@ pub async fn db_insert_table_row(
     queries::insert_table_row(&pool, &schema, &table, &values_tuples).await
 }
 
+/// Insert multiple table rows in a single transaction. All-or-nothing.
+#[tauri::command]
+pub async fn db_insert_table_rows_bulk(
+    state: State<'_, AppState>,
+    connection_id: String,
+    schema: String,
+    table: String,
+    rows: Vec<Vec<UpdateItem>>,
+) -> Result<u64, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    let rows_tuples: Vec<Vec<(String, Option<String>)>> = rows
+        .into_iter()
+        .map(|row| row.into_iter().map(|u| (u.column, u.value)).collect())
+        .collect();
+    queries::insert_table_rows_bulk(&pool, &schema, &table, &rows_tuples).await
+}
+
 /// Update one table row by primary key. Returns rows affected (0 or 1).
 #[tauri::command]
 pub async fn db_update_table_row(

@@ -24,6 +24,7 @@ import {
     ContextMenuTrigger,
 } from "@/components/ui/context-menu";
 import { TableManagerDialog } from "@/components/table-manager-dialog";
+import { SeedDataDialog } from "@/components/seed-data-dialog";
 import { CreateTableDialog } from "@/components/create-table-dialog";
 import { CreateEnumDialog } from "@/components/create-enum-dialog";
 import { CreateDatabaseDialog } from "@/components/create-database-dialog";
@@ -48,6 +49,7 @@ import {
     Columns,
     ShieldCheck,
     Hash,
+    Sparkles,
     Trash2,
     AlertTriangle,
     Copy,
@@ -55,7 +57,6 @@ import {
     Info,
     Plus,
     Clock3,
-    Sparkles,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -242,6 +243,7 @@ function TableLeaf({
     tableComment,
     onClick,
     onOpenManager,
+    onSeedData,
 }: {
     schema: string;
     tableName: string;
@@ -251,6 +253,7 @@ function TableLeaf({
     tableComment?: string | null;
     onClick: () => void;
     onOpenManager: (tab: string) => void;
+    onSeedData?: (schema: string, table: string) => void;
 }) {
     const copyName = () => {
         navigator.clipboard.writeText(tableName);
@@ -327,6 +330,11 @@ function TableLeaf({
                 )}
                 <ContextMenuSeparator />
                 <ContextMenuLabel>Actions</ContextMenuLabel>
+                {!isView && onSeedData && (
+                    <ContextMenuItem onClick={() => onSeedData(schema, tableName)}>
+                        <Sparkles className="h-3.5 w-3.5 text-amber-400" />Seed data…
+                    </ContextMenuItem>
+                )}
                 <ContextMenuItem onClick={() => onOpenManager("sql")}>
                     <Play className="h-3.5 w-3.5 text-emerald-400" />Run SQL Script
                 </ContextMenuItem>
@@ -437,6 +445,7 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
         schemaTypes,
         schemaTypesStatus,
         schemaTypesError,
+        connectionId,
         toggleSchema,
         selectTable,
         selectPreview,
@@ -450,6 +459,7 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
         loadSchemaTypes,
     } = useConnectionStore(
         useShallow((state) => ({
+            connectionId: state.connectionId,
             schemas: state.schemas,
             tables: state.tables,
             selectedSchema: state.selectedSchema,
@@ -505,6 +515,7 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
         table: string;
         tab: string;
     } | null>(null);
+    const [seedDialog, setSeedDialog] = useState<{ schema: string; table: string } | null>(null);
 
     const [createTableSchema, setCreateTableSchema] = useState<string | null>(null);
     const [createEnumSchema, setCreateEnumSchema] = useState<string | null>(null);
@@ -722,6 +733,16 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
                 />
             )}
             {docWriterOpen && <AIDocWriterDialog open={docWriterOpen} onOpenChange={setDocWriterOpen} />}
+            {seedDialog && connectionId && (
+                <SeedDataDialog
+                    open={!!seedDialog}
+                    onOpenChange={(o) => !o && setSeedDialog(null)}
+                    connectionId={connectionId}
+                    schema={seedDialog.schema}
+                    table={seedDialog.table}
+                    onSuccess={() => refreshSchemas()}
+                />
+            )}
 
             <div className="flex h-full w-full flex-col min-h-0 bg-[#0b0b0b] border-r border-white/[0.06] overflow-hidden">
                 <div className="px-2.5 pt-3 pb-2 border-b border-white/[0.05] space-y-2 shrink-0">
@@ -1081,6 +1102,7 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
                                                                     isActive={selectedSchema === schemaName && selectedTable === tableItem.name}
                                                                     onClick={() => { onSelectObject?.(); selectTable(schemaName, tableItem.name); }}
                                                                     onOpenManager={(tab) => setManagerDialog({ schema: schemaName, table: tableItem.name, tab })}
+                                                                    onSeedData={(s, t) => setSeedDialog({ schema: s, table: t })}
                                                                 />
                                                             ))}
                                                             {visibleTables.hasMore && (
