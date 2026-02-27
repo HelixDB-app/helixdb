@@ -38,6 +38,11 @@ if [[ -z "$KEY_ID" || -z "$ISSUER" || -z "$KEY_PATH" || ! -f "$KEY_PATH" ]]; the
   echo "Set APPLE_API_KEY_ID, APPLE_API_ISSUER, APPLE_API_KEY_PATH in apple/.env (for notarization)"
   exit 1
 fi
+if [[ "$KEY_ID" == *"@"* ]]; then
+  echo "Error: APPLE_API_KEY_ID must be the 10-char Key ID from App Store Connect (e.g. QYR8XD7QS3), not your email."
+  echo "Find it: App Store Connect → Users and Access → Integrations → Keys, or from the .p8 filename: AuthKey_XXXXXXXXXX.p8"
+  exit 1
+fi
 
 cd "$REPO_ROOT"
 

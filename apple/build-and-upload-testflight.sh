@@ -53,8 +53,14 @@ if [[ "$INSTALL_ID" == *"Apple Development"* ]]; then
 fi
 if [[ "$INSTALL_ID" == *"Apple Distribution"* ]]; then
   echo "Error: INSTALLER_IDENTITY must be '3rd Party Mac Developer Installer: ...', not 'Apple Distribution'."
-  echo "The .pkg needs an installer cert; the app uses Apple Distribution. Run: security find-identity -v -p codesigning"
-  echo "Set INSTALLER_IDENTITY to the line that says '3rd Party Mac Developer Installer'. See apple/INSTALLER-CERT-SETUP.md to create it."
+  echo "The .pkg needs an installer cert. Run: security find-identity -v -p macappstore"
+  echo "Set INSTALLER_IDENTITY in apple/.env to the fingerprint of '3rd Party Mac Developer Installer'."
+  exit 1
+fi
+if [[ "$INSTALL_ID" == *"3rd Party Mac Developer Application"* ]]; then
+  echo "Error: INSTALLER_IDENTITY must be '3rd Party Mac Developer Installer', not 'Application'."
+  echo "Run: security find-identity -v -p macappstore"
+  echo "Set INSTALLER_IDENTITY in apple/.env to the 40-char hex of the line that says '3rd Party Mac Developer Installer'."
   exit 1
 fi
 
