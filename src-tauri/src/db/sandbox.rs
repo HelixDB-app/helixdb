@@ -115,6 +115,7 @@ impl SandboxManager {
         Ok(())
     }
 
+    #[allow(dead_code)]
     pub fn has_session(&self, sandbox_id: &str) -> bool {
         self.sessions.contains_key(sandbox_id)
     }

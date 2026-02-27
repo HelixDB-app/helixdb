@@ -40,7 +40,7 @@ export function extractLatLngFromGeoJSON(geojson: string): { lat: number; lng: n
             const first = c[0] as number[];
             return { lng: first[0], lat: first[1] };
         }
-        if (parsed.type === "Polygon" && Array.isArray(c[0])?.[0] && (c[0] as number[][])[0].length >= 2) {
+        if (parsed.type === "Polygon" && Array.isArray(c[0]) && (c[0] as number[][])[0] && (c[0] as number[][])[0].length >= 2) {
             const first = (c[0] as number[][])[0];
             return { lng: first[0], lat: first[1] };
         }
@@ -53,8 +53,8 @@ export function extractLatLngFromGeoJSON(geojson: string): { lat: number; lng: n
             if (first.length >= 2) return { lng: first[0], lat: first[1] };
         }
         if (parsed.type === "MultiPolygon" && c.length > 0) {
-            const poly = (c as number[][][][])[0]?.[0]?.[0];
-            if (poly?.length >= 2) return { lng: poly[0], lat: poly[1] };
+            const poly = (c as unknown as number[][][][])[0] && (c as unknown as number[][][][])[0][0] && (c as unknown as number[][][][])[0][0][0];
+            if (poly && poly.length >= 2) return { lng: poly[0], lat: poly[1] };
         }
         return null;
     } catch {

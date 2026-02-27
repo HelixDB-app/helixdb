@@ -196,6 +196,7 @@ function syncCurrentFromActive(state: {
     connectionString: string;
     databaseName: string;
     serverVersion: string;
+    isConnected: boolean;
     schemas: SchemaInfo[];
     selectedSchema: string | null;
     tables: TableInfo[];
@@ -987,7 +988,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                     ...prev,
                     isLoadingSchemas: true,
                     tables: [],
-                    expandedSchemas: new Set(),
+                    expandedSchemas: new Set<string>(),
                     eventTriggers: [],
                     eventTriggersStatus: "idle" as LoadStatus,
                     eventTriggersError: null,
@@ -1003,7 +1004,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                 if (s.activeConnectionId === cid) {
                     out.isLoadingSchemas = true;
                     out.tables = [];
-                    out.expandedSchemas = new Set();
+                    out.expandedSchemas = new Set<string>();
                     out.eventTriggers = [];
                     out.eventTriggersStatus = "idle";
                     out.eventTriggersError = null;

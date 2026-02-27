@@ -122,6 +122,7 @@ impl MetadataCache {
     }
 
     /// Remove all cache entries
+    #[allow(dead_code)]
     pub fn invalidate_all(&self) {
         self.schemas.clear();
         self.tables.clear();

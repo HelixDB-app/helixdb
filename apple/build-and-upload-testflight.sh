@@ -3,12 +3,12 @@
 # Set env once (or use apple/.env with source), then run: ./apple/build-and-upload-testflight.sh
 #
 # Required env:
-#   SIGNING_IDENTITY      "3rd Party Mac Developer Application: Your Name (TEAM_ID)"
-#   INSTALLER_IDENTITY    "3rd Party Mac Developer Installer: Your Name (TEAM_ID)"
+#   SIGNING_IDENTITY      "Apple Distribution: Name (TEAM_ID)" or its SHA-1 fingerprint (if ambiguous)
+#   INSTALLER_IDENTITY    "3rd Party Mac Developer Installer: Name (TEAM_ID)" or SHA-1 fingerprint
 #   APPLE_API_KEY_ID      from App Store Connect → Integrations → Keys
 #   APPLE_API_ISSUER      Issuer ID from same page
 #   APPLE_API_KEY_PATH    /path/to/AuthKey_XXXXXXXX.p8
-# Get identities: security find-identity -v -p codesigning
+# Get identities: security find-identity -v -p codesigning (use fingerprint hex to avoid duplicate-cert ambiguity)
 
 set -e
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -33,7 +33,7 @@ KEY_PATH="${APPLE_API_KEY_PATH}"
 
 # Validate env
 err=0
-[[ -z "$SIGN_ID" ]]           && { echo "Missing: SIGNING_IDENTITY (3rd Party Mac Developer Application: ...)"; err=1; }
+[[ -z "$SIGN_ID" ]]           && { echo "Missing: SIGNING_IDENTITY (Apple Distribution: ...)"; err=1; }
 [[ -z "$INSTALL_ID" ]]        && { echo "Missing: INSTALLER_IDENTITY (3rd Party Mac Developer Installer: ...)"; err=1; }
 [[ -z "$KEY_ID" ]]            && { echo "Missing: APPLE_API_KEY_ID"; err=1; }
 [[ -z "$ISSUER" ]]            && { echo "Missing: APPLE_API_ISSUER"; err=1; }
@@ -73,20 +73,23 @@ grep -q 'TEAM_ID' "$ENTITLEMENTS" && { echo "ERROR: entitlements still contain l
 trap "rm -f '$ENTITLEMENTS'" EXIT
 echo "Using Team ID: $TEAM_ID"
 
-echo "=== 1. Build ==="
+echo "=== 1. Build (universal macOS for App Store) ==="
 unset CI
-cargo tauri build
+cargo tauri build --target universal-apple-darwin
 
-APP_PATH="$REPO_ROOT/src-tauri/target/release/bundle/macos/$APP_NAME.app"
-for TARGET in universal-apple-darwin aarch64-apple-darwin x86_64-apple-darwin; do
-  P="$REPO_ROOT/src-tauri/target/$TARGET/release/bundle/macos/$APP_NAME.app"
-  if [[ -d "$P" ]]; then APP_PATH="$P"; break; fi
-done
+APP_PATH="$REPO_ROOT/src-tauri/target/universal-apple-darwin/release/bundle/macos/$APP_NAME.app"
 if [[ ! -d "$APP_PATH" ]]; then
-  echo "Build failed: no $APP_NAME.app found"; exit 1
+  APP_PATH="$REPO_ROOT/src-tauri/target/release/bundle/macos/$APP_NAME.app"
+  [[ ! -d "$APP_PATH" ]] && { echo "Build failed: no $APP_NAME.app found"; exit 1; }
 fi
 
-echo "=== 2. Sign app ==="
+echo "=== 2. Check profile matches signing cert (avoid 409) ==="
+PROFILE="$REPO_ROOT/apple/pgstudio.provisionprofile"
+if [[ -f "$PROFILE" ]] && [[ -f "$REPO_ROOT/apple/check-profile-cert.sh" ]]; then
+  SIGN_ID="$SIGN_ID" PROFILE="$PROFILE" bash "$REPO_ROOT/apple/check-profile-cert.sh" || exit 1
+fi
+
+echo "=== 3. Sign app ==="
 # Sign main binary first so entitlements (with real Team ID) are on the executable; then the bundle
 BINARY="$APP_PATH/Contents/MacOS/pgstudio"
 if [[ -f "$BINARY" ]]; then
@@ -96,14 +99,15 @@ codesign --deep --force --verify --verbose \
   --sign "$SIGN_ID" \
   --entitlements "$ENTITLEMENTS" \
   "$APP_PATH"
+echo "Verify: $(codesign -dv --verbose=4 "$APP_PATH" 2>&1 | head -3)"
 
-echo "=== 3. Create signed .pkg ==="
+echo "=== 4. Create signed .pkg ==="
 PKG_PATH="$REPO_ROOT/$PKG_NAME"
 xcrun productbuild --sign "$INSTALL_ID" \
   --component "$APP_PATH" /Applications \
   "$PKG_PATH"
 
-echo "=== 4. Upload to TestFlight ==="
+echo "=== 5. Upload to TestFlight ==="
 # altool looks for the key by filename in repo/private_keys, ~/private_keys, etc. Copy there so it finds it.
 KEY_NAME=$(basename "$KEY_PATH")
 ALTOOL_KEY_DIR="$REPO_ROOT/private_keys"

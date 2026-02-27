@@ -73,6 +73,7 @@ pub struct ResultColumn {
 }
 
 /// Sort direction for table data requests
+#[allow(dead_code)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum SortDirection {
     Asc,
