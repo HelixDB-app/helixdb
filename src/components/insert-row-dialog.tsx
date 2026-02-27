@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useMemo } from "react";
+import { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import {
     Dialog,
     DialogContent,
@@ -64,6 +64,16 @@ export function InsertRowDialog({
     const [values, setValues] = useState<Record<string, string>>({});
     const [errors, setErrors] = useState<Record<string, string>>({});
     const [isSubmitting, setIsSubmitting] = useState(false);
+    const contentRef = useRef<HTMLDivElement>(null);
+
+    useEffect(() => {
+        if (open && columns.length > 0) {
+            const t = setTimeout(() => {
+                contentRef.current?.querySelector<HTMLInputElement>("input")?.focus();
+            }, 50);
+            return () => clearTimeout(t);
+        }
+    }, [open, columns.length]);
 
     const resetForm = useCallback(() => {
         setValues({});
@@ -162,10 +172,10 @@ export function InsertRowDialog({
                 </DialogHeader>
 
                 <ScrollArea className="flex-1 min-h-0 px-6">
-                    <div className="space-y-4 py-4 pr-4">
-                        {columns.map((col) => (
+                    <div ref={contentRef} className="space-y-4 py-4 pr-4">
+                        {columns.map((col, idx) => (
                             <div key={col.name} className="space-y-1.5">
-                                <label className="text-xs font-medium flex items-center gap-2">
+                                <label className="text-xs font-medium flex items-center gap-2" id={`insert-${col.name}`}>
                                     <span className="font-mono text-foreground">{col.name}</span>
                                     <span className="font-mono text-muted-foreground text-[10px]">
                                         {col.data_type}
@@ -175,6 +185,8 @@ export function InsertRowDialog({
                                     )}
                                 </label>
                                 <Input
+                                    aria-labelledby={`insert-${col.name}`}
+                                    aria-invalid={Boolean(errors[col.name])}
                                     value={values[col.name] ?? ""}
                                     onChange={(e) => setColumnValue(col.name, e.target.value)}
                                     placeholder={placeholder(col)}

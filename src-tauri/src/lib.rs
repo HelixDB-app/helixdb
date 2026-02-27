@@ -25,6 +25,8 @@ pub fn run() {
             commands::db_get_documentation_context,
             commands::db_apply_documentation_comments,
             commands::db_get_table_data,
+            commands::db_get_table_data_geojson,
+            commands::db_export_sql,
             commands::db_execute_query,
             commands::db_refresh_cache,
             commands::db_list_databases,
@@ -118,6 +120,7 @@ pub fn run() {
             commands::query_history_toggle_bookmark,
             commands::query_history_save_note,
             commands::query_history_export_csv,
+            commands::open_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

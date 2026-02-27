@@ -420,7 +420,7 @@ export function SessionMonitor() {
                         <select
                             value={backendTypeFilter}
                             onChange={(e) => setBackendTypeFilter(e.target.value)}
-                            className="h-7 rounded-md border border-border/20 bg-muted/20 px-2 text-[10px] text-foreground focus:outline-none focus:border-emerald-500/40"
+                            className="h-7 rounded-md border border-border/20 bg-muted/20 px-2 text-[10px] text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus:border-emerald-500/40"
                         >
                             <option value="all">All types</option>
                             {backendTypes.map((t) => (

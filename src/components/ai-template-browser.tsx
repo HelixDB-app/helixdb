@@ -82,14 +82,14 @@ export function TemplateBrowserModal({
                                     <option key={e} value={e}>{e}</option>
                                 ))}
                             </select>
-                            <input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Template name" className="flex-1 h-8 rounded-md border border-border/30 bg-muted/20 px-3 text-sm placeholder:text-muted-foreground/30 focus:outline-none focus:ring-1 focus:ring-emerald-500/30" />
+                            <input value={newTitle} onChange={(e) => setNewTitle(e.target.value)} placeholder="Template name" className="flex-1 h-8 rounded-md border border-border/30 bg-muted/20 px-3 text-sm placeholder:text-muted-foreground/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring" />
                             <select value={newCategory} onChange={(e) => setNewCategory(e.target.value)} className="h-8 w-32 rounded-md border border-border/30 bg-muted/20 px-2 text-xs">
                                 {TEMPLATE_CATEGORIES.filter((c) => c.id !== "all").map((c) => (
                                     <option key={c.id} value={c.id}>{c.label}</option>
                                 ))}
                             </select>
                         </div>
-                        <textarea value={newPrompt} onChange={(e) => setNewPrompt(e.target.value)} placeholder="Write your prompt template..." rows={3} className="w-full rounded-md border border-border/30 bg-muted/20 px-3 py-2 text-sm resize-none placeholder:text-muted-foreground/30 focus:outline-none focus:ring-1 focus:ring-emerald-500/30" />
+                        <textarea value={newPrompt} onChange={(e) => setNewPrompt(e.target.value)} placeholder="Write your prompt template..." rows={3} className="w-full rounded-md border border-border/30 bg-muted/20 px-3 py-2 text-sm resize-none placeholder:text-muted-foreground/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring" />
                         <div className="flex justify-end gap-2">
                             <Button size="sm" variant="ghost" onClick={() => setShowCreate(false)} className="h-7 text-xs">Cancel</Button>
                             <Button size="sm" onClick={handleCreate} disabled={!newTitle.trim() || !newPrompt.trim()} className="h-7 text-xs bg-emerald-600 hover:bg-emerald-700 text-white">Save Template</Button>
@@ -101,7 +101,7 @@ export function TemplateBrowserModal({
                 <div className="px-5 py-3 border-b border-border/10 space-y-2.5">
                     <div className="relative">
                         <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/30" />
-                        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search templates..." className="w-full h-8 rounded-md border border-border/30 bg-muted/10 pl-9 pr-3 text-sm placeholder:text-muted-foreground/30 focus:outline-none focus:ring-1 focus:ring-emerald-500/30" />
+                        <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search templates..." className="w-full h-8 rounded-md border border-border/30 bg-muted/10 pl-9 pr-3 text-sm placeholder:text-muted-foreground/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring" />
                     </div>
                     <div className="flex gap-1 flex-wrap">
                         {TEMPLATE_CATEGORIES.map((cat) => (

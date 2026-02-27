@@ -1,8 +1,11 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { listen } from "@tauri-apps/api/event";
 import { useConnectionStore } from "@/stores/connection-store";
+import { hasGeometryColumn, isGeometryColumn, extractLatLngFromGeoJSON } from "@/lib/geometry";
 import { useSettingsStore } from "@/stores/settings-store";
 import {
     dbGetTableData,
@@ -91,6 +94,7 @@ import {
     Radio,
     RadioTower,
     Sparkles,
+    MapPin,
 } from "lucide-react";
 import {
     ContextMenu,
@@ -940,23 +944,24 @@ export function DataTable() {
 
     return (
         <div className="flex h-full flex-col">
-            <TableToolbar
-                schema={tableSchema} table={tableNameForExport} result={result}
-                pageSize={pageSize} onPageSizeChange={(v) => { setPageSize(v); setPage(1); }}
-                onRefresh={fetchData} isLoading={isLoading}
-                dataViewMode={dataViewMode} onDataViewModeChange={setDataViewMode}
-                scrollMode={scrollMode} onScrollModeChange={setScrollMode}
-                rowsLoaded={scrollMode === "infinite" ? accumulatedRows.length : undefined}
-                onAddRow={canEditDelete ? () => setInsertDialogOpen(true) : undefined}
-                onSeedData={canEditDelete ? () => setSeedDialogOpen(true) : undefined}
-                filterCount={filterConditions.length}
-                filterBarOpen={filterBarOpen}
-                onToggleFilterBar={() => setFilterBarOpen((v) => !v)}
-                onExport={handleExport}
-                hasRows={displayRows.length > 0}
-                watchMode={watchMode}
-                watchConnecting={watchConnecting}
-                onToggleWatch={isTableNotView ? toggleWatch : undefined}
+                <TableToolbar
+                    schema={tableSchema} table={tableNameForExport} result={result}
+                    pageSize={pageSize} onPageSizeChange={(v) => { setPageSize(v); setPage(1); }}
+                    onRefresh={fetchData} isLoading={isLoading}
+                    dataViewMode={dataViewMode} onDataViewModeChange={setDataViewMode}
+                    scrollMode={scrollMode} onScrollModeChange={setScrollMode}
+                    rowsLoaded={scrollMode === "infinite" ? accumulatedRows.length : undefined}
+                    onAddRow={canEditDelete ? () => setInsertDialogOpen(true) : undefined}
+                    onSeedData={canEditDelete ? () => setSeedDialogOpen(true) : undefined}
+                    filterCount={filterConditions.length}
+                    filterBarOpen={filterBarOpen}
+                    onToggleFilterBar={() => setFilterBarOpen((v) => !v)}
+                    onExport={handleExport}
+                    hasRows={displayRows.length > 0}
+                    showMapButton={result ? hasGeometryColumn(result.columns) : false}
+                    watchMode={watchMode}
+                    watchConnecting={watchConnecting}
+                    onToggleWatch={isTableNotView ? toggleWatch : undefined}
             />
             {/* Live watch banner */}
             {watchMode && (
@@ -1091,14 +1096,20 @@ export function DataTable() {
                             </div>
                         ) : result && result.columns.length > 0 ? (
                             <>
-                                <Table>
+                                <Table
+                                    role="grid"
+                                    aria-label={selectedSchema && selectedTable ? `Table: ${selectedSchema}.${selectedTable}` : "Table data"}
+                                    aria-rowcount={scrollMode === "pagination" && result ? (result.total_rows ?? result.row_count) : undefined}
+                                    aria-colcount={(result?.columns?.length ?? 0) + (canEditDelete ? 2 : 1)}
+                                >
                                     <TableHeader>
                                         <TableRow className="hover:bg-transparent border-border/20 bg-card/30 sticky top-0 z-10">
                                             {canEditDelete && (
                                                 <TableHead className="w-10 px-2 sticky left-0 bg-card/80 backdrop-blur-sm z-20">
                                                     <input
                                                         type="checkbox"
-                                                        className="h-3.5 w-3.5 rounded border-border"
+                                                        className="h-3.5 w-3.5 rounded border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                                                        aria-label="Select all rows"
                                                         checked={displayRows.length > 0 && displayRows.every((row) => selectedRowKeys.has(getRowKey(row, result.columns, pkColumnNames)))}
                                                         onChange={(e) => {
                                                             if (e.target.checked) setSelectedRowKeys(new Set(displayRows.map((row) => getRowKey(row, result.columns, pkColumnNames))));
@@ -1114,12 +1125,15 @@ export function DataTable() {
                                                 <TableHead
                                                     key={col.name}
                                                     className="select-none group whitespace-nowrap px-3 py-2"
+                                                    aria-sort={sortColumn === col.name ? (sortDirection === "ASC" ? "ascending" : "descending") : undefined}
                                                 >
                                                     <div className="flex items-center gap-1">
                                                         {/* Sort clickable area */}
                                                         <button
-                                                            className="flex items-center gap-1.5 cursor-pointer flex-1 text-left"
+                                                            type="button"
+                                                            className="flex items-center gap-1.5 cursor-pointer flex-1 text-left rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
                                                             onClick={() => handleSort(col.name)}
+                                                            aria-label={`Sort by ${col.name}${sortColumn === col.name ? ` ${sortDirection === "ASC" ? "ascending" : "descending"}` : ""}`}
                                                         >
                                                             <span
                                                                 className="text-xs font-semibold text-foreground/80"
@@ -1145,8 +1159,10 @@ export function DataTable() {
                                                         >
                                                             <PopoverTrigger asChild>
                                                                 <button
-                                                                    className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-muted/60"
+                                                                    type="button"
+                                                                    className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-muted/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:opacity-100"
                                                                     title={`Stats for ${col.name}`}
+                                                                    aria-label={`Column stats for ${col.name}`}
                                                                     onClick={(e) => e.stopPropagation()}
                                                                 >
                                                                     <BarChart2 className="h-3 w-3 text-muted-foreground" />
@@ -1294,18 +1310,27 @@ export function DataTable() {
                                                         // ── Read-only cell ────────────────────────────────
                                                         const formatted = formatCellValue(cell);
                                                         const isNull = cell.type === "Null";
+                                                        const isGeomCol = isGeometryColumn(col);
+                                                        const geomLatLng = isGeomCol && !isNull && cell.type === "String" && typeof cell.value === "string"
+                                                            ? extractLatLngFromGeoJSON(cell.value)
+                                                            : null;
+                                                        const showMapLink = isGeomCol && geomLatLng && tableSchema && tableNameForExport;
+
                                                         return (
                                                             <TableCell
                                                                 key={colIdx}
                                                                 className={cn(
                                                                     "text-xs font-mono max-w-[280px] truncate px-3 py-1.5 cursor-default group/cell",
-                                                                    isNull && "text-muted-foreground/25 italic"
+                                                                    isNull && !isGeomCol && "text-muted-foreground/25 italic",
+                                                                    isGeomCol && isNull && "text-muted-foreground/40"
                                                                 )}
-                                                                title={isNull ? "NULL" : formatted}
+                                                                title={isGeomCol && isNull ? "—" : isNull ? "NULL" : showMapLink ? "Open in map" : formatted}
                                                                 onClick={() => {
+                                                                    if (showMapLink) return;
                                                                     if (!canEditDelete && !isNull) copyCell(formatted);
                                                                 }}
                                                                 onDoubleClick={() => {
+                                                                    if (showMapLink) return;
                                                                     if (canEditDelete) {
                                                                         preventBlurSaveRef.current = false;
                                                                         setEditingCell({
@@ -1321,9 +1346,25 @@ export function DataTable() {
                                                                 }}
                                                             >
                                                                 <div className="flex items-center gap-1 min-w-0">
-                                                                    <span className="truncate flex-1">{formatted}</span>
-                                                                    {/* Pencil icon — only for editable cells, only on hover */}
-                                                                    {canEditDelete && !isNull && (
+                                                                    {isGeomCol ? (
+                                                                        isNull ? (
+                                                                            <span className="text-muted-foreground/50">—</span>
+                                                                        ) : showMapLink ? (
+                                                                            <Link
+                                                                                href={`/map-view?schema=${encodeURIComponent(tableSchema)}&table=${encodeURIComponent(tableNameForExport)}&lat=${geomLatLng!.lat}&lng=${geomLatLng!.lng}`}
+                                                                                className="text-blue-500 hover:text-blue-400 underline underline-offset-1 truncate shrink-0"
+                                                                                onClick={(e) => e.stopPropagation()}
+                                                                            >
+                                                                                View on map
+                                                                            </Link>
+                                                                        ) : (
+                                                                            <span className="truncate flex-1 text-muted-foreground/70">{formatted}</span>
+                                                                        )
+                                                                    ) : (
+                                                                        <span className="truncate flex-1">{formatted}</span>
+                                                                    )}
+                                                                    {/* Pencil icon — only for editable cells, only on hover; hide for geometry map link */}
+                                                                    {canEditDelete && !isNull && !showMapLink && (
                                                                         <button
                                                                             className="shrink-0 opacity-0 group-hover/cell:opacity-100 transition-opacity p-0.5 rounded hover:bg-muted/60 ml-0.5"
                                                                             onMouseDown={(e) => {
@@ -1510,6 +1551,7 @@ function TableToolbar({
     onToggleFilterBar,
     onExport,
     hasRows,
+    showMapButton,
     watchMode,
     watchConnecting,
     onToggleWatch,
@@ -1533,10 +1575,12 @@ function TableToolbar({
     filterBarOpen?: boolean;
     onToggleFilterBar?: () => void;
     onExport?: (format: "csv" | "json") => void;
+    showMapButton?: boolean;
     watchMode?: boolean;
     watchConnecting?: boolean;
     onToggleWatch?: () => void;
 }) {
+    const router = useRouter();
     const totalRows = result?.total_rows;
     const rowCountLabel = scrollMode === "infinite" && rowsLoaded !== undefined && totalRows != null
         ? `${rowsLoaded.toLocaleString()} / ${totalRows.toLocaleString()}`
@@ -1655,7 +1699,7 @@ function TableToolbar({
                                 onClick={onSeedData}
                             >
                                 <Sparkles className="h-3.5 w-3.5" />
-                                Seed data
+                                {/* Seed data */}
                             </Button>
                         </TooltipTrigger>
                         <TooltipContent>Generate and insert sample data with AI</TooltipContent>
@@ -1790,6 +1834,28 @@ function TableToolbar({
                     </TooltipTrigger>
                     <TooltipContent>Copy as TSV</TooltipContent>
                 </Tooltip>
+
+                {/* Map button (geometry tables only) */}
+                {showMapButton && schema && table && (
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 px-2 gap-1 text-muted-foreground hover:text-foreground text-xs"
+                                onClick={() =>
+                                    router.push(
+                                        `/map-view?schema=${encodeURIComponent(schema)}&table=${encodeURIComponent(table)}`
+                                    )
+                                }
+                            >
+                                <MapPin className="h-3.5 w-3.5" />
+                                {/* Map */}
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Open map view</TooltipContent>
+                    </Tooltip>
+                )}
 
                 {/* Export dropdown */}
                 {onExport && (
@@ -2410,7 +2476,7 @@ function TypePreview({
                 .map((v) => [v, null]);
             if (renames.length > 0 || additions.length > 0) {
                 await dbAlterEnumValues(connectionId, schema, name, renames, additions);
-                loadSchemaObjects(schema, true);
+                loadSchemaObjects(schema, undefined, true);
                 fetchDetail();
             }
         } catch (e) {

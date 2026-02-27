@@ -3,6 +3,7 @@ use log::{debug, warn};
 use rust_decimal::Decimal;
 use std::collections::HashSet;
 use std::error::Error as StdError;
+use std::io::{Write, self as io};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_postgres::types::Type;
@@ -110,6 +111,28 @@ fn convert_cell(row: &Row, idx: usize, pg_type: &Type) -> CellValue {
             Ok(Some(v)) => CellValue::String(v),
             _ => CellValue::Null,
         },
+    }
+}
+
+/// Serialize a CellValue to a PostgreSQL literal for use in INSERT VALUES.
+fn cell_value_to_sql_literal(c: &CellValue) -> String {
+    match c {
+        CellValue::Null => "NULL".to_string(),
+        CellValue::Bool(b) => (*b).to_string().to_uppercase(),
+        CellValue::Int16(v) => v.to_string(),
+        CellValue::Int32(v) => v.to_string(),
+        CellValue::Int64(v) => v.to_string(),
+        CellValue::Float32(v) => v.to_string(),
+        CellValue::Float64(v) => v.to_string(),
+        CellValue::String(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''")),
+        CellValue::Json(j) => {
+            let escaped = serde_json::to_string(j).unwrap_or_default().replace('\\', "\\\\").replace('\'', "''");
+            format!("'{}'", escaped)
+        }
+        CellValue::DateTime(s) | CellValue::Date(s) | CellValue::Time(s) | CellValue::Uuid(s) => {
+            format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''"))
+        }
+        CellValue::Bytes(b) => format!("'\\\\x{}'", b.iter().map(|x| format!("{:02x}", x)).collect::<String>()),
     }
 }
 
@@ -1032,17 +1055,44 @@ pub async fn get_table_data(
         }
     };
 
-    let order_clause = if let Some(col) = sort_column {
-        let safe_col = sanitize_identifier(col);
-        let dir = match sort_direction {
-            Some(d) if d.to_uppercase() == "DESC" => "DESC",
-            _ => "ASC",
-        };
-        format!("ORDER BY \"{}\" {} NULLS LAST", safe_col, dir)
+    let columns_meta = get_columns(pool, schema, table).await.unwrap_or_default();
+    let use_geom_select = !columns_meta.is_empty();
+    let geom_set: std::collections::HashSet<String> = if use_geom_select {
+        columns_meta
+            .iter()
+            .filter(|c| {
+                let lower = c.data_type.to_lowercase();
+                lower.starts_with("geometry") || lower.starts_with("geography")
+            })
+            .map(|c| c.name.to_lowercase())
+            .collect()
     } else {
-        // Default: newest first when a creation-time column exists
-        match get_columns(pool, schema, table).await {
-            Ok(columns) => columns
+        std::collections::HashSet::new()
+    };
+
+    let (query, columns): (String, Vec<ResultColumn>) = if use_geom_select {
+        let select_list: String = columns_meta
+            .iter()
+            .map(|c| {
+                let safe_name = sanitize_identifier(&c.name);
+                let quoted = format!("\"{}\"", safe_name);
+                if geom_set.contains(&c.name.to_lowercase()) {
+                    format!("ST_AsGeoJSON({})::text AS {}", quoted, quoted)
+                } else {
+                    quoted
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(", ");
+        let order_clause = if let Some(col) = sort_column {
+            let safe_col = sanitize_identifier(col);
+            let dir = match sort_direction {
+                Some(d) if d.to_uppercase() == "DESC" => "DESC",
+                _ => "ASC",
+            };
+            format!("ORDER BY \"{}\" {} NULLS LAST", safe_col, dir)
+        } else {
+            columns_meta
                 .iter()
                 .find(|c| {
                     let lower = c.name.to_lowercase();
@@ -1062,46 +1112,61 @@ pub async fn get_table_data(
                         sanitize_identifier(&c.name)
                     )
                 })
-                .unwrap_or_default(),
-            _ => String::new(),
-        }
+                .unwrap_or_default()
+        };
+        let offset = (page.saturating_sub(1)) * page_size;
+        let q = format!(
+            "SELECT {} FROM \"{}\".\"{}\" {} LIMIT {} OFFSET {}",
+            select_list, safe_schema, safe_table, order_clause, page_size, offset
+        );
+        let cols: Vec<ResultColumn> = columns_meta
+            .iter()
+            .map(|c| ResultColumn {
+                name: c.name.clone(),
+                data_type: c.data_type.clone(),
+            })
+            .collect();
+        (q, cols)
+    } else {
+        let order_clause = if let Some(col) = sort_column {
+            let safe_col = sanitize_identifier(col);
+            let dir = match sort_direction {
+                Some(d) if d.to_uppercase() == "DESC" => "DESC",
+                _ => "ASC",
+            };
+            format!("ORDER BY \"{}\" {} NULLS LAST", safe_col, dir)
+        } else {
+            String::new()
+        };
+        let offset = (page.saturating_sub(1)) * page_size;
+        let q = format!(
+            "SELECT * FROM \"{}\".\"{}\" {} LIMIT {} OFFSET {}",
+            safe_schema, safe_table, order_clause, page_size, offset
+        );
+        (q, Vec::new())
     };
-
-    let offset = (page.saturating_sub(1)) * page_size;
-    let query = format!(
-        "SELECT * FROM \"{}\".\"{}\" {} LIMIT {} OFFSET {}",
-        safe_schema, safe_table, order_clause, page_size, offset
-    );
 
     let rows = client
         .query(&query, &[])
         .await
         .map_err(|e| format!("Query error: {}", e))?;
 
-    let columns: Vec<ResultColumn> = if !rows.is_empty() {
-        rows[0]
+    let (columns, data): (Vec<ResultColumn>, Vec<Vec<CellValue>>) = if columns.is_empty() && !rows.is_empty() {
+        let cols: Vec<ResultColumn> = rows[0]
             .columns()
             .iter()
             .map(|col| ResultColumn {
                 name: col.name().to_string(),
                 data_type: pg_type_to_string(col.type_()),
             })
-            .collect()
+            .collect();
+        let data = rows.iter().map(|row| row_to_cells(row)).collect();
+        (cols, data)
     } else {
-        get_columns(pool, schema, table)
-            .await
-            .map(|cols| {
-                cols.into_iter()
-                    .map(|c| ResultColumn {
-                        name: c.name,
-                        data_type: c.data_type,
-                    })
-                    .collect()
-            })
-            .unwrap_or_default()
+        let data = rows.iter().map(|row| row_to_cells(row)).collect();
+        (columns, data)
     };
 
-    let data: Vec<Vec<CellValue>> = rows.iter().map(|row| row_to_cells(row)).collect();
     let row_count = data.len();
     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
 
@@ -1113,6 +1178,98 @@ pub async fn get_table_data(
         execution_time_ms: elapsed,
         page: Some(page),
         page_size: Some(page_size),
+        query,
+        is_error: false,
+        error_message: None,
+    })
+}
+
+/// Table data with geometry columns returned as GeoJSON (ST_AsGeoJSON) for map visualization.
+/// geometry_column_names: column names to convert; must be actual geometry/geography columns.
+pub async fn get_table_data_geojson(
+    pool: &Arc<Pool>,
+    schema: &str,
+    table: &str,
+    geometry_column_names: Vec<String>,
+    limit: u32,
+) -> Result<QueryResult, String> {
+    let start = Instant::now();
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+
+    let safe_schema = sanitize_identifier(schema);
+    let safe_table = sanitize_identifier(table);
+
+    let columns = get_columns(pool, schema, table)
+        .await
+        .map_err(|e| format!("Columns error: {}", e))?;
+
+    let geom_set: std::collections::HashSet<String> = geometry_column_names
+        .iter()
+        .map(|s| s.to_lowercase())
+        .collect();
+
+    let select_parts: Vec<String> = columns
+        .iter()
+        .map(|c| {
+            let safe_name = sanitize_identifier(&c.name);
+            let quoted = format!("\"{}\"", safe_name);
+            if geom_set.contains(&c.name.to_lowercase()) {
+                format!("ST_AsGeoJSON({})::text AS {}", quoted, quoted)
+            } else {
+                quoted
+            }
+        })
+        .collect();
+    let select_list = select_parts.join(", ");
+
+    let order_clause = columns
+        .iter()
+        .find(|c| {
+            let lower = c.name.to_lowercase();
+            matches!(
+                lower.as_str(),
+                "created_at" | "createdat" | "create_date" | "creation_date" | "date_created" | "created"
+            )
+        })
+        .map(|c| {
+            format!(
+                "ORDER BY \"{}\" DESC NULLS LAST",
+                sanitize_identifier(&c.name)
+            )
+        })
+        .unwrap_or_else(String::new);
+
+    let limit = limit.min(10_000);
+    let query = format!(
+        "SELECT {} FROM \"{}\".\"{}\" {} LIMIT {}",
+        select_list, safe_schema, safe_table, order_clause, limit
+    );
+
+    let rows = client
+        .query(&query, &[])
+        .await
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    let result_columns: Vec<ResultColumn> = columns
+        .into_iter()
+        .map(|c| ResultColumn {
+            name: c.name,
+            data_type: c.data_type,
+        })
+        .collect();
+
+    let data: Vec<Vec<CellValue>> = rows.iter().map(|row| row_to_cells(row)).collect();
+    let row_count = data.len();
+    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+
+    Ok(QueryResult {
+        columns: result_columns,
+        rows: data,
+        row_count,
+        total_rows: Some(row_count as i64),
+        execution_time_ms: elapsed,
+        page: None,
+        page_size: None,
         query,
         is_error: false,
         error_message: None,
@@ -3545,6 +3702,326 @@ pub async fn get_table_details(
         table_size,
         indexes_size,
         comment,
+    })
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// SQL Export: DDL generation from TableDetails
+// ──────────────────────────────────────────────────────────────────────────────
+
+/// Build CREATE TABLE and CREATE INDEX statements from TableDetails.
+/// Uses sanitize_identifier for all identifiers. No user input in DDL.
+pub fn build_ddl_from_table_details(details: &TableDetails) -> String {
+    let safe_schema = sanitize_identifier(&details.schema);
+    let safe_table = sanitize_identifier(&details.name);
+
+    let mut col_defs: Vec<String> = Vec::new();
+    let pk_cols: Vec<String> = details
+        .columns
+        .iter()
+        .filter(|c| c.is_primary_key)
+        .map(|c| format!("\"{}\"", sanitize_identifier(&c.name)))
+        .collect();
+
+    for col in &details.columns {
+        let safe_name = sanitize_identifier(&col.name);
+        let safe_type: String = col
+            .data_type
+            .chars()
+            .filter(|c| c.is_alphanumeric() || " ()[]_,.'".contains(*c))
+            .collect();
+        let null_clause = if col.is_nullable { "" } else { " NOT NULL" };
+        let default_clause = match &col.column_default {
+            Some(d) if !d.trim().is_empty() => format!(" DEFAULT {}", d.trim()),
+            _ => String::new(),
+        };
+        let pk_inline = if pk_cols.len() == 1 && col.is_primary_key {
+            " PRIMARY KEY"
+        } else {
+            ""
+        };
+        col_defs.push(format!(
+            "  \"{}\" {}{}{}{}",
+            safe_name, safe_type, null_clause, default_clause, pk_inline
+        ));
+    }
+
+    let mut table_constraints: Vec<String> = Vec::new();
+    for tc in &details.constraints {
+        let cols: String = tc
+            .columns
+            .iter()
+            .map(|c| format!("\"{}\"", sanitize_identifier(c)))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let safe_name = sanitize_identifier(&tc.name);
+        match tc.constraint_type.as_str() {
+            "PRIMARY KEY" if pk_cols.len() > 1 => {
+                table_constraints.push(format!("  CONSTRAINT \"{}\" PRIMARY KEY ({})", safe_name, cols));
+            }
+            "UNIQUE" => {
+                table_constraints.push(format!("  CONSTRAINT \"{}\" UNIQUE ({})", safe_name, cols));
+            }
+            "CHECK" => {
+                if let Some(ref chk) = tc.check_clause {
+                    if !chk.trim().is_empty() {
+                        table_constraints.push(format!("  CONSTRAINT \"{}\" CHECK ({})", safe_name, chk.trim()));
+                    }
+                }
+            }
+            "FOREIGN KEY" => {
+                if let (Some(ref ft), Some(ref fc)) = (&tc.foreign_table, &tc.foreign_columns) {
+                    let fc_str = fc
+                        .iter()
+                        .map(|c| format!("\"{}\"", sanitize_identifier(c)))
+                        .collect::<Vec<_>>()
+                        .join(", ");
+                    let safe_ft = sanitize_identifier(ft);
+                    table_constraints.push(format!(
+                        "  CONSTRAINT \"{}\" FOREIGN KEY ({}) REFERENCES \"{}\".\"{}\" ({})",
+                        safe_name, cols, safe_schema, safe_ft, fc_str
+                    ));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    let mut all_defs = col_defs;
+    all_defs.extend(table_constraints);
+    let create_table = format!(
+        "CREATE TABLE \"{}\".\"{}\" (\n{}\n);\n",
+        safe_schema,
+        safe_table,
+        all_defs.join(",\n")
+    );
+
+    let mut out = create_table;
+    for idx in &details.indexes {
+        if idx.is_primary {
+            continue;
+        }
+        if !idx.definition.is_empty() {
+            out.push_str(&idx.definition);
+            if !idx.definition.ends_with(';') {
+                out.push(';');
+            }
+            out.push('\n');
+        } else {
+            let idx_cols: String = idx
+                .columns
+                .iter()
+                .map(|c| format!("\"{}\"", sanitize_identifier(c)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let unique = if idx.is_unique { "UNIQUE " } else { "" };
+            let safe_idx_name = sanitize_identifier(&idx.name);
+            out.push_str(&format!(
+                "CREATE {}INDEX \"{}\" ON \"{}\".\"{}\" ({});\n",
+                unique, safe_idx_name, safe_schema, safe_table, idx_cols
+            ));
+        }
+    }
+    out
+}
+
+const EXPORT_CHUNK_SIZE: u32 = 5000;
+
+enum ExportWriter {
+    Plain(std::fs::File),
+    Gzip(flate2::write::GzEncoder<std::fs::File>),
+}
+
+impl Write for ExportWriter {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        match self {
+            ExportWriter::Plain(f) => f.write(buf),
+            ExportWriter::Gzip(g) => g.write(buf),
+        }
+    }
+    fn flush(&mut self) -> io::Result<()> {
+        match self {
+            ExportWriter::Plain(f) => f.flush(),
+            ExportWriter::Gzip(g) => g.flush(),
+        }
+    }
+}
+
+/// Run full SQL export: validate tables, write DDL and/or data to file, emit progress.
+pub async fn run_sql_export<F>(
+    pool: &Arc<Pool>,
+    request: &ExportRequest,
+    mut progress: F,
+) -> Result<ExportResult, String>
+where
+    F: FnMut(ExportProgressPayload),
+{
+    let schemas = list_schemas(pool).await?;
+    let allowed_schemas: HashSet<String> = schemas.iter().map(|s| s.name.clone()).collect();
+    let mut allowed_tables: HashSet<(String, String)> = HashSet::new();
+    for schema in &request.schemas {
+        if !allowed_schemas.contains(schema) {
+            continue;
+        }
+        let tables = list_tables(pool, schema).await?;
+        for t in &tables {
+            allowed_tables.insert((schema.clone(), t.name.clone()));
+        }
+    }
+    let tables: Vec<&ExportTableRef> = request
+        .tables
+        .iter()
+        .filter(|t| allowed_tables.contains(&(t.schema.clone(), t.table.clone())))
+        .collect();
+    if tables.is_empty() {
+        return Err("No tables to export (none selected or none exist in selected schemas)".to_string());
+    }
+
+    let ext = if request.compress { "sql.gz" } else { "sql" };
+    let output_path = request.output_path.clone().unwrap_or_else(|| {
+        let t = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap();
+        format!(
+            "{}/helixdb_export_{}.{}",
+            std::env::temp_dir().display(),
+            t.as_secs(),
+            ext
+        )
+    });
+    if let Some(ref user_path) = request.output_path {
+        if request.compress && !user_path.ends_with(".sql.gz") {
+            return Err("Output path must end with .sql.gz when compression is enabled".to_string());
+        }
+        if !request.compress && !user_path.ends_with(".sql") {
+            return Err("Output path must end with .sql when compression is disabled".to_string());
+        }
+    }
+
+    let file = std::fs::File::create(&output_path)
+        .map_err(|e| format!("Failed to create export file: {}", e))?;
+    let mut writer: ExportWriter = if request.compress {
+        ExportWriter::Gzip(flate2::write::GzEncoder::new(file, flate2::Compression::default()))
+    } else {
+        ExportWriter::Plain(file)
+    };
+    let mut bytes_written: u64 = 0;
+
+    let total = tables.len() as u32;
+    let include_structure = matches!(
+        request.content_type,
+        ExportContentType::StructureOnly | ExportContentType::StructureAndData
+    );
+    let include_data = matches!(
+        request.content_type,
+        ExportContentType::DataOnly | ExportContentType::StructureAndData
+    );
+
+    for (i, table_ref) in tables.iter().enumerate() {
+        let schema = &table_ref.schema;
+        let table = &table_ref.table;
+        let table_key = format!("{}.{}", schema, table);
+        progress(ExportProgressPayload {
+            phase: "table".to_string(),
+            message: format!("Exporting {}.{}", schema, table),
+            current: (i + 1) as u32,
+            total,
+            table: Some(table_key.clone()),
+            rows_exported: None,
+        });
+
+        let details = get_table_details(pool, schema, table).await?;
+
+        if include_structure {
+            let ddl = build_ddl_from_table_details(&details);
+            writer.write_all(ddl.as_bytes())
+                .map_err(|e| format!("Write error: {}", e))?;
+            writer.write_all(b"\n")
+                .map_err(|e| format!("Write error: {}", e))?;
+            bytes_written += ddl.len() as u64 + 1;
+        }
+
+        if include_data && details.table_type == "BASE TABLE" {
+            let columns: Vec<&str> = match &request.columns {
+                Some(cols) => {
+                    if let Some(names) = cols.get(&table_key) {
+                        let allowed: HashSet<&str> = details.columns.iter().map(|c| c.name.as_str()).collect();
+                        names.iter().filter(|n| allowed.contains(n.as_str())).map(String::as_str).collect()
+                    } else {
+                        details.columns.iter().map(|c| c.name.as_str()).collect()
+                    }
+                }
+                None => details.columns.iter().map(|c| c.name.as_str()).collect(),
+            };
+            if columns.is_empty() {
+                continue;
+            }
+
+            let safe_schema = sanitize_identifier(schema);
+            let safe_table = sanitize_identifier(table);
+            let col_list: String = columns
+                .iter()
+                .map(|c| format!("\"{}\"", sanitize_identifier(c)))
+                .collect::<Vec<_>>()
+                .join(", ");
+            let order_col = sanitize_identifier(columns[0]);
+            let select_sql = format!(
+                "SELECT {} FROM \"{}\".\"{}\" ORDER BY \"{}\" ASC LIMIT $1 OFFSET $2",
+                col_list, safe_schema, safe_table, order_col
+            );
+
+            let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+            let mut offset: i64 = 0;
+            let mut total_rows: u64 = 0;
+
+            loop {
+                let rows = client
+                    .query(&select_sql, &[&(EXPORT_CHUNK_SIZE as i32), &offset])
+                    .await
+                    .map_err(|e| format!("Query error: {}", e))?;
+                if rows.is_empty() {
+                    break;
+                }
+                let values: Vec<String> = rows
+                    .iter()
+                    .map(|row| {
+                        let cells = row_to_cells(row);
+                        let literals: Vec<String> = cells.iter().map(cell_value_to_sql_literal).collect();
+                        format!("({})", literals.join(", "))
+                    })
+                    .collect();
+                let insert_sql = format!(
+                    "INSERT INTO \"{}\".\"{}\" ({}) VALUES\n{}\n;\n",
+                    safe_schema,
+                    safe_table,
+                    col_list,
+                    values.join(",\n")
+                );
+                writer.write_all(insert_sql.as_bytes())
+                    .map_err(|e| format!("Write error: {}", e))?;
+                bytes_written += insert_sql.len() as u64;
+                total_rows += rows.len() as u64;
+                offset += rows.len() as i64;
+
+                progress(ExportProgressPayload {
+                    phase: "rows".to_string(),
+                    message: format!("Exported {} rows from {}.{}", total_rows, schema, table),
+                    current: (i + 1) as u32,
+                    total,
+                    table: Some(table_key.clone()),
+                    rows_exported: Some(total_rows),
+                });
+            }
+        }
+    }
+
+    writer.flush().map_err(|e| format!("Flush error: {}", e))?;
+    if let ExportWriter::Gzip(ref mut gz) = writer {
+        gz.try_finish().map_err(|e| format!("Gzip finish error: {}", e))?;
+    }
+    Ok(ExportResult {
+        output_path,
+        bytes_written,
     })
 }
 

@@ -1,7 +1,7 @@
 "use client";
 
 import Link from "next/link";
-import { useState } from "react";
+import { useState, useEffect, useCallback } from "react";
 import { useTheme } from "next-themes";
 import {
     useSettingsStore,
@@ -12,6 +12,12 @@ import {
     type NullDisplay,
     type GeminiModelId,
 } from "@/stores/settings-store";
+import {
+    useShortcutsStore,
+    SHORTCUT_DEFINITIONS,
+    type ShortcutActionId,
+} from "@/stores/shortcuts-store";
+import { formatShortcutKeys, eventToCombo } from "@/lib/shortcut-keys";
 import {
     Dialog,
     DialogContent,
@@ -41,7 +47,10 @@ import {
     Eye,
     EyeOff,
     ExternalLink,
+    Pencil,
+    RotateCcw as ResetIcon,
 } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
 
 // ── Section Types ────────────────────────────────────────────────────────────
@@ -506,29 +515,134 @@ function QuerySection() {
     );
 }
 
-const SHORTCUTS = [
-    { keys: ["⌘", "K"], description: "Open command palette / search" },
-    { keys: ["⌘", "⇧", "R"], description: "Refresh schemas and current table" },
+const EDITOR_SHORTCUTS_REF = [
     { keys: ["⌘", "R"], description: "Run AI Review Mode (query editor)" },
     { keys: ["⌘", "Enter"], description: "Execute query in editor" },
     { keys: ["⇧", "⌥", "F"], description: "Format SQL in editor" },
     { keys: ["⌘", "."], description: "Trigger AI inline suggestion" },
     { keys: ["⌥", "→"], description: "Accept next AI suggestion word" },
-    { keys: ["⌘", "⇧", "H"], description: "Toggle query history panel" },
     { keys: ["⌘", "⇧", "P"], description: "Open editor command palette" },
-    { keys: ["⌘", ","], description: "Open settings" },
-    { keys: ["⌘", "J"], description: "Open AI chat" },
 ];
 
 function ShortcutsSection() {
+    const { getCombo, setShortcut, resetShortcut, resetAllShortcuts, getActionByCombo } = useShortcutsStore();
+    const [editingId, setEditingId] = useState<ShortcutActionId | null>(null);
+
+    const handleKeyDown = useCallback(
+        (e: KeyboardEvent) => {
+            if (!editingId) return;
+            e.preventDefault();
+            e.stopPropagation();
+            if (e.key === "Escape") {
+                setEditingId(null);
+                return;
+            }
+            const combo = eventToCombo(e);
+            if (!combo) return;
+            const existing = getActionByCombo(combo);
+            if (existing && existing !== editingId) {
+                toast.warning(`Shortcut already used by "${SHORTCUT_DEFINITIONS.find((d) => d.id === existing)?.label}". Reassigning.`);
+            }
+            setShortcut(editingId, combo);
+            setEditingId(null);
+            toast.success("Shortcut updated");
+        },
+        [editingId, setShortcut, getActionByCombo]
+    );
+
+    useEffect(() => {
+        if (!editingId) return;
+        window.addEventListener("keydown", handleKeyDown, true);
+        return () => window.removeEventListener("keydown", handleKeyDown, true);
+    }, [editingId, handleKeyDown]);
+
     return (
         <div className="space-y-5">
-            <SettingSection title="Keyboard shortcuts">
-                {SHORTCUTS.map((s, i) => (
-                    <div
-                        key={i}
-                        className="flex items-center justify-between gap-4 py-2.5"
+            <SettingSection title="App & header shortcuts">
+                <p className="text-xs text-muted-foreground/70 px-1 mb-2">
+                    Click Edit, then press the new key combination. Press Escape to cancel.
+                </p>
+                {SHORTCUT_DEFINITIONS.map((def) => {
+                    const combo = getCombo(def.id);
+                    const keys = formatShortcutKeys(combo);
+                    const isEditing = editingId === def.id;
+                    return (
+                        <div
+                            key={def.id}
+                            className={cn(
+                                "flex items-center justify-between gap-4 py-2.5",
+                                isEditing && "bg-primary/5 rounded-md -mx-2 px-2 border border-primary/20"
+                            )}
+                        >
+                            <div className="min-w-0 flex-1">
+                                <p className="text-sm font-medium text-foreground/90">{def.label}</p>
+                                <p className="text-[11px] text-muted-foreground/60 truncate">{def.description}</p>
+                            </div>
+                            <div className="flex items-center gap-2 shrink-0">
+                                <div className="flex items-center gap-1 min-w-[80px] justify-end">
+                                    {isEditing ? (
+                                        <span className="text-[11px] text-muted-foreground italic">Press a key…</span>
+                                    ) : (
+                                        keys.map((key, ki) => (
+                                            <kbd
+                                                key={ki}
+                                                className="inline-flex h-6 min-w-6 items-center justify-center rounded border border-border/50 bg-muted/50 px-1.5 font-mono text-[11px] text-foreground/70"
+                                            >
+                                                {key}
+                                            </kbd>
+                                        ))
+                                    )}
+                                </div>
+                                <div className="flex items-center gap-0.5">
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                        onClick={() => setEditingId(isEditing ? null : def.id)}
+                                        title="Edit shortcut"
+                                    >
+                                        <Pencil className="h-3.5 w-3.5" />
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                        onClick={() => {
+                                            resetShortcut(def.id);
+                                            toast.success("Reset to default");
+                                        }}
+                                        title="Reset to default"
+                                    >
+                                        <ResetIcon className="h-3.5 w-3.5" />
+                                    </Button>
+                                </div>
+                            </div>
+                        </div>
+                    );
+                })}
+                <div className="flex justify-end pt-2 pb-1">
+                    <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="text-xs"
+                        onClick={() => {
+                            resetAllShortcuts();
+                            toast.success("All shortcuts reset to defaults");
+                        }}
                     >
+                        Reset all to defaults
+                    </Button>
+                </div>
+            </SettingSection>
+            <SettingSection title="Editor & query shortcuts (fixed)">
+                <p className="text-xs text-muted-foreground/70 px-1 mb-2">
+                    These are defined in the query editor and cannot be changed here.
+                </p>
+                {EDITOR_SHORTCUTS_REF.map((s, i) => (
+                    <div key={i} className="flex items-center justify-between gap-4 py-2.5">
                         <span className="text-sm text-foreground/80">{s.description}</span>
                         <div className="flex items-center gap-1">
                             {s.keys.map((key, ki) => (
@@ -596,12 +710,14 @@ function AISection() {
                             value={geminiApiKey}
                             onChange={(e) => updateSettings({ geminiApiKey: e.target.value })}
                             placeholder="Enter API key"
-                            className="h-7 w-48 rounded-md border border-border/40 bg-muted/20 px-2 text-xs font-mono text-foreground/80 placeholder:text-muted-foreground/30 focus:outline-none focus:ring-1 focus:ring-emerald-500/40"
+                            className="h-7 w-48 rounded-md border border-border/40 bg-muted/20 px-2 text-xs font-mono text-foreground/80 placeholder:text-muted-foreground/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            aria-label="Gemini API key"
                         />
                         <button
                             type="button"
                             onClick={() => setShowKey(!showKey)}
-                            className="flex h-7 w-7 items-center justify-center rounded-md border border-border/40 bg-muted/20 text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-colors"
+                            className="flex h-7 w-7 items-center justify-center rounded-md border border-border/40 bg-muted/20 text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            aria-label={showKey ? "Hide API key" : "Show API key"}
                         >
                             {showKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
                         </button>

@@ -228,7 +228,7 @@ function LeftPanel({
                     <select
                         value={selectedSchema}
                         onChange={(e) => onSchemaChange(e.target.value)}
-                        className="w-full appearance-none rounded bg-muted/30 border border-border/30 px-2.5 py-1 pr-7 text-xs text-foreground focus:outline-none focus:border-emerald-500/50"
+                        className="w-full appearance-none rounded bg-muted/30 border border-border/30 px-2.5 py-1 pr-7 text-xs text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus:border-emerald-500/50"
                     >
                         {schemas.map((s) => (
                             <option key={s} value={s}>{s}</option>
@@ -245,7 +245,7 @@ function LeftPanel({
                         placeholder="Search indexes..."
                         value={searchQuery}
                         onChange={(e) => onSearchChange(e.target.value)}
-                        className="w-full rounded bg-muted/20 border border-border/20 pl-6 pr-2.5 py-1 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus:border-emerald-500/40"
+                        className="w-full rounded bg-muted/20 border border-border/20 pl-6 pr-2.5 py-1 text-xs text-foreground placeholder:text-muted-foreground/40 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus:border-emerald-500/40"
                     />
                 </div>
             </div>
@@ -471,7 +471,7 @@ function CenterPanel({
                         <select
                             value={designer.selectedTable}
                             onChange={(e) => onTableChange(e.target.value)}
-                            className="w-full appearance-none rounded bg-muted/30 border border-border/30 px-2.5 py-1.5 pr-7 text-xs text-foreground focus:outline-none focus:border-emerald-500/50"
+                            className="w-full appearance-none rounded bg-muted/30 border border-border/30 px-2.5 py-1.5 pr-7 text-xs text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus:border-emerald-500/50"
                         >
                             <option value="">Select a table…</option>
                             {tables.map((t) => (
@@ -609,7 +609,7 @@ function CenterPanel({
                             placeholder='e.g. deleted_at IS NULL'
                             value={designer.whereClause}
                             onChange={(e) => onDesignerChange({ whereClause: e.target.value })}
-                            className="w-full rounded bg-muted/20 border border-border/20 px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:border-emerald-500/40"
+                            className="w-full rounded bg-muted/20 border border-border/20 px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus:border-emerald-500/40"
                         />
                     </div>
 
@@ -622,7 +622,7 @@ function CenterPanel({
                             placeholder={autoName || "auto-generated"}
                             value={designer.customName}
                             onChange={(e) => onDesignerChange({ customName: e.target.value })}
-                            className="w-full rounded bg-muted/20 border border-border/20 px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus:border-emerald-500/40"
+                            className="w-full rounded bg-muted/20 border border-border/20 px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-muted-foreground/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus:border-emerald-500/40"
                         />
                     </div>
                 </div>
@@ -796,7 +796,7 @@ function AIOptimizePanel({
                     <select
                         value={selectedTable}
                         onChange={(e) => { setSelectedTable(e.target.value); setSuggestions([]); setError(null); }}
-                        className="w-full appearance-none rounded bg-muted/30 border border-border/30 px-2.5 py-1.5 pr-7 text-xs text-foreground focus:outline-none focus:border-emerald-500/50"
+                        className="w-full appearance-none rounded bg-muted/30 border border-border/30 px-2.5 py-1.5 pr-7 text-xs text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus:border-emerald-500/50"
                     >
                         <option value="">Select a table…</option>
                         {tables.map((t) => (
@@ -810,7 +810,7 @@ function AIOptimizePanel({
                         <select
                             value={selectedModel}
                             onChange={(e) => onModelChange(e.target.value as GeminiModelId)}
-                            className="w-full appearance-none rounded bg-muted/30 border border-border/30 px-2.5 py-1.5 pr-7 text-xs text-foreground focus:outline-none focus:border-emerald-500/50"
+                            className="w-full appearance-none rounded bg-muted/30 border border-border/30 px-2.5 py-1.5 pr-7 text-xs text-foreground focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus:border-emerald-500/50"
                         >
                             {Object.values(GEMINI_MODELS).map((m) => (
                                 <option key={m.id} value={m.id}>{m.displayName}</option>

@@ -194,7 +194,7 @@ export function LandingConnections() {
             </header>
 
             {/* ── Main ───────────────────────────────────────────────────── */}
-            <main className="relative flex-1 overflow-auto">
+            <main id="main" className="relative flex-1 overflow-auto" tabIndex={-1} aria-label="Main content">
                 <div className="max-w-5xl mx-auto px-6 py-8">
                     <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
 
@@ -280,8 +280,10 @@ export function LandingConnections() {
 
                                     {/* Add new card */}
                                     <button
+                                        type="button"
                                         onClick={openAddDialog}
-                                        className="group flex h-[88px] items-center justify-center rounded-xl border border-dashed border-border/25 bg-transparent text-muted-foreground/30 transition-all hover:border-emerald-500/30 hover:text-emerald-400/60 hover:bg-emerald-500/5"
+                                        className="group flex h-[88px] items-center justify-center rounded-xl border border-dashed border-border/25 bg-transparent text-muted-foreground/30 transition-all hover:border-emerald-500/30 hover:text-emerald-400/60 hover:bg-emerald-500/5 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
+                                        aria-label="Add new connection"
                                     >
                                         <div className="flex flex-col items-center gap-1.5">
                                             <Plus className="h-5 w-5 transition-transform group-hover:scale-110" />
@@ -408,8 +410,10 @@ function ConnectionCard({
                     <Tooltip>
                         <TooltipTrigger asChild>
                             <button
-                                className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-all"
+                                type="button"
+                                className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                 onClick={onEdit}
+                                aria-label="Edit connection"
                             >
                                 <Pencil className="h-3 w-3" />
                             </button>
@@ -419,8 +423,10 @@ function ConnectionCard({
                     <Tooltip>
                         <TooltipTrigger asChild>
                             <button
-                                className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 transition-all"
+                                type="button"
+                                className="flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 transition-all focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                                 onClick={onDelete}
+                                aria-label="Remove connection"
                             >
                                 <Trash2 className="h-3 w-3" />
                             </button>
@@ -432,15 +438,18 @@ function ConnectionCard({
 
             {/* Connect button */}
             <button
+                type="button"
                 className={cn(
                     "mt-3 w-full flex items-center justify-center gap-1.5 rounded-lg h-7 text-[11px] font-medium transition-all",
                     "bg-muted/30 text-muted-foreground/60 border border-border/20",
                     "hover:bg-emerald-500/10 hover:text-emerald-400 hover:border-emerald-500/30",
                     "disabled:pointer-events-none disabled:opacity-40",
+                    "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2",
                     isConnectingThis && "bg-emerald-500/10 text-emerald-400 border-emerald-500/30"
                 )}
                 onClick={onConnect}
                 disabled={isConnecting}
+                aria-label={`Connect to ${conn.name}`}
             >
                 {isConnectingThis ? (
                     <Loader2 className="h-3 w-3 animate-spin" />

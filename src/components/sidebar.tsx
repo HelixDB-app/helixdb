@@ -4,6 +4,8 @@ import Link from "next/link";
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useShallow } from "zustand/react/shallow";
+import { getSavedConnections } from "@/lib/tauri";
+import type { SavedConnection } from "@/lib/types";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
@@ -25,6 +27,7 @@ import {
 } from "@/components/ui/context-menu";
 import { TableManagerDialog } from "@/components/table-manager-dialog";
 import { SeedDataDialog } from "@/components/seed-data-dialog";
+import { ExportDatabaseDialog } from "@/components/export-database-dialog";
 import { CreateTableDialog } from "@/components/create-table-dialog";
 import { CreateEnumDialog } from "@/components/create-enum-dialog";
 import { CreateDatabaseDialog } from "@/components/create-database-dialog";
@@ -57,6 +60,9 @@ import {
     Info,
     Plus,
     Clock3,
+    CircleDot,
+    Unplug,
+    FileDown,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -98,16 +104,8 @@ function TreeNode({
     onAdd?: () => void;
     addTitle?: string;
 }) {
-    return (
-        <div
-            className={cn(
-                "group flex w-full items-center gap-1.5 py-[5px] text-left text-[11px] transition-all duration-100 cursor-pointer select-none",
-                "hover:bg-white/[0.04] rounded-md",
-                isActive && "bg-white/[0.06] text-foreground"
-            )}
-            style={{ paddingLeft: INDENT + level * 12, paddingRight: 6 }}
-            onClick={onToggle}
-        >
+    const content = (
+        <>
             <span className="flex items-center justify-center h-4 w-4 shrink-0 text-muted-foreground/40">
                 {expanded
                     ? <ChevronDown className="h-3 w-3" />
@@ -125,12 +123,37 @@ function TreeNode({
                     {count}
                 </span>
             )}
+        </>
+    );
+    return (
+        <div className="group flex w-full items-center gap-1.5 py-[5px] pr-1 rounded-md" style={{ paddingLeft: INDENT + level * 12 }}>
+            <button
+                type="button"
+                role="treeitem"
+                aria-expanded={expanded}
+                aria-selected={isActive}
+                className={cn(
+                    "flex flex-1 min-w-0 items-center gap-1.5 text-left text-[11px] transition-all duration-100 cursor-pointer select-none rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                    "hover:bg-white/[0.04]",
+                    isActive && "bg-white/[0.06] text-foreground"
+                )}
+                onClick={onToggle}
+                onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                        e.preventDefault();
+                        onToggle();
+                    }
+                }}
+            >
+                {content}
+            </button>
             {onAdd && (
                 <button
                     type="button"
                     onClick={(e) => { e.stopPropagation(); onAdd(); }}
                     title={addTitle ?? `Add ${label.toLowerCase()}`}
-                    className="opacity-0 group-hover:opacity-100 transition-all h-4 w-4 flex items-center justify-center rounded hover:bg-emerald-500/15 text-muted-foreground/40 hover:text-emerald-400 shrink-0"
+                    aria-label={addTitle ?? `Add ${label.toLowerCase()}`}
+                    className="opacity-0 group-hover:opacity-100 transition-all h-4 w-4 flex items-center justify-center rounded hover:bg-emerald-500/15 text-muted-foreground/40 hover:text-emerald-400 shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                 >
                     <Plus className="h-2.5 w-2.5" />
                 </button>
@@ -158,15 +181,8 @@ function SchemaSectionHeader({
     onAdd?: () => void;
     addTitle?: string;
 }) {
-    return (
-        <div
-            className={cn(
-                "group flex items-center gap-1.5 py-1 pr-1.5 text-[9px] font-semibold uppercase tracking-widest text-muted-foreground/35 rounded-md",
-                onToggle && "cursor-pointer hover:bg-white/[0.03]"
-            )}
-            style={{ paddingLeft: LEAF_INDENT + 16 }}
-            onClick={onToggle}
-        >
+    const content = (
+        <>
             {onToggle ? (
                 <span className="flex h-3 w-3 items-center justify-center text-muted-foreground/35">
                     {expanded ? <ChevronDown className="h-2.5 w-2.5" /> : <ChevronRight className="h-2.5 w-2.5" />}
@@ -177,16 +193,46 @@ function SchemaSectionHeader({
             <Icon className={cn("h-2.5 w-2.5 shrink-0", iconColor)} />
             <span>{label}</span>
             <span className="font-mono tabular-nums opacity-70">{count}</span>
-            {onAdd && (
+        </>
+    );
+    if (onToggle) {
+        return (
+            <div className="group flex items-center gap-1.5 py-1 pr-1.5 text-[9px] font-semibold uppercase tracking-widest text-muted-foreground/35 rounded-md" style={{ paddingLeft: LEAF_INDENT + 16 }}>
                 <button
                     type="button"
-                    onClick={(e) => { e.stopPropagation(); onAdd(); }}
-                    title={addTitle ?? `Add ${label.toLowerCase()}`}
-                    className="ml-auto opacity-0 group-hover:opacity-100 transition-all h-3.5 w-3.5 flex items-center justify-center rounded hover:bg-emerald-500/15 text-muted-foreground/40 hover:text-emerald-400"
+                    role="treeitem"
+                    aria-expanded={expanded ?? false}
+                    className="flex flex-1 min-w-0 items-center gap-1.5 text-left rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background cursor-pointer hover:bg-white/[0.03]"
+                    onClick={onToggle}
+                    onKeyDown={(e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                            e.preventDefault();
+                            onToggle();
+                        }
+                    }}
                 >
-                    <Plus className="h-2 w-2" />
+                    {content}
                 </button>
-            )}
+                {onAdd && (
+                    <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); onAdd(); }}
+                        title={addTitle ?? `Add ${label.toLowerCase()}`}
+                        aria-label={addTitle ?? `Add ${label.toLowerCase()}`}
+                        className="opacity-0 group-hover:opacity-100 transition-all h-3.5 w-3.5 flex items-center justify-center rounded hover:bg-emerald-500/15 text-muted-foreground/40 hover:text-emerald-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                        <Plus className="h-2 w-2" />
+                    </button>
+                )}
+            </div>
+        );
+    }
+    return (
+        <div
+            className="group flex items-center gap-1.5 py-1 pr-1.5 text-[9px] font-semibold uppercase tracking-widest text-muted-foreground/35 rounded-md"
+            style={{ paddingLeft: LEAF_INDENT + 16 }}
+        >
+            {content}
         </div>
     );
 }
@@ -207,9 +253,17 @@ function ObjectLeaf({
     return (
         <button
             type="button"
+            role="treeitem"
+            aria-selected={isActive}
             onClick={onClick}
+            onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    onClick();
+                }
+            }}
             className={cn(
-                "group flex w-full items-center gap-1.5 py-[4px] pr-2 text-left text-[11px] transition-all duration-100 rounded-md",
+                "group flex w-full items-center gap-1.5 py-[4px] pr-2 text-left text-[11px] transition-all duration-100 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
                 "hover:bg-white/[0.04]",
                 isActive
                     ? "bg-primary/10 text-primary"
@@ -271,10 +325,12 @@ function TableLeaf({
             <ContextMenuTrigger asChild>
                 <button
                     type="button"
+                    role="treeitem"
+                    aria-selected={isActive}
                     onClick={onClick}
                     title={tableComment?.trim() || undefined}
                     className={cn(
-                        "group flex w-full items-center gap-1.5 py-[4px] pr-2 text-left text-[11px] transition-all duration-100 rounded-md",
+                        "group flex w-full items-center gap-1.5 py-[4px] pr-2 text-left text-[11px] transition-all duration-100 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
                         "hover:bg-white/[0.04]",
                         isActive
                             ? "bg-primary/10 text-primary"
@@ -423,8 +479,16 @@ function DropDatabaseConfirm({
     );
 }
 
-export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}) {
+export function Sidebar({
+    onSelectObject,
+    onOpenConnectionDialog,
+}: { onSelectObject?: () => void; onOpenConnectionDialog?: () => void } = {}) {
     const {
+        connections,
+        activeConnectionId,
+        setActiveConnection,
+        connect,
+        disconnect,
         schemas,
         tables,
         selectedSchema,
@@ -459,6 +523,11 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
         loadSchemaTypes,
     } = useConnectionStore(
         useShallow((state) => ({
+            connections: state.connections,
+            activeConnectionId: state.activeConnectionId,
+            setActiveConnection: state.setActiveConnection,
+            connect: state.connect,
+            disconnect: state.disconnect,
             connectionId: state.connectionId,
             schemas: state.schemas,
             tables: state.tables,
@@ -494,6 +563,8 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
         }))
     );
 
+    const [savedConnections, setSavedConnections] = useState<SavedConnection[]>([]);
+    const [connectionsOpen, setConnectionsOpen] = useState(true);
     const [search, setSearch] = useState("");
     const [databasesOpen, setDatabasesOpen] = useState(false);
     const [schemasOpen, setSchemasOpen] = useState(true);
@@ -516,6 +587,7 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
         tab: string;
     } | null>(null);
     const [seedDialog, setSeedDialog] = useState<{ schema: string; table: string } | null>(null);
+    const [exportDialogConnectionId, setExportDialogConnectionId] = useState<string | null>(null);
 
     const [createTableSchema, setCreateTableSchema] = useState<string | null>(null);
     const [createEnumSchema, setCreateEnumSchema] = useState<string | null>(null);
@@ -536,6 +608,10 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
         setSectionRenderLimit({});
         setEventTriggersOpen(false);
     }, [databaseName]);
+
+    useEffect(() => {
+        getSavedConnections().then(setSavedConnections).catch(() => setSavedConnections([]));
+    }, [connections.length]);
 
     const pgVersion = serverVersion
         ? serverVersion.match(/PostgreSQL\s+([\d.]+)/i)?.[1] ?? ""
@@ -659,12 +735,13 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
     }, [refreshSchemas]);
 
     const handleSwitchDatabase = useCallback((db: string) => {
+        if (!connectionId) return;
         setDbPickerOpen(false);
         setDbSearch("");
         setSchemaSectionOpen({});
         setSectionRenderLimit({});
-        void switchDatabase(db);
-    }, [switchDatabase]);
+        void switchDatabase(connectionId, db);
+    }, [connectionId, switchDatabase]);
 
     const handleDropDatabase = async (name: string) => {
         setIsDroppingDb(true);
@@ -726,7 +803,7 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
                     onCreated={() => {
                         const schemaName = createEnumSchema;
                         if (schemaName) {
-                            void loadSchemaTypes(schemaName, true);
+                            void loadSchemaTypes(schemaName, undefined, true);
                         }
                         setCreateEnumSchema(null);
                     }}
@@ -743,9 +820,130 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
                     onSuccess={() => refreshSchemas()}
                 />
             )}
+            {exportDialogConnectionId && (
+                <ExportDatabaseDialog
+                    open={!!exportDialogConnectionId}
+                    onOpenChange={(o) => !o && setExportDialogConnectionId(null)}
+                    connectionId={exportDialogConnectionId}
+                />
+            )}
 
             <div className="flex h-full w-full flex-col min-h-0 bg-[#0b0b0b] border-r border-white/[0.06] overflow-hidden">
                 <div className="px-2.5 pt-3 pb-2 border-b border-white/[0.05] space-y-2 shrink-0">
+                    <TreeNode
+                        icon={Server}
+                        label="Connections"
+                        count={connections.length}
+                        expanded={connectionsOpen}
+                        onToggle={() => setConnectionsOpen((o) => !o)}
+                        iconColor="text-amber-400/70"
+                    />
+                    {connectionsOpen && (
+                        <div className="ml-3 border-l border-white/[0.05] pl-0.5 space-y-0.5 animate-in fade-in-0 slide-in-from-top-1 duration-200">
+                            {savedConnections.map((saved) => {
+                                const openConn = connections.find((c) => c.savedConnectionId === saved.id);
+                                if (openConn) {
+                                    const isActive = openConn.connectionId === activeConnectionId;
+                                    return (
+                                        <ContextMenu key={saved.id}>
+                                            <ContextMenuTrigger asChild>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => setActiveConnection(openConn.connectionId)}
+                                                    className={cn(
+                                                        "flex w-full items-center gap-1.5 py-[4px] pr-2 text-[11px] text-left rounded-md transition-all hover:bg-white/[0.04]",
+                                                        isActive ? "bg-primary/10 text-primary" : "text-muted-foreground/70 hover:text-foreground/85"
+                                                    )}
+                                                    style={{ paddingLeft: LEAF_INDENT + 8 }}
+                                                >
+                                                    <span className={cn("w-0.5 h-3 rounded-full shrink-0", isActive ? "bg-primary" : "bg-transparent")} />
+                                                    <CircleDot className="h-3 w-3 shrink-0 text-emerald-400/80" />
+                                                    <span className="truncate flex-1">{saved.name}</span>
+                                                    {isActive && <span className="text-[9px] text-primary/80 font-medium shrink-0">Active</span>}
+                                                    <span className="text-[9px] font-mono text-muted-foreground/40 truncate max-w-[80px]">{openConn.databaseName}</span>
+                                                </button>
+                                            </ContextMenuTrigger>
+                                            <ContextMenuContent className="w-48">
+                                                {!isActive && (
+                                                    <ContextMenuItem onClick={() => setActiveConnection(openConn.connectionId)}>
+                                                        <CircleDot className="h-3.5 w-3.5" /> Set as active
+                                                    </ContextMenuItem>
+                                                )}
+                                                <ContextMenuItem onClick={() => setExportDialogConnectionId(openConn.connectionId)}>
+                                                    <FileDown className="h-3.5 w-3.5" /> Export…
+                                                </ContextMenuItem>
+                                                <ContextMenuItem onClick={() => disconnect(openConn.connectionId)} className="text-destructive focus:text-destructive">
+                                                    <Unplug className="h-3.5 w-3.5" /> Disconnect
+                                                </ContextMenuItem>
+                                            </ContextMenuContent>
+                                        </ContextMenu>
+                                    );
+                                }
+                                return (
+                                    <button
+                                        key={saved.id}
+                                        type="button"
+                                        onClick={() => connect(saved.connection_string, saved.id, saved.name)}
+                                        className="flex w-full items-center gap-1.5 py-[4px] pr-2 text-[11px] text-left rounded-md text-muted-foreground/60 hover:text-foreground/80 hover:bg-white/[0.04] transition-all"
+                                        style={{ paddingLeft: LEAF_INDENT + 8 }}
+                                    >
+                                        <span className="w-0.5 h-3 rounded-full bg-transparent shrink-0" />
+                                        <Unplug className="h-3 w-3 shrink-0 text-muted-foreground/40" />
+                                        <span className="truncate flex-1">{saved.name}</span>
+                                        <span className="text-[9px] text-muted-foreground/35">Connect</span>
+                                    </button>
+                                );
+                            })}
+                            {connections.filter((c) => !c.savedConnectionId).map((conn) => {
+                                const isActive = conn.connectionId === activeConnectionId;
+                                return (
+                                    <ContextMenu key={conn.connectionId}>
+                                        <ContextMenuTrigger asChild>
+                                            <button
+                                                type="button"
+                                                onClick={() => setActiveConnection(conn.connectionId)}
+                                                className={cn(
+                                                    "flex w-full items-center gap-1.5 py-[4px] pr-2 text-[11px] text-left rounded-md transition-all hover:bg-white/[0.04]",
+                                                    isActive ? "bg-primary/10 text-primary" : "text-muted-foreground/70 hover:text-foreground/85"
+                                                )}
+                                                style={{ paddingLeft: LEAF_INDENT + 8 }}
+                                            >
+                                                <span className={cn("w-0.5 h-3 rounded-full shrink-0", isActive ? "bg-primary" : "bg-transparent")} />
+                                                <CircleDot className="h-3 w-3 shrink-0 text-emerald-400/80" />
+                                                <span className="truncate flex-1">{conn.label}</span>
+                                                {isActive && <span className="text-[9px] text-primary/80 font-medium shrink-0">Active</span>}
+                                                <span className="text-[9px] font-mono text-muted-foreground/40 truncate max-w-[80px]">{conn.databaseName}</span>
+                                            </button>
+                                        </ContextMenuTrigger>
+                                        <ContextMenuContent className="w-48">
+                                            {!isActive && (
+                                                <ContextMenuItem onClick={() => setActiveConnection(conn.connectionId)}>
+                                                    <CircleDot className="h-3.5 w-3.5" /> Set as active
+                                                </ContextMenuItem>
+                                            )}
+                                            <ContextMenuItem onClick={() => setExportDialogConnectionId(conn.connectionId)}>
+                                                <FileDown className="h-3.5 w-3.5" /> Export…
+                                            </ContextMenuItem>
+                                            <ContextMenuItem onClick={() => disconnect(conn.connectionId)} className="text-destructive focus:text-destructive">
+                                                <Unplug className="h-3.5 w-3.5" /> Disconnect
+                                            </ContextMenuItem>
+                                        </ContextMenuContent>
+                                    </ContextMenu>
+                                );
+                            })}
+                            <button
+                                type="button"
+                                onClick={() => onOpenConnectionDialog?.()}
+                                className="flex w-full items-center gap-1.5 py-[4px] pr-2 text-[10px] text-emerald-400/50 hover:text-emerald-400 hover:bg-emerald-500/[0.06] rounded-md transition-all"
+                                style={{ paddingLeft: LEAF_INDENT + 8 }}
+                            >
+                                <span className="w-0.5 h-3 rounded-full bg-transparent shrink-0" />
+                                <Plus className="h-2.5 w-2.5 shrink-0" />
+                                <span>New connection</span>
+                            </button>
+                        </div>
+                    )}
+
                     <div className="flex items-center gap-1.5">
                         <div ref={dbPickerRef} className="relative flex-1 min-w-0">
                             <button
@@ -835,7 +1033,8 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
                                     type="button"
                                     onClick={handleRefresh}
                                     disabled={isLoadingSchemas || isSwitchingDatabase}
-                                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] text-muted-foreground/40 hover:text-foreground/80 hover:bg-white/[0.06] hover:border-white/[0.09] transition-all disabled:opacity-30 shrink-0"
+                                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] text-muted-foreground/40 hover:text-foreground/80 hover:bg-white/[0.06] hover:border-white/[0.09] transition-all disabled:opacity-30 shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                                    aria-label="Refresh schema tree"
                                 >
                                     <RefreshCw className={cn("h-3.5 w-3.5", isLoadingSchemas && "animate-spin")} />
                                 </button>
@@ -856,7 +1055,8 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
                             <button
                                 type="button"
                                 onClick={() => setSearch("")}
-                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/30 hover:text-muted-foreground/70 transition-colors"
+                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/30 hover:text-muted-foreground/70 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+                                aria-label="Clear filter"
                             >
                                 <X className="h-3 w-3" />
                             </button>
@@ -898,7 +1098,7 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
                                 </p>
                             </div>
                         ) : (
-                            <div className="space-y-0.5">
+                            <div className="space-y-0.5" role="tree" aria-label="Schema tree">
                                 <TreeNode
                                     icon={Zap}
                                     label="Event Triggers"
@@ -920,7 +1120,7 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
                                                 <span className="text-[10px] text-destructive/80 truncate max-w-[130px]">{eventTriggersError ?? "Failed to load"}</span>
                                                 <button
                                                     type="button"
-                                                    onClick={() => void loadEventTriggers(true)}
+                                                    onClick={() => void loadEventTriggers(undefined, true)}
                                                     className="h-5 px-1.5 rounded border border-destructive/30 text-[10px] text-destructive/80 hover:bg-destructive/10"
                                                 >
                                                     Retry
@@ -1171,7 +1371,7 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
                                                                             </span>
                                                                             <button
                                                                                 type="button"
-                                                                                onClick={() => void loadSchemaFunctions(schemaName, true)}
+                                                                                onClick={() => void loadSchemaFunctions(schemaName, undefined, true)}
                                                                                 className="h-5 px-1.5 rounded border border-destructive/30 text-[10px] text-destructive/80 hover:bg-destructive/10"
                                                                             >
                                                                                 Retry
@@ -1238,7 +1438,7 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
                                                                             </span>
                                                                             <button
                                                                                 type="button"
-                                                                                onClick={() => void loadSchemaFunctions(schemaName, true)}
+                                                                                onClick={() => void loadSchemaFunctions(schemaName, undefined, true)}
                                                                                 className="h-5 px-1.5 rounded border border-destructive/30 text-[10px] text-destructive/80 hover:bg-destructive/10"
                                                                             >
                                                                                 Retry
@@ -1307,7 +1507,7 @@ export function Sidebar({ onSelectObject }: { onSelectObject?: () => void } = {}
                                                                             </span>
                                                                             <button
                                                                                 type="button"
-                                                                                onClick={() => void loadSchemaTypes(schemaName, true)}
+                                                                                onClick={() => void loadSchemaTypes(schemaName, undefined, true)}
                                                                                 className="h-5 px-1.5 rounded border border-destructive/30 text-[10px] text-destructive/80 hover:bg-destructive/10"
                                                                             >
                                                                                 Retry

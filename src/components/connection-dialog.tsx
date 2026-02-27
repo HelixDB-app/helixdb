@@ -94,14 +94,20 @@ export function ConnectionDialog({ open, onOpenChange }: ConnectionDialogProps) 
     const [justConnected, setJustConnected] = useState(false);
 
     const wasConnecting = useRef(false);
+    const contentRef = useRef<HTMLDivElement>(null);
 
-    // Load recent connections on open
+    // Load recent connections and focus first field on open
     useEffect(() => {
         if (open) {
             setRecentConnections(getRecentConnections());
             clearError();
+            const t = setTimeout(() => {
+                const firstInput = contentRef.current?.querySelector<HTMLInputElement>("input");
+                firstInput?.focus();
+            }, 50);
+            return () => clearTimeout(t);
         }
-    }, [open, clearError]);
+    }, [open]);
 
     // Auto-close after successful connection
     useEffect(() => {
@@ -184,7 +190,7 @@ export function ConnectionDialog({ open, onOpenChange }: ConnectionDialogProps) 
                     </div>
                 </DialogHeader>
 
-                <div className="px-6 py-4 space-y-4">
+                <div ref={contentRef} className="px-6 py-4 space-y-4">
                     {/* Connection mode toggle */}
                     <div className="flex items-center gap-1 rounded-lg bg-muted/50 p-1">
                         <button
@@ -272,10 +278,11 @@ export function ConnectionDialog({ open, onOpenChange }: ConnectionDialogProps) 
                                 onChange={(e) => setUriValue(e.target.value)}
                                 onKeyDown={handleKeyDown}
                                 placeholder="postgres://user:password@host:5432/dbname"
-                                className="font-mono text-xs h-10 bg-background/50 border-border/50 focus:border-emerald-500/50 transition-colors"
+                                className="font-mono text-xs h-10 bg-background/50 border-border/50 focus:border-emerald-500/50 focus-visible:ring-2 focus-visible:ring-ring transition-colors"
                                 disabled={isConnecting}
                                 autoComplete="off"
                                 spellCheck={false}
+                                aria-label="Connection string"
                             />
                         </div>
                     )}
@@ -285,13 +292,14 @@ export function ConnectionDialog({ open, onOpenChange }: ConnectionDialogProps) 
                         <div className="space-y-3">
                             <div className="grid grid-cols-3 gap-2">
                                 <div className="col-span-2 space-y-1.5">
-                                    <label className="text-xs text-muted-foreground">Host</label>
+                                    <label className="text-xs text-muted-foreground" id="connection-host-label">Host</label>
                                     <Input
                                         value={host}
                                         onChange={(e) => setHost(e.target.value)}
                                         placeholder="localhost"
-                                        className="h-9 text-sm bg-background/50 border-border/50 focus:border-emerald-500/50"
+                                        className="h-9 text-sm bg-background/50 border-border/50 focus:border-emerald-500/50 focus-visible:ring-2 focus-visible:ring-ring"
                                         disabled={isConnecting}
+                                        aria-labelledby="connection-host-label"
                                     />
                                 </div>
                                 <div className="space-y-1.5">

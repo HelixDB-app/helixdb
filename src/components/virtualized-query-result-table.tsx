@@ -38,17 +38,27 @@ function ResultCell({
     }, [cell.type, formatted]);
 
     return (
-        <div
+        <button
+            type="button"
+            role="gridcell"
             className={cn(
-                "px-3 py-1.5 font-mono truncate cursor-pointer hover:bg-accent/30 border-r border-border/20 last:border-r-0",
+                "w-full text-left px-3 py-1.5 font-mono truncate cursor-pointer hover:bg-accent/30 border-r border-border/20 last:border-r-0",
+                "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                 compact ? "text-xs max-w-[200px]" : "text-xs max-w-xs",
                 cell.type === "Null" && "text-muted-foreground/30 italic"
             )}
             title={formatted}
             onClick={handleCopy}
+            onKeyDown={(e) => {
+                if (e.key === "Enter" || e.key === " ") {
+                    e.preventDefault();
+                    handleCopy();
+                }
+            }}
+            aria-label={cell.type === "Null" ? "Null" : `Copy value: ${formatted}`}
         >
             {formatted}
-        </div>
+        </button>
     );
 }
 
@@ -89,21 +99,27 @@ function VirtualizedQueryResultTableInner({
 
     return (
         <div
+            role="grid"
+            aria-label="Query result"
+            aria-rowcount={count}
+            aria-colcount={columns.length + (showRowIndex ? 1 : 0)}
             className={cn("flex flex-col border rounded-md bg-background overflow-hidden", className)}
             style={maxHeight ? { maxHeight } : { height: "100%" }}
         >
             <div
+                role="row"
                 className="sticky top-0 z-10 grid bg-muted/60 border-b border-border/30 shrink-0 text-xs font-semibold"
                 style={{ gridTemplateColumns: gridCols }}
             >
                 {showRowIndex && (
-                    <div className="px-3 py-2 text-center text-[10px] font-mono text-muted-foreground/50 border-r border-border/20">
+                    <div role="columnheader" className="px-3 py-2 text-center text-[10px] font-mono text-muted-foreground/50 border-r border-border/20">
                         #
                     </div>
                 )}
                 {columns.map((col) => (
                     <div
                         key={col.name}
+                        role="columnheader"
                         className="px-3 py-2 whitespace-nowrap border-r border-border/20 last:border-r-0"
                     >
                         <span>{col.name}</span>
@@ -128,6 +144,8 @@ function VirtualizedQueryResultTableInner({
                         return (
                             <div
                                 key={virtualRow.key}
+                                role="row"
+                                aria-rowindex={virtualRow.index + 1}
                                 className="grid absolute left-0 w-full border-b border-border/20 hover:bg-accent/30 transition-colors"
                                 style={{
                                     height: `${virtualRow.size}px`,

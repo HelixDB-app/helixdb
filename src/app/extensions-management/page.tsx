@@ -795,7 +795,7 @@ export default function ExtensionsManagementPage() {
                             variant="ghost"
                             size="sm"
                             className="h-7 px-2.5 text-xs text-muted-foreground hover:text-foreground"
-                            onClick={() => disconnect()}
+                            onClick={() => connectionId && disconnect(connectionId)}
                         >
                             Disconnect
                         </Button>

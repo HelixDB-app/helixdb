@@ -1,4 +1,4 @@
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::account_security_storage;
 use crate::connections_storage::{self, SavedConnection};
@@ -33,13 +33,19 @@ impl AppState {
     }
 }
 
-/// Connect to a PostgreSQL database
+/// Connect to a PostgreSQL database.
+/// If `connection_id` is provided and not already connected, it is used (e.g. for reconnecting a saved connection);
+/// otherwise a new UUID is generated.
 #[tauri::command]
 pub async fn db_connect(
     state: State<'_, AppState>,
     connection_string: String,
+    connection_id: Option<String>,
 ) -> Result<ConnectionResponse, String> {
-    let connection_id = uuid::Uuid::new_v4().to_string();
+    let connection_id = connection_id
+        .filter(|id| !id.is_empty())
+        .filter(|id| !state.conn_manager.is_connected(id))
+        .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
     state
         .conn_manager
@@ -301,6 +307,27 @@ pub async fn db_get_table_data(
     .await
 }
 
+/// Get table data with geometry columns as GeoJSON for map view. Limit capped at 10000.
+#[tauri::command]
+pub async fn db_get_table_data_geojson(
+    state: State<'_, AppState>,
+    connection_id: String,
+    schema: String,
+    table: String,
+    geometry_column_names: Vec<String>,
+    limit: u32,
+) -> Result<QueryResult, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::get_table_data_geojson(
+        &pool,
+        &schema,
+        &table,
+        geometry_column_names,
+        limit,
+    )
+    .await
+}
+
 /// Execute a raw SQL query
 #[tauri::command]
 pub async fn db_execute_query(
@@ -391,6 +418,20 @@ pub async fn db_execute_query(
             Err(err)
         }
     }
+}
+
+/// Export database to SQL file. Emits "db-export-progress" events during export.
+#[tauri::command]
+pub async fn db_export_sql(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    request: ExportRequest,
+) -> Result<ExportResult, String> {
+    let pool = state.conn_manager.get_pool(&request.connection_id)?;
+    let progress = |payload: ExportProgressPayload| {
+        let _ = app.emit("db-export-progress", &payload);
+    };
+    queries::run_sql_export(&pool, &request, progress).await
 }
 
 /// List all databases on the connected server
@@ -1618,4 +1659,16 @@ pub async fn query_history_export_csv(
     })
     .await
     .map_err(|e| format!("Query history CSV export worker failed: {}", e))?
+}
+
+/// Open the given path in the system file manager (e.g. reveal in Finder). Pass a file path to open its parent folder.
+#[tauri::command]
+pub async fn open_path(path: String) -> Result<(), String> {
+    let path = std::path::Path::new(&path);
+    let to_open = if path.is_file() {
+        path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| path.to_path_buf())
+    } else {
+        path.to_path_buf()
+    };
+    opener::open(to_open).map_err(|e| format!("Failed to open path: {}", e))
 }

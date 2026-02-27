@@ -640,3 +640,62 @@ pub struct TopologyData {
     pub nodes: Vec<TopologyNode>,
     pub edges: Vec<TopologyEdge>,
 }
+
+// ─── SQL Export ─────────────────────────────────────────────────────────────────
+
+/// What to include in the SQL export.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExportContentType {
+    StructureOnly,
+    DataOnly,
+    StructureAndData,
+}
+
+/// Schema and table pair for export target.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportTableRef {
+    pub schema: String,
+    pub table: String,
+}
+
+/// Request for db_export_sql. Tables list is explicit; columns/where use "schema.table" keys.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportRequest {
+    pub connection_id: String,
+    /// Schemas to consider (used when resolving "all tables in schemas" on frontend).
+    pub schemas: Vec<String>,
+    /// Explicit list of (schema, table) to export.
+    pub tables: Vec<ExportTableRef>,
+    pub content_type: ExportContentType,
+    pub compress: bool,
+    /// Optional column whitelist per table. Key: "schema.table", value: column names.
+    #[serde(default)]
+    pub columns: Option<std::collections::HashMap<String, Vec<String>>>,
+    /// Optional WHERE clause per table. Key: "schema.table". Value: SQL expression (validated on backend).
+    #[serde(default)]
+    pub where_clause: Option<std::collections::HashMap<String, String>>,
+    /// If set, write to this path; otherwise temp dir.
+    #[serde(default)]
+    pub output_path: Option<String>,
+}
+
+/// Result of a successful export.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportResult {
+    pub output_path: String,
+    pub bytes_written: u64,
+}
+
+/// Progress event payload for db-export-progress.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExportProgressPayload {
+    pub phase: String, // "schema" | "table" | "rows"
+    pub message: String,
+    pub current: u32,
+    pub total: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub table: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub rows_exported: Option<u64>,
+}

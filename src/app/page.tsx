@@ -2,8 +2,11 @@
 
 import Link from "next/link";
 import Image from "next/image";
+import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useConnectionStore } from "@/stores/connection-store";
+import { useShortcutsStore } from "@/stores/shortcuts-store";
+import { eventMatchesCombo, formatShortcut } from "@/lib/shortcut-keys";
 import { APP_NAME } from "@/lib/app-config";
 import { LandingConnections } from "@/components/landing-connections";
 import { WelcomeScreen } from "@/components/welcome-screen";
@@ -23,6 +26,7 @@ import {
     ResizablePanel,
     ResizablePanelGroup,
 } from "@/components/ui/resizable";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import {
     Tooltip,
@@ -49,8 +53,10 @@ import {
 } from "lucide-react";
 
 export default function Home() {
+    const router = useRouter();
     const {
         isConnected,
+        connectionId,
         disconnect,
         databaseName,
         serverVersion,
@@ -58,6 +64,7 @@ export default function Home() {
         refreshAll,
         isRefreshingAll,
     } = useConnectionStore();
+    const getCombo = useShortcutsStore((s) => s.getCombo);
     const [showConnectionDialog, setShowConnectionDialog] = useState(false);
     const [activeView, setActiveView] = useState<"data" | "query" | "sessions" | "indexes" | "topology" | "ai">("data");
     const [searchOpen, setSearchOpen] = useState(false);
@@ -75,57 +82,88 @@ export default function Home() {
         setShowWelcome(false);
     };
 
-    // Global ⌘K / Ctrl+K shortcut
+    // Global keyboard shortcuts (configurable via Settings → Shortcuts)
     useEffect(() => {
         const handler = (e: KeyboardEvent) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "k") {
+            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target as HTMLElement)?.isContentEditable) return;
+            const actions: Array<{ id: string; combo: string }> = [
+                { id: "search", combo: getCombo("search") },
+                { id: "settings", combo: getCombo("settings") },
+                { id: "refresh", combo: getCombo("refresh") },
+                { id: "view_data", combo: getCombo("view_data") },
+                { id: "view_query", combo: getCombo("view_query") },
+                { id: "view_sessions", combo: getCombo("view_sessions") },
+                { id: "view_indexes", combo: getCombo("view_indexes") },
+                { id: "view_topology", combo: getCombo("view_topology") },
+                { id: "view_ai", combo: getCombo("view_ai") },
+                { id: "disconnect", combo: getCombo("disconnect") },
+                { id: "query_history", combo: getCombo("query_history") },
+                { id: "extensions", combo: getCombo("extensions") },
+                { id: "bug_report", combo: getCombo("bug_report") },
+                { id: "connect", combo: getCombo("connect") },
+            ];
+            for (const { id, combo } of actions) {
+                if (!combo || !eventMatchesCombo(e, combo)) continue;
                 e.preventDefault();
-                setSearchOpen(true);
+                e.stopPropagation();
+                switch (id) {
+                    case "search":
+                        if (isConnected) setSearchOpen(true);
+                        else setShowConnectionDialog(true);
+                        break;
+                    case "settings":
+                        setSettingsOpen(true);
+                        break;
+                    case "refresh":
+                        if (isConnected) refreshAll();
+                        break;
+                    case "view_data":
+                        if (isConnected) setActiveView("data");
+                        break;
+                    case "view_query":
+                        if (isConnected) setActiveView("query");
+                        break;
+                    case "view_sessions":
+                        if (isConnected) setActiveView("sessions");
+                        break;
+                    case "view_indexes":
+                        if (isConnected) setActiveView("indexes");
+                        break;
+                    case "view_topology":
+                        if (isConnected) setActiveView("topology");
+                        break;
+                    case "view_ai":
+                        if (isConnected) setActiveView("ai");
+                        break;
+                    case "disconnect":
+                        if (isConnected && connectionId) disconnect(connectionId);
+                        break;
+                    case "query_history":
+                        router.push("/query-history");
+                        break;
+                    case "extensions":
+                        router.push("/extensions-management");
+                        break;
+                    case "bug_report":
+                        router.push("/bug-report");
+                        break;
+                    case "connect":
+                        if (!isConnected) setShowConnectionDialog(true);
+                        break;
+                    default:
+                        break;
+                }
+                break;
             }
         };
         window.addEventListener("keydown", handler);
         return () => window.removeEventListener("keydown", handler);
-    }, []);
-
-    // Global ⌘, / Ctrl+, shortcut for settings
-    useEffect(() => {
-        const handler = (e: KeyboardEvent) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === ",") {
-                e.preventDefault();
-                setSettingsOpen(true);
-            }
-        };
-        window.addEventListener("keydown", handler);
-        return () => window.removeEventListener("keydown", handler);
-    }, []);
-
-    // Global ⌘⇧R / Ctrl+Shift+R — refresh all (schemas, databases, current table)
-    useEffect(() => {
-        const handler = (e: KeyboardEvent) => {
-            if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key.toLowerCase() === "r") {
-                e.preventDefault();
-                if (isConnected) refreshAll();
-            }
-        };
-        window.addEventListener("keydown", handler);
-        return () => window.removeEventListener("keydown", handler);
-    }, [isConnected, refreshAll]);
-
-    // Global ⌘J / Ctrl+J — switch to AI tab
-    useEffect(() => {
-        const handler = (e: KeyboardEvent) => {
-            if ((e.metaKey || e.ctrlKey) && e.key === "j") {
-                e.preventDefault();
-                if (isConnected) setActiveView("ai");
-            }
-        };
-        window.addEventListener("keydown", handler);
-        return () => window.removeEventListener("keydown", handler);
-    }, [isConnected]);
+    }, [isConnected, connectionId, disconnect, refreshAll, getCombo, router]);
 
     const pgVersion = serverVersion
         ? serverVersion.match(/PostgreSQL\s+([\d.]+)/i)?.[1] ?? ""
         : "";
+    const sc = (id: Parameters<typeof getCombo>[0]) => formatShortcut(getCombo(id));
 
     // Landing: saved connections list + quick connect
     if (!isConnected) {
@@ -145,7 +183,8 @@ export default function Home() {
                 <div className="flex items-center gap-2.5">
                     <button
                         onClick={() => !isConnected && setShowConnectionDialog(true)}
-                        className="flex items-center gap-2 group"
+                        className="flex items-center gap-2 group focus-ring rounded-md"
+                        aria-label={isConnected ? `${APP_NAME} home` : "Connect to database"}
                     >
                         <Image
                             src="/logo.png"
@@ -192,20 +231,21 @@ export default function Home() {
                                     className="h-7 gap-1.5 px-2.5 text-xs text-muted-foreground/60 hover:text-foreground border border-border/20 hover:border-border/40 bg-muted/20 hover:bg-muted/40 transition-all"
                                     onClick={() => refreshAll()}
                                     disabled={isRefreshingAll}
+                                    aria-label={isRefreshingAll ? "Refreshing" : "Refresh"}
                                 >
                                     <RefreshCw
                                         className={cn("h-3 w-3", isRefreshingAll && "animate-spin")}
                                     />
-                                    <span className="hidden sm:inline">
+                                    {/* <span className="hidden sm:inline">
                                         {isRefreshingAll ? "Refreshing…" : "Refresh"}
                                     </span>
                                     <kbd className="hidden sm:inline-flex h-4 items-center rounded border border-border/30 bg-muted/40 px-1 font-mono text-[9px] text-muted-foreground/40 ml-0.5">
                                         ⌘⇧R
-                                    </kbd>
+                                    </kbd> */}
                                 </Button>
                             </TooltipTrigger>
                             <TooltipContent>
-                                Refresh current table and metadata (⌘⇧R)
+                                Refresh current table and metadata{sc("refresh") && ` (${sc("refresh")})`}
                             </TooltipContent>
                         </Tooltip>
                     )}
@@ -218,83 +258,52 @@ export default function Home() {
                                     size="sm"
                                     className="h-7 gap-1.5 px-2.5 text-xs text-muted-foreground/60 hover:text-foreground border border-border/20 hover:border-border/40 bg-muted/20 hover:bg-muted/40 transition-all"
                                     onClick={() => setSearchOpen(true)}
+                                    aria-label="Open search"
                                 >
                                     <Search className="h-3 w-3" />
                                     <span className="hidden sm:inline">Search</span>
-                                    <kbd className="hidden sm:inline-flex h-4 items-center rounded border border-border/30 bg-muted/40 px-1 font-mono text-[9px] text-muted-foreground/40 ml-0.5">
-                                        ⌘K
-                                    </kbd>
+                                    {sc("search") && (
+                                        <kbd className="hidden sm:inline-flex h-4 items-center rounded border border-border/30 bg-muted/40 px-1 font-mono text-[9px] text-muted-foreground/40 ml-0.5">
+                                            {sc("search")}
+                                        </kbd>
+                                    )}
                                 </Button>
                             </TooltipTrigger>
                             <TooltipContent>
-                                Search tables, columns, run SQL (⌘K)
+                                Search tables, columns, run SQL{sc("search") && ` (${sc("search")})`}
                             </TooltipContent>
                         </Tooltip>
                     )}
 
                     {isConnected && (
-                        <div className="flex items-center rounded-md bg-muted/40 p-0.5">
-                            <button
-                                className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-all ${activeView === "data"
-                                    ? "bg-background text-foreground shadow-sm"
-                                    : "text-muted-foreground hover:text-foreground"
-                                    }`}
-                                onClick={() => setActiveView("data")}
-                            >
-                                <Table2 className="h-3 w-3" />
-                                Data
-                            </button>
-                            <button
-                                className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-all ${activeView === "query"
-                                    ? "bg-background text-foreground shadow-sm"
-                                    : "text-muted-foreground hover:text-foreground"
-                                    }`}
-                                onClick={() => setActiveView("query")}
-                            >
-                                <Terminal className="h-3 w-3" />
-                                Query
-                            </button>
-                            <button
-                                className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-all ${activeView === "sessions"
-                                    ? "bg-background text-foreground shadow-sm"
-                                    : "text-muted-foreground hover:text-foreground"
-                                    }`}
-                                onClick={() => setActiveView("sessions")}
-                            >
-                                <Activity className="h-3 w-3" />
-                                Sessions
-                            </button>
-                            <button
-                                className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-all ${activeView === "indexes"
-                                    ? "bg-background text-foreground shadow-sm"
-                                    : "text-muted-foreground hover:text-foreground"
-                                    }`}
-                                onClick={() => setActiveView("indexes")}
-                            >
-                                <Layers className="h-3 w-3" />
-                                Indexes
-                            </button>
-                            <button
-                                className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-all ${activeView === "topology"
-                                    ? "bg-background text-foreground shadow-sm"
-                                    : "text-muted-foreground hover:text-foreground"
-                                    }`}
-                                onClick={() => setActiveView("topology")}
-                            >
-                                <Network className="h-3 w-3" />
-                                Topology
-                            </button>
-                            <button
-                                className={`flex items-center gap-1.5 rounded px-2.5 py-1 text-xs font-medium transition-all ${activeView === "ai"
-                                    ? "bg-background text-foreground shadow-sm"
-                                    : "text-muted-foreground hover:text-foreground"
-                                    }`}
-                                onClick={() => setActiveView("ai")}
-                            >
-                                <Sparkles className="h-3 w-3" />
-                                AI
-                            </button>
-                        </div>
+                        <Tabs value={activeView} onValueChange={(v) => setActiveView(v as typeof activeView)}>
+                            <TabsList aria-label="View tabs" className="h-8 rounded-md bg-muted/40 p-0.5">
+                                <TabsTrigger value="data" title={sc("view_data") ? `Data (${sc("view_data")})` : "Data"}>
+                                    <Table2 className="h-3 w-3" />
+                                    Data
+                                </TabsTrigger>
+                                <TabsTrigger value="query" title={sc("view_query") ? `Query (${sc("view_query")})` : "Query"}>
+                                    <Terminal className="h-3 w-3" />
+                                    Query
+                                </TabsTrigger>
+                                <TabsTrigger value="sessions" title={sc("view_sessions") ? `Sessions (${sc("view_sessions")})` : "Sessions"}>
+                                    <Activity className="h-3 w-3" />
+                                    Sessions
+                                </TabsTrigger>
+                                <TabsTrigger value="indexes" title={sc("view_indexes") ? `Indexes (${sc("view_indexes")})` : "Indexes"}>
+                                    <Layers className="h-3 w-3" />
+                                    Indexes
+                                </TabsTrigger>
+                                <TabsTrigger value="topology" title={sc("view_topology") ? `Topology (${sc("view_topology")})` : "Topology"}>
+                                    <Network className="h-3 w-3" />
+                                    Topology
+                                </TabsTrigger>
+                                <TabsTrigger value="ai" title={sc("view_ai") ? `AI chat (${sc("view_ai")})` : "AI"}>
+                                    <Sparkles className="h-3 w-3" />
+                                    AI
+                                </TabsTrigger>
+                            </TabsList>
+                        </Tabs>
                     )}
 
                     {isConnected ? (
@@ -304,13 +313,16 @@ export default function Home() {
                                     variant="ghost"
                                     size="sm"
                                     className="h-7 px-2 gap-1.5 text-muted-foreground hover:text-foreground text-xs"
-                                    onClick={() => disconnect()}
+                                    onClick={() => connectionId && disconnect(connectionId)}
+                                    aria-label="Disconnect from database"
                                 >
                                     <Unplug className="h-3.5 w-3.5" />
                                     Disconnect
                                 </Button>
                             </TooltipTrigger>
-                            <TooltipContent>Disconnect from database</TooltipContent>
+                            <TooltipContent>
+                                Disconnect from database{sc("disconnect") && ` (${sc("disconnect")})`}
+                            </TooltipContent>
                         </Tooltip>
                     ) : (
                         <Tooltip>
@@ -320,11 +332,14 @@ export default function Home() {
                                     size="icon"
                                     className="h-7 w-7"
                                     onClick={() => setShowConnectionDialog(true)}
+                                    aria-label="Connect to database"
                                 >
                                     <PlugZap className="h-4 w-4 text-emerald-400" />
                                 </Button>
                             </TooltipTrigger>
-                            <TooltipContent>Connect to database</TooltipContent>
+                            <TooltipContent>
+                                Connect to database{sc("connect") && ` (${sc("connect")})`}
+                            </TooltipContent>
                         </Tooltip>
                     )}
 
@@ -338,11 +353,13 @@ export default function Home() {
                             >
                                 <Link href="/query-history">
                                     <Clock3 className="h-3.5 w-3.5" />
-                                    <span className="hidden sm:inline">Query History</span>
+                                    {/* <span className="hidden sm:inline">Query History</span> */}
                                 </Link>
                             </Button>
                         </TooltipTrigger>
-                        <TooltipContent>Open Query History & Performance Intelligence</TooltipContent>
+                        <TooltipContent>
+                            Open Query History & Performance Intelligence{sc("query_history") && ` (${sc("query_history")})`}
+                        </TooltipContent>
                     </Tooltip>
 
                     <Tooltip>
@@ -355,11 +372,13 @@ export default function Home() {
                             >
                                 <Link href="/extensions-management">
                                     <ShieldCheck className="h-3.5 w-3.5" />
-                                    <span className="hidden sm:inline">Extensions</span>
+                                    {/* <span className="hidden sm:inline">Extensions</span> */}
                                 </Link>
                             </Button>
                         </TooltipTrigger>
-                        <TooltipContent>Open Extensions & User Management</TooltipContent>
+                        <TooltipContent>
+                            Open Extensions & User Management{sc("extensions") && ` (${sc("extensions")})`}
+                        </TooltipContent>
                     </Tooltip>
 
                     <Tooltip>
@@ -372,11 +391,13 @@ export default function Home() {
                             >
                                 <Link href="/bug-report">
                                     <Bug className="h-3.5 w-3.5" />
-                                    <span className="hidden sm:inline">Report Bug</span>
+                                        {/* <span className="hidden sm:inline">Report Bug</span> */}
                                 </Link>
                             </Button>
                         </TooltipTrigger>
-                        <TooltipContent>Submit feedback and bug reports</TooltipContent>
+                        <TooltipContent>
+                            Submit feedback and bug reports{sc("bug_report") && ` (${sc("bug_report")})`}
+                        </TooltipContent>
                     </Tooltip>
 
                     <Tooltip>
@@ -386,29 +407,33 @@ export default function Home() {
                                 size="icon"
                                 className="h-7 w-7 text-muted-foreground/60 hover:text-foreground"
                                 onClick={() => setSettingsOpen(true)}
+                                aria-label="Open settings"
                             >
                                 <Settings className="h-3.5 w-3.5" />
                             </Button>
                         </TooltipTrigger>
-                        <TooltipContent>Settings (⌘,)</TooltipContent>
+                        <TooltipContent>
+                            Settings{sc("settings") && ` (${sc("settings")})`}
+                        </TooltipContent>
                     </Tooltip>
                 </div>
             </header>
 
             {/* Main content */}
-            <div className="flex-1 overflow-hidden">
+            <main id="main" className="flex-1 overflow-hidden" tabIndex={-1} aria-label="Main content">
                 {isConnected ? (
                     <ResizablePanelGroup orientation="horizontal">
                         <ResizablePanel defaultSize={20} minSize={14} maxSize={300}>
                             <Sidebar
                                 onSelectObject={() => setActiveView("data")}
+                                onOpenConnectionDialog={() => setShowConnectionDialog(true)}
                             />
                         </ResizablePanel>
 
                         <ResizableHandle className="w-px bg-border/20 hover:bg-emerald-500/40 transition-colors data-[resize-handle-active]:bg-emerald-500/60" />
 
                         <ResizablePanel defaultSize={80}>
-                            <div className="h-full">
+                            <div className="h-full" role="tabpanel" tabIndex={0} aria-label="Active view content">
                                 {activeView === "data" && <DataTable />}
                                 {activeView === "query" && <QueryEditor />}
                                 {activeView === "sessions" && <SessionMonitor />}
@@ -421,7 +446,7 @@ export default function Home() {
                         </ResizablePanel>
                     </ResizablePanelGroup>
                 ) : null}
-            </div>
+            </main>
 
             <StatusBar />
 

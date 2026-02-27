@@ -42,13 +42,16 @@ import type {
     PgStatStatementsFilter,
     PgStatStatementsPage,
 } from "./types";
+import type { ExportRequest, ExportResult } from "./export-types";
 
-/** Connect to a PostgreSQL database */
+/** Connect to a PostgreSQL database. Pass optional connectionId (e.g. saved connection id) to reuse it. */
 export async function dbConnect(
-    connectionString: string
+    connectionString: string,
+    connectionId?: string | null
 ): Promise<ConnectionResponse> {
     return invoke<ConnectionResponse>("db_connect", {
         connectionString,
+        connectionId: connectionId ?? undefined,
     });
 }
 
@@ -139,12 +142,36 @@ export async function dbGetTableData(
     });
 }
 
+/** Get table data with geometry columns as GeoJSON for map view */
+export async function dbGetTableDataGeojson(
+    connectionId: string,
+    schema: string,
+    table: string,
+    geometryColumnNames: string[],
+    limit: number
+): Promise<QueryResult> {
+    return invoke<QueryResult>("db_get_table_data_geojson", {
+        connectionId,
+        schema,
+        table,
+        geometryColumnNames,
+        limit,
+    });
+}
+
 /** Execute a raw SQL query */
 export async function dbExecuteQuery(
     connectionId: string,
     sql: string
 ): Promise<QueryResult> {
     return invoke<QueryResult>("db_execute_query", { connectionId, sql });
+}
+
+/** Export database to SQL file. Progress via "db-export-progress" event. */
+export async function dbExportSql(
+    request: ExportRequest
+): Promise<ExportResult> {
+    return invoke<ExportResult>("db_export_sql", { request });
 }
 
 /** Refresh the metadata cache */
@@ -1007,6 +1034,11 @@ export async function queryHistoryExportCsv(
     filter: QueryHistoryFilter
 ): Promise<string> {
     return invoke<string>("query_history_export_csv", { filter });
+}
+
+/** Open a path in the system file manager (e.g. reveal file's parent folder in Finder). */
+export async function openPath(path: string): Promise<void> {
+    return invoke<void>("open_path", { path });
 }
 
 // ─── Query Notes (persisted via Rust core engine) ─────────────────────────
