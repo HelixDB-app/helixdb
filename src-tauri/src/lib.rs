@@ -121,6 +121,8 @@ pub fn run() {
             commands::query_history_save_note,
             commands::query_history_export_csv,
             commands::open_path,
+            commands::app_log_write,
+            commands::app_log_path,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

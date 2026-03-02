@@ -6,6 +6,8 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { FirebaseProvider } from "@/components/firebase-provider";
 import { NotificationProvider } from "@/components/notification-provider";
 import { NetworkStatusProvider } from "@/components/network-status-provider";
+import { AppDebugLogger } from "@/components/app-debug-logger";
+import { AppSplash } from "@/components/app-splash";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { APP_NAME, APP_TAGLINE } from "@/lib/app-config";
 import "./globals.css";
@@ -37,6 +39,8 @@ export default function RootLayout({
       <body
         className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased`}
       >
+        <AppSplash />
+        <AppDebugLogger />
         <a
           href="#main"
           className="focus-ring fixed left-2 top-2 z-[100] rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground opacity-0 transition-opacity focus-visible:opacity-100"

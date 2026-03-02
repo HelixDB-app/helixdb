@@ -1,3 +1,4 @@
+use std::io::Write;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::account_security_storage;
@@ -1671,4 +1672,29 @@ pub async fn open_path(path: String) -> Result<(), String> {
         path.to_path_buf()
     };
     opener::open(to_open).map_err(|e| format!("Failed to open path: {}", e))
+}
+
+/// Append a line to the app debug log (for TestFlight / support). Log file: App Support/com.pgstudio.helixdb/app-debug.log
+#[tauri::command]
+pub async fn app_log_write(app: AppHandle, message: String) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    std::fs::create_dir_all(&app_data_dir).map_err(|e| format!("Create app data dir: {}", e))?;
+    let log_path = app_data_dir.join("app-debug.log");
+    let ts = chrono::Utc::now().format("%Y-%m-%dT%H:%M:%SZ");
+    let line = format!("[{}] {}\n", ts, message.replace('\n', " "));
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_path)
+        .map_err(|e| format!("Open log file: {}", e))?
+        .write_all(line.as_bytes())
+        .map_err(|e| format!("Write log: {}", e))?;
+    Ok(())
+}
+
+/// Return the path to the app debug log file (so the user can open it or attach to feedback).
+#[tauri::command]
+pub async fn app_log_path(app: AppHandle) -> Result<String, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    Ok(app_data_dir.join("app-debug.log").to_string_lossy().to_string())
 }

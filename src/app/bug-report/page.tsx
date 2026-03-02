@@ -6,6 +6,10 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { useConnectionStore } from "@/stores/connection-store";
 import { APP_NAME } from "@/lib/app-config";
 import {
+  appLogPath,
+  openPath,
+} from "@/lib/tauri";
+import {
   BUG_REPORT_LIMITS,
   type BugReportFeedItem,
   type BugReportFieldErrors,
@@ -26,6 +30,7 @@ import {
   ArrowLeft,
   CheckCircle2,
   Clock3,
+  FileText,
   ImagePlus,
   Loader2,
   Paperclip,
@@ -129,6 +134,9 @@ export default function BugReportPage() {
   const [isFeedLoading, setIsFeedLoading] = useState(true);
   const [feedError, setFeedError] = useState<string | null>(null);
 
+  const [isTauri, setIsTauri] = useState(false);
+  const [logPathCopied, setLogPathCopied] = useState(false);
+
   const isConnected = useConnectionStore((state) => state.isConnected);
   const databaseName = useConnectionStore((state) => state.databaseName);
   const serverVersion = useConnectionStore((state) => state.serverVersion);
@@ -141,6 +149,13 @@ export default function BugReportPage() {
   useEffect(() => {
     setAvailability(getBugReportingAvailability());
     setAvailabilityReady(true);
+  }, []);
+
+  useEffect(() => {
+    setIsTauri(
+      typeof window !== "undefined" &&
+        !!(window as unknown as { __TAURI__?: unknown }).__TAURI__
+    );
   }, []);
 
   useEffect(() => {
@@ -612,6 +627,52 @@ export default function BugReportPage() {
                 </ul>
               )}
             </section>
+
+            {isTauri && (
+              <section className="rounded-2xl border border-border/40 bg-card/40 p-5">
+                <h2 className="mb-3 flex items-center gap-2 text-sm font-semibold">
+                  <FileText className="h-4 w-4" />
+                  Debug log (TestFlight / desktop)
+                </h2>
+                <p className="mb-3 text-xs text-muted-foreground">
+                  Errors are written to a log file. Use these to attach the log when sending feedback.
+                </p>
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-xs"
+                    onClick={async () => {
+                      try {
+                        const path = await appLogPath();
+                        await navigator.clipboard.writeText(path);
+                        setLogPathCopied(true);
+                        setTimeout(() => setLogPathCopied(false), 2000);
+                      } catch {
+                        // ignore
+                      }
+                    }}
+                  >
+                    {logPathCopied ? "Copied" : "Copy log path"}
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="text-xs"
+                    onClick={async () => {
+                      try {
+                        const path = await appLogPath();
+                        await openPath(path);
+                      } catch {
+                        // ignore
+                      }
+                    }}
+                  >
+                    Open log folder
+                  </Button>
+                </div>
+              </section>
+            )}
 
             <section className="rounded-2xl border border-border/40 bg-card/40 p-5">
               <h2 className="mb-3 text-sm font-semibold">Report quality checklist</h2>

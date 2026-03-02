@@ -1,12 +1,14 @@
 import type { NextConfig } from "next";
 
+const isProd = process.env.NODE_ENV === "production";
+const devHost = process.env.TAURI_DEV_HOST ?? "localhost";
+
 const nextConfig: NextConfig = {
-  output: "export",        // ← Static HTML/CSS/JS export
-  distDir: "out",          // ← Output folder Tauri reads from
-  images: {
-    unoptimized: true,     // ← Required: no Next.js image server
-  },
-  trailingSlash: true,     // ← Required: proper routing for static files
+  output: "export",
+  distDir: "out",
+  images: { unoptimized: true },
+  trailingSlash: true,
+  assetPrefix: isProd ? undefined : `http://${devHost}:3000`,
 };
 
 export default nextConfig;

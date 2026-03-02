@@ -1041,6 +1041,16 @@ export async function openPath(path: string): Promise<void> {
     return invoke<void>("open_path", { path });
 }
 
+/** Append a line to the app debug log (for TestFlight / support). */
+export async function appLogWrite(message: string): Promise<void> {
+    return invoke<void>("app_log_write", { message });
+}
+
+/** Return the path to the app debug log file. */
+export async function appLogPath(): Promise<string> {
+    return invoke<string>("app_log_path");
+}
+
 // ─── Query Notes (persisted via Rust core engine) ─────────────────────────
 
 /** Load all saved notes from disk */
