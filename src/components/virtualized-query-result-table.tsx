@@ -84,7 +84,7 @@ function VirtualizedQueryResultTableInner({
         count,
         getScrollElement: () => scrollRef.current,
         estimateSize: () => ROW_HEIGHT,
-        overscan: 8,
+        overscan: 12,
     });
 
     const totalSize = virtualizer.getTotalSize();
@@ -103,8 +103,8 @@ function VirtualizedQueryResultTableInner({
             aria-label="Query result"
             aria-rowcount={count}
             aria-colcount={columns.length + (showRowIndex ? 1 : 0)}
-            className={cn("flex flex-col border rounded-md bg-background overflow-hidden", className)}
-            style={maxHeight ? { maxHeight } : { height: "100%" }}
+            className={cn("flex flex-col rounded-lg border border-border/30 bg-background overflow-hidden", className)}
+            style={maxHeight ? { maxHeight } : { minHeight: 0, height: "100%" }}
         >
             <div
                 role="row"

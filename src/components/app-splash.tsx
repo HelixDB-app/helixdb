@@ -11,13 +11,29 @@ function isTauri(): boolean {
 
 /**
  * Full-screen splash shown in Tauri builds while the app loads.
- * Hides after a minimum display time to avoid black screen; does not block window from opening.
+ * The Tauri window starts hidden (visible: false in tauri.conf.json).
+ * On mount (after React hydration), we reveal the window — it appears
+ * already showing the splash with zero black frame. After SPLASH_MIN_MS
+ * the splash fades out revealing the app.
  */
 export function AppSplash() {
   const [visible, setVisible] = useState(true);
 
   useEffect(() => {
     if (!isTauri()) return;
+
+    // Reveal the Tauri window now that React has hydrated and the splash is rendered.
+    // Import is async to avoid pulling the Tauri API into non-Tauri builds.
+    import("@tauri-apps/api/webviewWindow")
+      .then(({ getCurrentWebviewWindow }) => {
+        getCurrentWebviewWindow().show();
+      })
+      .catch(() => {
+        // Fallback: show via legacy window API if webviewWindow is unavailable
+        (window as unknown as { __TAURI__?: { window?: { appWindow?: { show?: () => void } } } })
+          .__TAURI__?.window?.appWindow?.show?.();
+      });
+
     const id = setTimeout(() => setVisible(false), SPLASH_MIN_MS);
     return () => clearTimeout(id);
   }, []);

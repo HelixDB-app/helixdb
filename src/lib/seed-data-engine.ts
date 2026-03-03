@@ -4,6 +4,7 @@
  */
 
 import { callGeminiSync, type GeminiModelId } from "@/lib/ai-chat-engine";
+import { withGeminiLogging } from "@/lib/gemini-logger";
 import { useSettingsStore } from "@/stores/settings-store";
 import type { ColumnInfo, TableDetails } from "@/lib/types";
 
@@ -151,13 +152,16 @@ export async function generateSeedData(
         ].join("\n");
     }
     const userPrompt = [schemaStr, "", instruction].join("\n");
-    const response = await callGeminiSync(
-        modelId,
-        apiKey,
-        [{ role: "user", parts: [{ text: userPrompt }] }],
-        SYSTEM_PROMPT,
-        options?.signal,
-        { maxOutputTokens: 8192 }
+    const response = await withGeminiLogging(
+        () => callGeminiSync(
+            modelId,
+            apiKey,
+            [{ role: "user", parts: [{ text: userPrompt }] }],
+            SYSTEM_PROMPT,
+            options?.signal,
+            { maxOutputTokens: 8192 }
+        ),
+        { model: modelId, featureType: "seed-data", endpoint: "generateContent" }
     );
     return parseAndValidateRows(response, details.columns);
 }

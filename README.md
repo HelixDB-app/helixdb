@@ -78,3 +78,10 @@ cargo tauri dev
 
 run apple check
 ./apple/check-and-staple.sh 098eccf8-60d5-4048-828f-bfb3fb3ebab0
+
+
+
+
+
+
+stripe listen --forward-to localhost:3001/api/stripe/webhook

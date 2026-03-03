@@ -3,12 +3,16 @@
 import { useEffect, useState } from "react";
 import type { SavedConnection } from "@/lib/types";
 import { useConnectionStore } from "@/stores/connection-store";
+import { useAuthStore } from "@/stores/auth-store";
 import { APP_NAME } from "@/lib/app-config";
 import { useSavedConnectionsStore } from "@/stores/saved-connections-store";
 import { ConnectionDialog } from "@/components/connection-dialog";
 import { SaveConnectionDialog } from "@/components/save-connection-dialog";
 import { LocalPostgresCard } from "@/components/local-postgres-card";
 import { StatusBar } from "@/components/status-bar";
+import { ProfilePanel } from "@/components/profile-panel";
+import { LoginPrompt } from "@/components/login-prompt";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -80,6 +84,7 @@ function accentFor(id: string) {
 export function LandingConnections() {
     const { connections, isLoading, load, remove } = useSavedConnectionsStore();
     const { connect, isConnecting } = useConnectionStore();
+    const { user, isAuthenticated } = useAuthStore();
 
     const [showQuickConnect, setShowQuickConnect] = useState(false);
     const [showSaveDialog, setShowSaveDialog] = useState(false);
@@ -87,6 +92,7 @@ export function LandingConnections() {
     const [connectingId, setConnectingId] = useState<string | null>(null);
     const [pendingConnect, setPendingConnect] = useState<SavedConnection | null>(null);
     const [mounted, setMounted] = useState(false);
+    const [showProfile, setShowProfile] = useState(false);
 
     useEffect(() => {
         load();
@@ -190,8 +196,35 @@ export function LandingConnections() {
                         <Plus className="h-3 w-3" />
                         New connection
                     </Button>
+
+                    <div className="h-4 w-px bg-border/30" />
+
+                    {/* Profile / Login */}
+                    {isAuthenticated && user ? (
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <button
+                                    onClick={() => setShowProfile(true)}
+                                    className="flex h-7 w-7 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    aria-label="Open profile"
+                                >
+                                    <Avatar className="h-6 w-6">
+                                        <AvatarImage src={user.image ?? undefined} alt={user.name} />
+                                        <AvatarFallback className="text-[9px] font-semibold bg-primary/10 text-primary">
+                                            {user.name.split(/\s+/).slice(0, 2).map((w: string) => w[0]?.toUpperCase() ?? "").join("")}
+                                        </AvatarFallback>
+                                    </Avatar>
+                                </button>
+                            </TooltipTrigger>
+                            <TooltipContent>{user.name}</TooltipContent>
+                        </Tooltip>
+                    ) : (
+                        <LoginPrompt compact />
+                    )}
                 </div>
             </header>
+
+            <ProfilePanel open={showProfile} onClose={() => setShowProfile(false)} />
 
             {/* ── Main ───────────────────────────────────────────────────── */}
             <main id="main" className="relative flex-1 overflow-auto" tabIndex={-1} aria-label="Main content">

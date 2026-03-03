@@ -22,9 +22,14 @@ log = "0.4"
 tauri = { version = "2.10.0", features = ["devtools", "protocol-asset"] }
 tauri-plugin-log = "2"
 tauri-plugin-notification = "2"
+tauri-plugin-shell = "2"
+tauri-plugin-deep-link = "2"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
+
+# HTTP client (for fetching user profile from web API)
+reqwest = { version = "0.12", features = ["json", "rustls-tls"], default-features = false }
 
 # PostgreSQL
 tokio-postgres = { version = "0.7", features = ["array-impls", "with-serde_json-1", "with-uuid-1", "with-chrono-0_4"] }
@@ -40,6 +45,11 @@ flate2 = "1.0"
 dashmap = "6"
 chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
+keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+# Cryptography (device fingerprint)
+sha2 = "0.10"
+hex = "0.4"
 
 [profile.release]
 lto = true

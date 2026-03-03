@@ -44,6 +44,11 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+    ResizableHandle,
+    ResizablePanel,
+    ResizablePanelGroup,
+} from "@/components/ui/resizable";
+import {
     Play,
     Plus,
     X,
@@ -1539,6 +1544,7 @@ export function QueryEditor() {
                                         disabled={activeTab.isExecuting}
                                         className="rounded-none border-0"
                                         editorHeight={380}
+                                        hideNextActionSuggestions
                                     />
                                 </div>
                                 <div className="flex-1 min-h-0 overflow-auto flex flex-col p-4">
@@ -1585,20 +1591,23 @@ export function QueryEditor() {
                         </div>
                     )}
 
-                    <div className="relative border-b border-border/30">
-                        <MonacoSqlEditor
-                            value={activeTab.sql}
-                            onChange={(v) => updateSql(activeTab.id, v)}
-                            onExecute={handleExecute}
-                            onReview={handleManualReview}
-                            onFormatSql={handleFormatSql}
-                            onFetchColumns={handleFetchColumns}
-                            onNextAction={handleNextAction}
-                            reviewIssues={reviewReport?.issues ?? []}
-                            schemaContext={schemaContext}
-                            disabled={activeTab.isExecuting}
-                            className="rounded-none border-0"
-                        />
+                    <ResizablePanelGroup orientation="vertical" className="flex-1 min-h-0">
+                        <ResizablePanel defaultSize={42} minSize={20} maxSize={75} className="flex flex-col min-h-0">
+                            <div className="relative border-b border-border/30 flex flex-col min-h-0">
+                                <MonacoSqlEditor
+                                    value={activeTab.sql}
+                                    onChange={(v) => updateSql(activeTab.id, v)}
+                                    onExecute={handleExecute}
+                                    onReview={handleManualReview}
+                                    onFormatSql={handleFormatSql}
+                                    onFetchColumns={handleFetchColumns}
+                                    onNextAction={handleNextAction}
+                                    reviewIssues={reviewReport?.issues ?? []}
+                                    schemaContext={schemaContext}
+                                    disabled={activeTab.isExecuting}
+                                    className="rounded-none border-0"
+                                    hideNextActionSuggestions
+                                />
                         <div className="absolute bottom-2 right-2 flex items-center gap-2 z-10">
                             <Tooltip>
                                 <TooltipTrigger asChild>
@@ -1808,10 +1817,14 @@ export function QueryEditor() {
                                 </DialogFooter>
                             </DialogContent>
                         </Dialog>
-                    </div>
+                            </div>
+                        </ResizablePanel>
 
+                        <ResizableHandle withHandle className="shrink-0 bg-border/20 hover:bg-border/50 data-[resize-handle-active]:bg-emerald-500/40 transition-colors" />
+
+                        <ResizablePanel defaultSize={58} minSize={28} maxSize={80} className="flex flex-col min-h-0 overflow-hidden">
                     {/* Results */}
-                    <div className="flex-1 overflow-hidden flex flex-col">
+                    <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
 
                         {/* ── Sandbox diff viewer ── */}
                         {isSandboxReviewing && sandboxResult && (
@@ -1858,13 +1871,13 @@ export function QueryEditor() {
 
                         {/* Results / Plan / Canvas tab switcher */}
                         {!isSandboxMode && (activeTab.result || activePlan) && (
-                            <div className="flex items-center gap-0 border-b border-border/20 bg-card/20 px-3 shrink-0">
+                            <div className="flex items-center gap-0.5 border-b border-border/20 bg-muted/20 px-2 shrink-0">
                                 <button
                                     className={cn(
-                                        "px-3 py-1.5 text-xs font-medium border-b-2 transition-colors",
+                                        "px-3 py-2 text-[11px] font-medium border-b-2 transition-colors -mb-px",
                                         activeResultView === "results"
-                                            ? "border-emerald-500 text-foreground"
-                                            : "border-transparent text-muted-foreground hover:text-foreground"
+                                            ? "border-primary text-foreground"
+                                            : "border-transparent text-muted-foreground hover:text-foreground/80"
                                     )}
                                     onClick={() => activeTabId && setResultView((p) => ({ ...p, [activeTabId]: "results" }))}
                                 >
@@ -1873,15 +1886,15 @@ export function QueryEditor() {
                                 {activePlan && (
                                     <button
                                         className={cn(
-                                            "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border-b-2 transition-colors",
+                                            "flex items-center gap-1.5 px-3 py-2 text-[11px] font-medium border-b-2 transition-colors -mb-px",
                                             activeResultView === "plan"
-                                                ? "border-blue-500 text-foreground"
-                                                : "border-transparent text-muted-foreground hover:text-foreground"
+                                                ? "border-primary text-foreground"
+                                                : "border-transparent text-muted-foreground hover:text-foreground/80"
                                         )}
                                         onClick={() => activeTabId && setResultView((p) => ({ ...p, [activeTabId]: "plan" }))}
                                     >
                                         <GitBranch className="h-3 w-3" />
-                                        Query Plan
+                                        Plan
                                     </button>
                                 )}
                                 {activeTab.result &&
@@ -1891,10 +1904,10 @@ export function QueryEditor() {
                                     !isMultiStatementResult(activeTab.result) && (
                                         <button
                                             className={cn(
-                                                "flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium border-b-2 transition-colors",
+                                                "flex items-center gap-1.5 px-3 py-2 text-[11px] font-medium border-b-2 transition-colors -mb-px",
                                                 activeResultView === "canvas"
-                                                    ? "border-emerald-400 text-foreground"
-                                                    : "border-transparent text-muted-foreground hover:text-foreground"
+                                                    ? "border-primary text-foreground"
+                                                    : "border-transparent text-muted-foreground hover:text-foreground/80"
                                             )}
                                             onClick={() => activeTabId && setResultView((p) => ({ ...p, [activeTabId]: "canvas" }))}
                                         >
@@ -1940,42 +1953,39 @@ export function QueryEditor() {
                                 <div className="flex h-full min-h-0 flex-col">
                                     {/* Slow query banner */}
                                     {activeTab.result.execution_time_ms > 500 && activeResultView === "results" && (
-                                        <div className="flex items-center justify-between gap-3 px-4 py-2 bg-orange-500/8 border-b border-orange-500/20 shrink-0">
+                                        <div className="flex items-center justify-between gap-3 px-4 py-1.5 bg-amber-500/5 border-b border-amber-500/15 shrink-0">
                                             <div className="flex items-center gap-2">
-                                                <AlertCircle className="h-3.5 w-3.5 text-orange-400 shrink-0" />
-                                                <span className="text-xs text-orange-400/90">
-                                                    Slow query detected ({activeTab.result.execution_time_ms.toFixed(0)}ms) — Analyze the query plan to find the bottleneck
+                                                <AlertCircle className="h-3 w-3 text-amber-500 shrink-0" />
+                                                <span className="text-[11px] text-muted-foreground">
+                                                    Slow query ({activeTab.result.execution_time_ms.toFixed(0)}ms)
                                                 </span>
                                             </div>
                                             <Button
                                                 size="sm"
-                                                variant="outline"
-                                                className="h-7 px-3 text-xs gap-1.5 border-orange-500/40 text-orange-400 hover:bg-orange-500/10 hover:border-orange-500/60 shrink-0"
+                                                variant="ghost"
+                                                className="h-6 px-2 text-[11px] gap-1 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 shrink-0"
                                                 onClick={() => handleExplain()}
                                                 disabled={isExplaining}
                                             >
                                                 {isExplaining ? <Loader2 className="h-3 w-3 animate-spin" /> : <GitBranch className="h-3 w-3" />}
-                                                Analyze plan
+                                                Explain
                                             </Button>
                                         </div>
                                     )}
                                     {/* Result info bar — success message and stats */}
-                                    <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-border/20 bg-emerald-500/5 shrink-0">
-                                        <div className="flex items-center gap-3">
+                                    <div className="flex items-center justify-between gap-4 px-4 py-2 border-b border-border/20 bg-muted/30 shrink-0">
+                                        <div className="flex items-center gap-3 flex-wrap">
                                             <div className="flex items-center gap-2">
-                                                <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
-                                                <span className="text-sm font-medium text-emerald-600 dark:text-emerald-400">
-                                                    Query succeeded
+                                                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
+                                                <span className="text-xs font-medium text-foreground/90">
+                                                    {getRowCountLabel(activeTab.result)}
                                                 </span>
                                             </div>
-                                            <span className="text-muted-foreground text-xs">
-                                                {getRowCountLabel(activeTab.result)}
-                                            </span>
                                             <Badge
                                                 variant="outline"
-                                                className="text-[10px] font-mono gap-1 border-emerald-500/20 text-emerald-600 dark:text-emerald-400"
+                                                className="text-[10px] font-mono gap-1 border-border/40 text-muted-foreground"
                                             >
-                                                <Clock className="h-3 w-3" />
+                                                <Clock className="h-2.5 w-2.5" />
                                                 {activeTab.result.execution_time_ms.toFixed(1)}ms
                                             </Badge>
                                         </div>
@@ -2066,12 +2076,13 @@ export function QueryEditor() {
                         ) : null}
 
                         {!isSandboxMode && activeResultView === "results" && activeTab.isExecuting && !activeTab.result && (
-                            <div className="flex-1 flex items-center justify-center">
-                                <div className="flex items-center gap-3">
-                                    <Loader2 className="h-5 w-5 animate-spin text-emerald-500" />
-                                    <span className="text-sm text-muted-foreground">
-                                        Executing query…
-                                    </span>
+                            <div className="flex-1 flex items-center justify-center min-h-[200px]">
+                                <div className="flex flex-col items-center gap-4">
+                                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 border border-emerald-500/20">
+                                        <Loader2 className="h-5 w-5 animate-spin text-emerald-500" />
+                                    </div>
+                                    <p className="text-sm font-medium text-foreground/80">Executing query…</p>
+                                    <p className="text-xs text-muted-foreground/60">Results will appear here</p>
                                 </div>
                             </div>
                         )}
@@ -2095,6 +2106,8 @@ export function QueryEditor() {
                             </div>
                         )}
                     </div>
+                        </ResizablePanel>
+                    </ResizablePanelGroup>
                 </>
             )}
         </div>

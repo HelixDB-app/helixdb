@@ -5,10 +5,13 @@ import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
 import { FirebaseProvider } from "@/components/firebase-provider";
 import { NotificationProvider } from "@/components/notification-provider";
+import { NotificationRTDBProvider } from "@/components/notification-rtdb-provider";
+import { WhatsNewModal } from "@/components/whats-new-modal";
 import { NetworkStatusProvider } from "@/components/network-status-provider";
 import { AppDebugLogger } from "@/components/app-debug-logger";
 import { AppSplash } from "@/components/app-splash";
 import { ErrorBoundary } from "@/components/error-boundary";
+import { TrialProvider, TrialBanner } from "@/components/trial-banner";
 import { APP_NAME, APP_TAGLINE } from "@/lib/app-config";
 import "./globals.css";
 
@@ -36,6 +39,11 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" suppressHydrationWarning>
+      <head>
+        {/* Hardcode the dark background before next-themes applies its class,
+            preventing a flash of white on first paint. */}
+        <style dangerouslySetInnerHTML={{ __html: `body{background:var(--background);}` }} />
+      </head>
       <body
         className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased`}
       >
@@ -57,9 +65,15 @@ export default function RootLayout({
             <FirebaseProvider>
               <NetworkStatusProvider>
                 <NotificationProvider>
-                  <ErrorBoundary>
-                    {children}
-                  </ErrorBoundary>
+                  <NotificationRTDBProvider>
+                    <TrialProvider>
+                      <TrialBanner />
+                      <WhatsNewModal />
+                      <ErrorBoundary>
+                        {children}
+                      </ErrorBoundary>
+                    </TrialProvider>
+                  </NotificationRTDBProvider>
                 </NotificationProvider>
               </NetworkStatusProvider>
             </FirebaseProvider>

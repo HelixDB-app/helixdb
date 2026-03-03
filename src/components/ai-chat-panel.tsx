@@ -58,10 +58,10 @@ const SQL_TY = new Set(["INTEGER", "INT", "BIGINT", "SMALLINT", "SERIAL", "BIGSE
 
 function highlightSQL(sql: string): string {
     return sql
-        .replace(/'([^']*)'/g, '<span class="text-amber-400">\'$1\'</span>')
-        .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="text-purple-400">$1</span>')
-        .replace(/\b([A-Z_]+)\b/g, (m) => SQL_KW.has(m) ? `<span class="text-cyan-400 font-medium">${m}</span>` : SQL_TY.has(m) ? `<span class="text-emerald-400">${m}</span>` : m)
-        .replace(/--(.*?)$/gm, '<span class="text-muted-foreground/50 italic">--$1</span>');
+        .replace(/'([^']*)'/g, '<span class="sql-str">\'$1\'</span>')
+        .replace(/\b(\d+(?:\.\d+)?)\b/g, '<span class="sql-num">$1</span>')
+        .replace(/\b([A-Z_]+)\b/g, (m) => SQL_KW.has(m) ? `<span class="sql-kw">${m}</span>` : SQL_TY.has(m) ? `<span class="sql-type">${m}</span>` : m)
+        .replace(/--(.*?)$/gm, '<span class="sql-comment">--$1</span>');
 }
 
 // ── SQL Code Block ───────────────────────────────────────────────────────────
@@ -69,15 +69,15 @@ function highlightSQL(sql: string): string {
 function SQLCodeBlock({ sql, onInsert }: { sql: string; onInsert: (s: string) => void }) {
     const [copied, setCopied] = useState(false);
     return (
-        <div className="group relative rounded-lg border border-border/30 bg-[hsl(220,13%,12%)] overflow-hidden my-2">
-            <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/20 bg-muted/10">
-                <span className="text-[10px] font-mono text-muted-foreground/50 uppercase tracking-wider">SQL</span>
+        <div className="group relative rounded-lg border border-border bg-[var(--sql-bg)] overflow-hidden my-2">
+            <div className="flex items-center justify-between px-3 py-1.5 border-b border-border/50 bg-muted/20">
+                <span className="text-[10px] font-mono text-muted-foreground uppercase tracking-wider">SQL</span>
                 <div className="flex items-center gap-1">
                     <button onClick={async () => { await navigator.clipboard.writeText(sql); setCopied(true); toast.success("Copied"); setTimeout(() => setCopied(false), 2000); }}
-                        className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-muted-foreground/60 hover:text-foreground hover:bg-muted/40 transition-all">
-                        {copied ? <Check className="h-3 w-3 text-emerald-400" /> : <Copy className="h-3 w-3" />} {copied ? "Copied" : "Copy"}
+                        className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-muted-foreground hover:text-foreground hover:bg-muted transition-all">
+                        {copied ? <Check className="h-3 w-3 text-primary" /> : <Copy className="h-3 w-3" />} {copied ? "Copied" : "Copy"}
                     </button>
-                    <button onClick={() => { onInsert(sql); toast.success("Inserted"); }} className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-emerald-400/80 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all">
+                    <button onClick={() => { onInsert(sql); toast.success("Inserted"); }} className="flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium text-primary hover:bg-primary/10 transition-all">
                         <PlayCircle className="h-3 w-3" /> Insert
                     </button>
                 </div>
@@ -114,7 +114,7 @@ function MessageContent({ content, onInsertSql }: { content: string; onInsertSql
 function formatMd(text: string): string {
     return text
         .replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
-        .replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 rounded bg-muted/50 text-emerald-400 text-xs font-mono">$1</code>');
+        .replace(/`([^`]+)`/g, '<code class="px-1 py-0.5 rounded bg-muted text-primary text-xs font-mono">$1</code>');
 }
 
 // ── Chat Message Bubble ──────────────────────────────────────────────────────
@@ -130,9 +130,9 @@ function ChatMessageBubble({ message, onRegenerate, onEdit, onInsertSql, isLast 
     if (message.role === "error") {
         return (
             <div className="flex gap-3 px-4 py-3 ai-message-in">
-                <div className="shrink-0 mt-0.5"><div className="h-7 w-7 rounded-lg bg-red-500/10 border border-red-500/20 flex items-center justify-center"><AlertCircle className="h-3.5 w-3.5 text-red-400" /></div></div>
+                <div className="shrink-0 mt-0.5"><div className="h-7 w-7 rounded-lg bg-destructive/10 border border-destructive/20 flex items-center justify-center"><AlertCircle className="h-3.5 w-3.5 text-destructive" /></div></div>
                 <div className="flex-1 min-w-0">
-                    <div className="rounded-lg border border-red-500/20 bg-red-500/5 px-3 py-2.5"><p className="text-sm text-red-400/90">{message.content}</p></div>
+                    <div className="rounded-lg border border-destructive/20 bg-destructive/5 px-3 py-2.5"><p className="text-sm text-destructive">{message.content}</p></div>
                     {onRegenerate && <button onClick={onRegenerate} className="mt-2 flex items-center gap-1.5 text-xs text-muted-foreground/50 hover:text-foreground transition-colors"><RefreshCw className="h-3 w-3" /> Retry</button>}
                 </div>
             </div>
@@ -142,7 +142,7 @@ function ChatMessageBubble({ message, onRegenerate, onEdit, onInsertSql, isLast 
     if (message.role === "user") {
         return (
             <div className="flex gap-3 px-4 py-3 group ai-message-in">
-                <div className="shrink-0 mt-0.5"><div className="h-7 w-7 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center"><MessageSquare className="h-3.5 w-3.5 text-blue-400" /></div></div>
+                <div className="shrink-0 mt-0.5"><div className="h-7 w-7 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center"><MessageSquare className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" /></div></div>
                 <div className="flex-1 min-w-0">
                     {/* Image previews */}
                     {message.images && message.images.length > 0 && (
@@ -177,14 +177,14 @@ function ChatMessageBubble({ message, onRegenerate, onEdit, onInsertSql, isLast 
 
     return (
         <div className="flex gap-3 px-4 py-3 ai-message-in">
-            <div className="shrink-0 mt-0.5"><div className="h-7 w-7 rounded-lg bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 border border-emerald-500/20 flex items-center justify-center"><Sparkles className="h-3.5 w-3.5 text-emerald-400" /></div></div>
+            <div className="shrink-0 mt-0.5"><div className="h-7 w-7 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center"><Sparkles className="h-3.5 w-3.5 text-primary" /></div></div>
             <div className="flex-1 min-w-0">
                 {message.isStreaming && !message.content ? (
                     <div className="flex items-center gap-2 py-2">
                         <div className="flex gap-1">
-                            <div className="h-1.5 w-1.5 rounded-full bg-emerald-400 ai-typing-dot" style={{ animationDelay: "0ms" }} />
-                            <div className="h-1.5 w-1.5 rounded-full bg-emerald-400 ai-typing-dot" style={{ animationDelay: "150ms" }} />
-                            <div className="h-1.5 w-1.5 rounded-full bg-emerald-400 ai-typing-dot" style={{ animationDelay: "300ms" }} />
+                            <div className="h-1.5 w-1.5 rounded-full bg-primary ai-typing-dot" style={{ animationDelay: "0ms" }} />
+                            <div className="h-1.5 w-1.5 rounded-full bg-primary ai-typing-dot" style={{ animationDelay: "150ms" }} />
+                            <div className="h-1.5 w-1.5 rounded-full bg-primary ai-typing-dot" style={{ animationDelay: "300ms" }} />
                         </div>
                         <span className="text-xs text-muted-foreground/50">Generating...</span>
                     </div>
@@ -210,14 +210,14 @@ function ModelSelector({ model, onChange, disabled }: { model: GeminiModelId; on
         <div className="relative" ref={ref}>
             <button onClick={() => !disabled && setOpen(!open)} disabled={disabled}
                 className={cn("flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all border border-border/30 hover:border-border/50 text-muted-foreground/70 hover:text-foreground", disabled && "opacity-50 cursor-not-allowed")}>
-                <Zap className="h-3 w-3 text-amber-400" />{GEMINI_MODELS[model].displayName}<ChevronDown className="h-3 w-3" />
+                <Zap className="h-3 w-3 text-amber-600 dark:text-amber-400" />{GEMINI_MODELS[model].displayName}<ChevronDown className="h-3 w-3" />
             </button>
             {open && (
                 <div className="absolute right-0 top-full mt-1 w-56 rounded-lg border border-border/40 bg-popover shadow-xl z-50 overflow-hidden">
                     {(Object.values(GEMINI_MODELS) as { id: GeminiModelId; displayName: string; description: string }[]).map((m) => (
                         <button key={m.id} onClick={() => { onChange(m.id); setOpen(false); }}
-                            className={cn("w-full flex flex-col items-start px-3 py-2.5 text-left transition-colors", model === m.id ? "bg-emerald-500/10 text-foreground" : "hover:bg-muted/50 text-muted-foreground")}>
-                            <div className="flex items-center gap-2">{model === m.id && <Check className="h-3 w-3 text-emerald-400" />}<span className="text-sm font-medium">{m.displayName}</span></div>
+                            className={cn("w-full flex flex-col items-start px-3 py-2.5 text-left transition-colors", model === m.id ? "bg-primary/10 text-foreground" : "hover:bg-muted/50 text-muted-foreground")}>
+                            <div className="flex items-center gap-2">{model === m.id && <Check className="h-3 w-3 text-primary" />}<span className="text-sm font-medium">{m.displayName}</span></div>
                             <span className="text-[10px] text-muted-foreground/50 mt-0.5 ml-5">{m.description}</span>
                         </button>
                     ))}
@@ -248,12 +248,12 @@ function HistorySidebar({ conversations, activeId, onSelect, onDelete, onCreate,
         return (
             <div className="flex flex-col items-center py-2 w-10 border-r border-border/10 shrink-0 bg-card/5">
                 <button onClick={onToggle} className="p-1.5 rounded-md text-muted-foreground/40 hover:text-foreground hover:bg-muted/30 transition-all" title="Show history"><PanelLeftOpen className="h-4 w-4" /></button>
-                <button onClick={onCreate} className="mt-3 p-1.5 rounded-md text-muted-foreground/40 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all" title="New chat"><Plus className="h-3.5 w-3.5" /></button>
+                <button onClick={onCreate} className="mt-3 p-1.5 rounded-md text-muted-foreground/40 hover:text-primary hover:bg-primary/10 transition-all" title="New chat"><Plus className="h-3.5 w-3.5" /></button>
                 <div className="mt-3 flex flex-col items-center gap-1 overflow-y-auto flex-1">
                     {conversations.slice(0, 12).map((c) => (
                         <button key={c.id} onClick={() => onSelect(c.id)}
                             className={cn("w-6 h-6 rounded-md flex items-center justify-center text-[9px] font-semibold transition-all",
-                                c.id === activeId ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20" : "text-muted-foreground/30 hover:text-muted-foreground/60 hover:bg-muted/20"
+                                c.id === activeId ? "bg-primary/15 text-primary border border-primary/20" : "text-muted-foreground/30 hover:text-muted-foreground/60 hover:bg-muted/20"
                             )} title={c.title}>
                             {c.pinned ? <Pin className="h-2.5 w-2.5" /> : c.title.charAt(0).toUpperCase()}
                         </button>
@@ -272,7 +272,7 @@ function HistorySidebar({ conversations, activeId, onSelect, onDelete, onCreate,
                     <span className="text-[10px] text-muted-foreground/30 bg-muted/20 px-1.5 py-0.5 rounded-full">{conversations.length}</span>
                 </div>
                 <div className="flex items-center gap-0.5">
-                    <button onClick={onCreate} className="p-1 rounded-md text-muted-foreground/40 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all" title="New chat"><Plus className="h-3.5 w-3.5" /></button>
+                    <button onClick={onCreate} className="p-1 rounded-md text-muted-foreground/40 hover:text-primary hover:bg-primary/10 transition-all" title="New chat"><Plus className="h-3.5 w-3.5" /></button>
                     <button onClick={onToggle} className="p-1 rounded-md text-muted-foreground/40 hover:text-foreground hover:bg-muted/30 transition-all" title="Collapse"><PanelLeftClose className="h-3.5 w-3.5" /></button>
                 </div>
             </div>
@@ -300,10 +300,10 @@ function HistorySidebar({ conversations, activeId, onSelect, onDelete, onCreate,
                                     <div key={c.id} className="relative" onMouseEnter={() => setHoveredId(c.id)} onMouseLeave={() => setHoveredId(null)}>
                                         <button onClick={() => onSelect(c.id)}
                                             className={cn("w-full flex flex-col items-start px-3 py-2 text-left transition-all rounded-md mx-1 hover:bg-muted/20",
-                                                c.id === activeId ? "bg-emerald-500/8 border-l-2 border-l-emerald-500/50" : "border-l-2 border-l-transparent"
+                                                c.id === activeId ? "bg-primary/10 border-l-2 border-l-primary" : "border-l-2 border-l-transparent"
                                             )} style={{ width: "calc(100% - 8px)" }}>
                                             <div className="flex items-center gap-1.5 w-full">
-                                                {c.pinned && <Pin className="h-2.5 w-2.5 text-amber-400/60 shrink-0" />}
+                                                {c.pinned && <Pin className="h-2.5 w-2.5 text-amber-600/70 dark:text-amber-400/60 shrink-0" />}
                                                 <span className={cn("text-xs font-medium truncate flex-1", c.id === activeId ? "text-foreground/90" : "text-foreground/60")}>{c.title}</span>
                                             </div>
                                             <div className="flex items-center gap-2 mt-0.5">
@@ -314,10 +314,10 @@ function HistorySidebar({ conversations, activeId, onSelect, onDelete, onCreate,
                                         </button>
                                         {hoveredId === c.id && (
                                             <div className="absolute right-2 top-1/2 -translate-y-1/2 flex items-center gap-0.5">
-                                                <button onClick={(e) => { e.stopPropagation(); onTogglePin(c.id); }} className="p-1 rounded text-muted-foreground/30 hover:text-amber-400 hover:bg-amber-500/10 transition-all" title={c.pinned ? "Unpin" : "Pin"}>
+                                                <button onClick={(e) => { e.stopPropagation(); onTogglePin(c.id); }} className="p-1 rounded text-muted-foreground/30 hover:text-amber-600 dark:hover:text-amber-400 hover:bg-amber-500/10 transition-all" title={c.pinned ? "Unpin" : "Pin"}>
                                                     {c.pinned ? <PinOff className="h-3 w-3" /> : <Pin className="h-3 w-3" />}
                                                 </button>
-                                                <button onClick={(e) => { e.stopPropagation(); if (confirm(`Delete "${c.title}"?`)) onDelete(c.id); }} className="p-1 rounded text-muted-foreground/30 hover:text-red-400 hover:bg-red-500/10 transition-all" title="Delete"><Trash2 className="h-3 w-3" /></button>
+                                                <button onClick={(e) => { e.stopPropagation(); if (confirm(`Delete "${c.title}"?`)) onDelete(c.id); }} className="p-1 rounded text-muted-foreground/30 hover:text-destructive hover:bg-destructive/10 transition-all" title="Delete"><Trash2 className="h-3 w-3" /></button>
                                             </div>
                                         )}
                                     </div>
@@ -329,7 +329,7 @@ function HistorySidebar({ conversations, activeId, onSelect, onDelete, onCreate,
             </div>
             {conversations.length > 0 && (
                 <div className="border-t border-border/10 px-3 py-2">
-                    <button onClick={() => { if (confirm("Delete all conversations?")) onClearAll(); }} className="flex items-center gap-1.5 text-[10px] text-muted-foreground/25 hover:text-red-400 transition-colors w-full"><Trash2 className="h-3 w-3" /> Clear all history</button>
+                    <button onClick={() => { if (confirm("Delete all conversations?")) onClearAll(); }} className="flex items-center gap-1.5 text-[10px] text-muted-foreground/25 hover:text-destructive transition-colors w-full"><Trash2 className="h-3 w-3" /> Clear all history</button>
                 </div>
             )}
         </div>
@@ -426,7 +426,7 @@ export function AIChatPanel() {
                 {/* Header */}
                 <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/20 shrink-0">
                     <div className="flex items-center gap-2.5">
-                        <div className="h-7 w-7 rounded-lg bg-gradient-to-br from-emerald-500/20 to-cyan-500/20 border border-emerald-500/20 flex items-center justify-center"><Sparkles className="h-3.5 w-3.5 text-emerald-400" /></div>
+                        <div className="h-7 w-7 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center"><Sparkles className="h-3.5 w-3.5 text-primary" /></div>
                         <div>
                             <h2 className="text-sm font-semibold text-foreground/90">{activeConv ? activeConv.title : "Nova AI"}</h2>
                             <p className="text-[10px] text-muted-foreground/50">{activeConv ? `${activeConv.messages.filter(m => m.role === "user").length} messages · ${formatRelativeTime(activeConv.updatedAt)}` : "SQL Query Assistant"}</p>
@@ -447,7 +447,7 @@ export function AIChatPanel() {
                 <div ref={scrollRef} className="flex-1 overflow-y-auto">
                     {messages.length === 0 ? (
                         <div className="flex flex-col items-center justify-center h-full px-6 py-8">
-                            <div className="h-16 w-16 rounded-2xl bg-gradient-to-br from-emerald-500/10 to-cyan-500/10 border border-emerald-500/10 flex items-center justify-center mb-4"><Sparkles className="h-7 w-7 text-emerald-400/60" /></div>
+                            <div className="h-16 w-16 rounded-2xl bg-primary/10 border border-primary/10 flex items-center justify-center mb-4"><Sparkles className="h-7 w-7 text-primary/70" /></div>
                             <h3 className="text-lg font-semibold text-foreground/80 mb-1">Ask Nova anything</h3>
                             <p className="text-xs text-muted-foreground/50 text-center max-w-[280px] mb-6">Generate SQL queries, analyze your schema, optimize performance, and more.</p>
                             <div className="grid grid-cols-2 gap-2 max-w-md w-full">
@@ -459,7 +459,7 @@ export function AIChatPanel() {
                                     </button>
                                 ))}
                             </div>
-                            <button onClick={() => setTemplateBrowserOpen(true)} className="mt-4 flex items-center gap-1.5 text-xs text-emerald-400/70 hover:text-emerald-400 transition-colors">
+                            <button onClick={() => setTemplateBrowserOpen(true)} className="mt-4 flex items-center gap-1.5 text-xs text-primary hover:underline transition-colors">
                                 <BookOpen className="h-3.5 w-3.5" /> Browse all {40}+ prompt templates
                             </button>
                         </div>
@@ -496,20 +496,20 @@ export function AIChatPanel() {
                             </button>
                             <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={(e) => { handleImageUpload(e.target.files); e.target.value = ""; }} />
                             {/* Template Browser */}
-                            <button onClick={() => setTemplateBrowserOpen(true)} className="h-9 w-9 p-0 shrink-0 flex items-center justify-center rounded-lg border border-border/20 text-muted-foreground/40 hover:text-emerald-400 hover:border-emerald-500/20 hover:bg-emerald-500/5 transition-all" title="Prompt templates">
+                            <button onClick={() => setTemplateBrowserOpen(true)} className="h-9 w-9 p-0 shrink-0 flex items-center justify-center rounded-lg border border-border/20 text-muted-foreground/40 hover:text-primary hover:border-primary/30 hover:bg-primary/5 transition-all" title="Prompt templates">
                                 <BookOpen className="h-4 w-4" />
                             </button>
                             <div className="flex-1 relative">
                                 <textarea ref={inputRef} value={inputValue} onChange={(e) => setInputValue(e.target.value)} onPaste={handlePaste}
                                     onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
                                     placeholder="Ask about your database..." rows={1} disabled={isStreaming}
-                                    className={cn("w-full rounded-lg border border-border/30 bg-muted/10 px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500/40 focus:border-emerald-500/30 placeholder:text-muted-foreground/30 disabled:opacity-50 max-h-[120px]")} />
+                                    className={cn("w-full rounded-lg border border-border/30 bg-muted/10 px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/30 placeholder:text-muted-foreground/30 disabled:opacity-50 max-h-[120px]")} />
                             </div>
                             {isStreaming ? (
-                                <Button size="sm" variant="ghost" onClick={stopStreaming} className="h-9 w-9 p-0 shrink-0 text-red-400 hover:text-red-300 hover:bg-red-500/10"><Square className="h-4 w-4" /></Button>
+                                <Button size="sm" variant="ghost" onClick={stopStreaming} className="h-9 w-9 p-0 shrink-0 text-destructive hover:bg-destructive/10"><Square className="h-4 w-4" /></Button>
                             ) : (
                                 <Button size="sm" onClick={handleSend} disabled={!inputValue.trim() && pendingImages.length === 0}
-                                    className={cn("h-9 w-9 p-0 shrink-0 transition-all", (inputValue.trim() || pendingImages.length > 0) ? "bg-emerald-600 hover:bg-emerald-700 text-white" : "bg-muted/30 text-muted-foreground/30")}>
+                                    className={cn("h-9 w-9 p-0 shrink-0 transition-all", (inputValue.trim() || pendingImages.length > 0) ? "bg-primary hover:bg-primary/90 text-primary-foreground" : "bg-muted/30 text-muted-foreground/30")}>
                                     <Send className="h-4 w-4" />
                                 </Button>
                             )}
@@ -518,7 +518,7 @@ export function AIChatPanel() {
                     <div className="flex items-center justify-between px-4 py-1.5 border-t border-border/10 text-[10px] text-muted-foreground/40">
                         <div className="flex items-center gap-3">
                             {isConnected && <div className="flex items-center gap-1"><Database className="h-3 w-3" /><span>{schemaTableCount} tables</span></div>}
-                            {activeConv && <div className="flex items-center gap-1"><Zap className="h-3 w-3 text-amber-400/60" /><span>{GEMINI_MODELS[activeConv.model].displayName}</span></div>}
+                            {activeConv && <div className="flex items-center gap-1"><Zap className="h-3 w-3 text-amber-600/70 dark:text-amber-400/60" /><span>{GEMINI_MODELS[activeConv.model].displayName}</span></div>}
                         </div>
                         <div className="flex items-center gap-2">
                             <span className="text-muted-foreground/25">Paste or drag images</span>

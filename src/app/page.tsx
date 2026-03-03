@@ -6,21 +6,31 @@ import { useRouter } from "next/navigation";
 import { useEffect, useState } from "react";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useShortcutsStore } from "@/stores/shortcuts-store";
+import { useAuthStore } from "@/stores/auth-store";
+import { useTrialStore } from "@/stores/trial-store";
+import { authFetchProfile } from "@/lib/tauri";
 import { eventMatchesCombo, formatShortcut } from "@/lib/shortcut-keys";
 import { APP_NAME } from "@/lib/app-config";
+import dynamic from "next/dynamic";
 import { LandingConnections } from "@/components/landing-connections";
 import { WelcomeScreen } from "@/components/welcome-screen";
+import { TrialExpiredGate } from "@/components/trial-banner";
 import { ConnectionDialog } from "@/components/connection-dialog";
-import { Sidebar } from "@/components/sidebar";
-import { DataTable } from "@/components/data-table";
-import { QueryEditor } from "@/components/query-editor";
-import { SessionMonitor } from "@/components/session-monitor";
-import { IndexBuilder } from "@/components/index-builder";
-import { SchemaTopology } from "@/components/schema-topology";
-import { AIChatPanel } from "@/components/ai-chat-panel";
 import { StatusBar } from "@/components/status-bar";
 import { CommandPalette } from "@/components/command-palette";
 import { SettingsDialog } from "@/components/settings-dialog";
+import { ProfilePanel } from "@/components/profile-panel";
+import { LoginPrompt } from "@/components/login-prompt";
+import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
+
+// Heavy components loaded lazily to reduce initial bundle size
+const Sidebar = dynamic(() => import("@/components/sidebar").then((m) => ({ default: m.Sidebar })), { ssr: false });
+const DataTable = dynamic(() => import("@/components/data-table").then((m) => ({ default: m.DataTable })), { ssr: false });
+const QueryEditor = dynamic(() => import("@/components/query-editor").then((m) => ({ default: m.QueryEditor })), { ssr: false });
+const SessionMonitor = dynamic(() => import("@/components/session-monitor").then((m) => ({ default: m.SessionMonitor })), { ssr: false });
+const IndexBuilder = dynamic(() => import("@/components/index-builder").then((m) => ({ default: m.IndexBuilder })), { ssr: false });
+const SchemaTopology = dynamic(() => import("@/components/schema-topology").then((m) => ({ default: m.SchemaTopology })), { ssr: false });
+const AIChatPanel = dynamic(() => import("@/components/ai-chat-panel").then((m) => ({ default: m.AIChatPanel })), { ssr: false });
 import {
     ResizableHandle,
     ResizablePanel,
@@ -65,16 +75,51 @@ export default function Home() {
         isRefreshingAll,
     } = useConnectionStore();
     const getCombo = useShortcutsStore((s) => s.getCombo);
+    const { user, isAuthenticated, setUser, setLoading: setAuthLoading } = useAuthStore();
+    const { result: trialResult, loadState: trialLoadState, isTrialActive } = useTrialStore();
+    const trialExpired = !isAuthenticated
+        && trialLoadState === "ready"
+        && trialResult !== null
+        && !isTrialActive();
     const [showConnectionDialog, setShowConnectionDialog] = useState(false);
     const [activeView, setActiveView] = useState<"data" | "query" | "sessions" | "indexes" | "topology" | "ai">("data");
     const [searchOpen, setSearchOpen] = useState(false);
     const [showWelcome, setShowWelcome] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
+    const [showProfile, setShowProfile] = useState(false);
 
     useEffect(() => {
         if (typeof window === "undefined" || localStorage.getItem("helix_welcomed")) return;
         const rafId = window.requestAnimationFrame(() => setShowWelcome(true));
         return () => window.cancelAnimationFrame(rafId);
+    }, []);
+
+    // Restore session on startup — try to load an existing cached profile from the keychain.
+    // - null return means "not logged in" (normal, no error)
+    // - thrown error means a transient network/parse issue — surface a subtle warning
+    useEffect(() => {
+        let cancelled = false;
+        async function restoreSession() {
+            setAuthLoading(true);
+            try {
+                const profile = await authFetchProfile();
+                if (!cancelled) {
+                    if (profile) setUser(profile);
+                    // null just means the user hasn't logged in yet — this is normal
+                }
+            } catch (err) {
+                // Only log; don't crash. The user can sign in manually.
+                // This happens when the web server is unreachable or the token is corrupt.
+                if (!cancelled) {
+                    console.warn("[restoreSession] could not restore profile:", err);
+                }
+            } finally {
+                if (!cancelled) setAuthLoading(false);
+            }
+        }
+        restoreSession();
+        return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
     }, []);
 
     const handleWelcomeDismiss = () => {
@@ -169,6 +214,8 @@ export default function Home() {
     if (!isConnected) {
         return (
             <>
+                {/* Block access when trial has expired and user isn't logged in */}
+                {trialExpired && <TrialExpiredGate />}
                 {showWelcome && <WelcomeScreen onDismiss={handleWelcomeDismiss} />}
                 <LandingConnections />
             </>
@@ -177,21 +224,23 @@ export default function Home() {
 
     return (
         <div className="flex h-screen flex-col bg-background">
-            {/* Top bar */}
-            <header className="flex h-11 items-center justify-between border-b border-border/20 bg-card/20 px-3 shrink-0">
-                {/* Left: Logo + DB name */}
-                <div className="flex items-center gap-2.5">
+            {/* Block access when trial has expired and user isn't logged in */}
+            {trialExpired && <TrialExpiredGate />}
+            {/* Top bar — 3-zone grid: left | center | right */}
+            <header className="grid grid-cols-3 h-11 items-center border-b border-border/20 bg-card/20 px-3 shrink-0 gap-2">
+                {/* Left: Logo + connection indicator */}
+                <div className="flex items-center gap-2.5 min-w-0">
                     <button
                         onClick={() => !isConnected && setShowConnectionDialog(true)}
-                        className="flex items-center gap-2 group focus-ring rounded-md"
+                        className="flex items-center gap-2 group focus-ring rounded-md shrink-0"
                         aria-label={isConnected ? `${APP_NAME} home` : "Connect to database"}
                     >
                         <Image
                             src="/logo.png"
                             alt=""
-                            width={24}
-                            height={24}
-                            className="h-6 w-6 rounded-md object-contain shrink-0"
+                            width={22}
+                            height={22}
+                            className="h-[22px] w-[22px] rounded-md object-contain shrink-0"
                         />
                         <span className="font-bold text-sm bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">
                             {APP_NAME}
@@ -200,16 +249,16 @@ export default function Home() {
 
                     {isConnected && (
                         <>
-                            <div className="h-4 w-px bg-border/40" />
-                            <div className="flex items-center gap-1.5">
-                                <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse" />
-                                <span className="text-xs font-mono text-muted-foreground/80">
+                            <div className="h-3.5 w-px bg-border/40 shrink-0" />
+                            <div className="flex items-center gap-1.5 min-w-0">
+                                <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
+                                <span className="text-xs font-mono text-muted-foreground/80 truncate">
                                     {databaseName}
                                 </span>
                                 {pgVersion && (
                                     <Badge
                                         variant="outline"
-                                        className="h-4 px-1 text-[9px] font-mono border-border/30 text-muted-foreground/50"
+                                        className="h-4 px-1.5 text-[9px] font-mono border-border/30 text-muted-foreground/45 shrink-0"
                                     >
                                         PG {pgVersion}
                                     </Badge>
@@ -219,109 +268,191 @@ export default function Home() {
                     )}
                 </div>
 
-                {/* Right: View tabs + actions */}
-                <div className="flex items-center gap-1.5">
-                    {/* Refresh */}
-                    {isConnected && (
-                        <Tooltip>
-                            <TooltipTrigger asChild>
-                                <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="h-7 gap-1.5 px-2.5 text-xs text-muted-foreground/60 hover:text-foreground border border-border/20 hover:border-border/40 bg-muted/20 hover:bg-muted/40 transition-all"
-                                    onClick={() => refreshAll()}
-                                    disabled={isRefreshingAll}
-                                    aria-label={isRefreshingAll ? "Refreshing" : "Refresh"}
-                                >
-                                    <RefreshCw
-                                        className={cn("h-3 w-3", isRefreshingAll && "animate-spin")}
-                                    />
-                                    {/* <span className="hidden sm:inline">
-                                        {isRefreshingAll ? "Refreshing…" : "Refresh"}
-                                    </span>
-                                    <kbd className="hidden sm:inline-flex h-4 items-center rounded border border-border/30 bg-muted/40 px-1 font-mono text-[9px] text-muted-foreground/40 ml-0.5">
-                                        ⌘⇧R
-                                    </kbd> */}
-                                </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                                Refresh current table and metadata{sc("refresh") && ` (${sc("refresh")})`}
-                            </TooltipContent>
-                        </Tooltip>
-                    )}
-                    {/* Search button */}
-                    {isConnected && (
-                        <Tooltip>
-                            <TooltipTrigger asChild>
-                                <Button
-                                    variant="ghost"
-                                    size="sm"
-                                    className="h-7 gap-1.5 px-2.5 text-xs text-muted-foreground/60 hover:text-foreground border border-border/20 hover:border-border/40 bg-muted/20 hover:bg-muted/40 transition-all"
-                                    onClick={() => setSearchOpen(true)}
-                                    aria-label="Open search"
-                                >
-                                    <Search className="h-3 w-3" />
-                                    <span className="hidden sm:inline">Search</span>
-                                    {sc("search") && (
-                                        <kbd className="hidden sm:inline-flex h-4 items-center rounded border border-border/30 bg-muted/40 px-1 font-mono text-[9px] text-muted-foreground/40 ml-0.5">
-                                            {sc("search")}
-                                        </kbd>
-                                    )}
-                                </Button>
-                            </TooltipTrigger>
-                            <TooltipContent>
-                                Search tables, columns, run SQL{sc("search") && ` (${sc("search")})`}
-                            </TooltipContent>
-                        </Tooltip>
-                    )}
-
+                {/* Center: Primary view tabs */}
+                <div className="flex items-center justify-center">
                     {isConnected && (
                         <Tabs value={activeView} onValueChange={(v) => setActiveView(v as typeof activeView)}>
-                            <TabsList aria-label="View tabs" className="h-8 rounded-md bg-muted/40 p-0.5">
-                                <TabsTrigger value="data" title={sc("view_data") ? `Data (${sc("view_data")})` : "Data"}>
+                            <TabsList aria-label="View tabs" className="h-7 rounded-lg bg-muted/50 p-0.5 gap-0">
+                                <TabsTrigger
+                                    value="data"
+                                    className="h-6 gap-1.5 px-2.5 text-[11px]"
+                                    title={sc("view_data") ? `Data (${sc("view_data")})` : "Data"}
+                                >
                                     <Table2 className="h-3 w-3" />
-                                    Data
+                                    <span>Data</span>
                                 </TabsTrigger>
-                                <TabsTrigger value="query" title={sc("view_query") ? `Query (${sc("view_query")})` : "Query"}>
+                                <TabsTrigger
+                                    value="query"
+                                    className="h-6 gap-1.5 px-2.5 text-[11px]"
+                                    title={sc("view_query") ? `Query (${sc("view_query")})` : "Query"}
+                                >
                                     <Terminal className="h-3 w-3" />
-                                    Query
+                                    <span>Query</span>
                                 </TabsTrigger>
-                                <TabsTrigger value="sessions" title={sc("view_sessions") ? `Sessions (${sc("view_sessions")})` : "Sessions"}>
+                                <TabsTrigger
+                                    value="sessions"
+                                    className="h-6 gap-1.5 px-2.5 text-[11px]"
+                                    title={sc("view_sessions") ? `Sessions (${sc("view_sessions")})` : "Sessions"}
+                                >
                                     <Activity className="h-3 w-3" />
-                                    Sessions
+                                    <span className="hidden sm:inline">Sessions</span>
                                 </TabsTrigger>
-                                <TabsTrigger value="indexes" title={sc("view_indexes") ? `Indexes (${sc("view_indexes")})` : "Indexes"}>
+                                <TabsTrigger
+                                    value="indexes"
+                                    className="h-6 gap-1.5 px-2.5 text-[11px]"
+                                    title={sc("view_indexes") ? `Indexes (${sc("view_indexes")})` : "Indexes"}
+                                >
                                     <Layers className="h-3 w-3" />
-                                    Indexes
+                                    <span className="hidden sm:inline">Indexes</span>
                                 </TabsTrigger>
-                                <TabsTrigger value="topology" title={sc("view_topology") ? `Topology (${sc("view_topology")})` : "Topology"}>
+                                <TabsTrigger
+                                    value="topology"
+                                    className="h-6 gap-1.5 px-2.5 text-[11px]"
+                                    title={sc("view_topology") ? `Topology (${sc("view_topology")})` : "Topology"}
+                                >
                                     <Network className="h-3 w-3" />
-                                    Topology
+                                    <span className="hidden md:inline">Topology</span>
                                 </TabsTrigger>
-                                <TabsTrigger value="ai" title={sc("view_ai") ? `AI chat (${sc("view_ai")})` : "AI"}>
+                                <TabsTrigger
+                                    value="ai"
+                                    className="h-6 gap-1.5 px-2.5 text-[11px]"
+                                    title={sc("view_ai") ? `AI (${sc("view_ai")})` : "AI"}
+                                >
                                     <Sparkles className="h-3 w-3" />
-                                    AI
+                                    <span>AI</span>
                                 </TabsTrigger>
                             </TabsList>
                         </Tabs>
                     )}
+                </div>
 
+                {/* Right: Action buttons — grouped with dividers */}
+                <div className="flex items-center justify-end gap-1">
+                    {/* Primary actions: Refresh + Search */}
+                    {isConnected && (
+                        <>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-7 w-7 p-0 text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-all"
+                                        onClick={() => refreshAll()}
+                                        disabled={isRefreshingAll}
+                                        aria-label={isRefreshingAll ? "Refreshing" : "Refresh"}
+                                    >
+                                        <RefreshCw className={cn("h-3.5 w-3.5", isRefreshingAll && "animate-spin")} />
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                    Refresh{sc("refresh") && ` (${sc("refresh")})`}
+                                </TooltipContent>
+                            </Tooltip>
+
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-all"
+                                        onClick={() => setSearchOpen(true)}
+                                        aria-label="Open search"
+                                    >
+                                        <Search className="h-3.5 w-3.5" />
+                                        <span className="hidden sm:inline">Search</span>
+                                        {sc("search") && (
+                                            <kbd className="hidden sm:inline-flex h-4 items-center rounded border border-border/30 bg-muted/40 px-1 font-mono text-[9px] text-muted-foreground/40">
+                                                {sc("search")}
+                                            </kbd>
+                                        )}
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                    Search tables & columns{sc("search") && ` (${sc("search")})`}
+                                </TooltipContent>
+                            </Tooltip>
+
+                            <div className="h-4 w-px bg-border/30 mx-0.5" />
+                        </>
+                    )}
+
+                    {/* Nav links: History, Extensions, Bug */}
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                asChild
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-all"
+                            >
+                                <Link href="/query-history">
+                                    <Clock3 className="h-3.5 w-3.5" />
+                                    <span className="hidden md:inline">History</span>
+                                </Link>
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                            Query History{sc("query_history") && ` (${sc("query_history")})`}
+                        </TooltipContent>
+                    </Tooltip>
+
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                asChild
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-all"
+                            >
+                                <Link href="/extensions-management">
+                                    <ShieldCheck className="h-3.5 w-3.5" />
+                                    <span className="hidden md:inline">Extensions</span>
+                                </Link>
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                            Extensions & Users{sc("extensions") && ` (${sc("extensions")})`}
+                        </TooltipContent>
+                    </Tooltip>
+
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                asChild
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-all"
+                            >
+                                <Link href="/bug-report">
+                                    <Bug className="h-3.5 w-3.5" />
+                                    <span className="hidden md:inline">Feedback</span>
+                                </Link>
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                            Submit feedback & bug reports{sc("bug_report") && ` (${sc("bug_report")})`}
+                        </TooltipContent>
+                    </Tooltip>
+
+                    <div className="h-4 w-px bg-border/30 mx-0.5" />
+
+                    {/* Connection + Settings */}
                     {isConnected ? (
                         <Tooltip>
                             <TooltipTrigger asChild>
                                 <Button
                                     variant="ghost"
                                     size="sm"
-                                    className="h-7 px-2 gap-1.5 text-muted-foreground hover:text-foreground text-xs"
+                                    className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground/50 hover:text-destructive/80 hover:bg-destructive/10 transition-all"
                                     onClick={() => connectionId && disconnect(connectionId)}
                                     aria-label="Disconnect from database"
                                 >
                                     <Unplug className="h-3.5 w-3.5" />
-                                    Disconnect
+                                    <span className="hidden sm:inline">Disconnect</span>
                                 </Button>
                             </TooltipTrigger>
                             <TooltipContent>
-                                Disconnect from database{sc("disconnect") && ` (${sc("disconnect")})`}
+                                Disconnect{sc("disconnect") && ` (${sc("disconnect")})`}
                             </TooltipContent>
                         </Tooltip>
                     ) : (
@@ -329,16 +460,17 @@ export default function Home() {
                             <TooltipTrigger asChild>
                                 <Button
                                     variant="ghost"
-                                    size="icon"
-                                    className="h-7 w-7"
+                                    size="sm"
+                                    className="h-7 gap-1.5 px-2 text-[11px] text-emerald-400/70 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all"
                                     onClick={() => setShowConnectionDialog(true)}
                                     aria-label="Connect to database"
                                 >
-                                    <PlugZap className="h-4 w-4 text-emerald-400" />
+                                    <PlugZap className="h-3.5 w-3.5" />
+                                    <span className="hidden sm:inline">Connect</span>
                                 </Button>
                             </TooltipTrigger>
                             <TooltipContent>
-                                Connect to database{sc("connect") && ` (${sc("connect")})`}
+                                Connect{sc("connect") && ` (${sc("connect")})`}
                             </TooltipContent>
                         </Tooltip>
                     )}
@@ -346,66 +478,9 @@ export default function Home() {
                     <Tooltip>
                         <TooltipTrigger asChild>
                             <Button
-                                asChild
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 gap-1.5 px-2.5 text-xs text-muted-foreground/60 hover:text-foreground border border-border/20 hover:border-border/40 bg-muted/20 hover:bg-muted/40 transition-all"
-                            >
-                                <Link href="/query-history">
-                                    <Clock3 className="h-3.5 w-3.5" />
-                                    {/* <span className="hidden sm:inline">Query History</span> */}
-                                </Link>
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                            Open Query History & Performance Intelligence{sc("query_history") && ` (${sc("query_history")})`}
-                        </TooltipContent>
-                    </Tooltip>
-
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <Button
-                                asChild
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 gap-1.5 px-2.5 text-xs text-muted-foreground/60 hover:text-foreground border border-border/20 hover:border-border/40 bg-muted/20 hover:bg-muted/40 transition-all"
-                            >
-                                <Link href="/extensions-management">
-                                    <ShieldCheck className="h-3.5 w-3.5" />
-                                    {/* <span className="hidden sm:inline">Extensions</span> */}
-                                </Link>
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                            Open Extensions & User Management{sc("extensions") && ` (${sc("extensions")})`}
-                        </TooltipContent>
-                    </Tooltip>
-
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <Button
-                                asChild
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 gap-1.5 px-2.5 text-xs text-muted-foreground/60 hover:text-foreground border border-border/20 hover:border-border/40 bg-muted/20 hover:bg-muted/40 transition-all"
-                            >
-                                <Link href="/bug-report">
-                                    <Bug className="h-3.5 w-3.5" />
-                                        {/* <span className="hidden sm:inline">Report Bug</span> */}
-                                </Link>
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                            Submit feedback and bug reports{sc("bug_report") && ` (${sc("bug_report")})`}
-                        </TooltipContent>
-                    </Tooltip>
-
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <Button
                                 variant="ghost"
                                 size="icon"
-                                className="h-7 w-7 text-muted-foreground/60 hover:text-foreground"
+                                className="h-7 w-7 text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-all"
                                 onClick={() => setSettingsOpen(true)}
                                 aria-label="Open settings"
                             >
@@ -416,6 +491,30 @@ export default function Home() {
                             Settings{sc("settings") && ` (${sc("settings")})`}
                         </TooltipContent>
                     </Tooltip>
+
+                    {/* Profile / Login */}
+                    <div className="h-4 w-px bg-border/30 mx-0.5" />
+                    {isAuthenticated && user ? (
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <button
+                                    onClick={() => setShowProfile(true)}
+                                    className="flex h-7 w-7 items-center justify-center rounded-full focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                                    aria-label="Open profile"
+                                >
+                                    <Avatar className="h-6 w-6">
+                                        <AvatarImage src={user.image ?? undefined} alt={user.name} />
+                                        <AvatarFallback className="text-[9px] font-semibold bg-primary/10 text-primary">
+                                            {user.name.split(/\s+/).slice(0, 2).map(w => w[0]?.toUpperCase() ?? "").join("")}
+                                        </AvatarFallback>
+                                    </Avatar>
+                                </button>
+                            </TooltipTrigger>
+                            <TooltipContent>{user.name}</TooltipContent>
+                        </Tooltip>
+                    ) : (
+                        <LoginPrompt compact onLoginSuccess={() => {}} />
+                    )}
                 </div>
             </header>
 
@@ -466,6 +565,8 @@ export default function Home() {
             />
 
             <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+
+            <ProfilePanel open={showProfile} onClose={() => setShowProfile(false)} />
         </div>
     );
 }

@@ -1,4 +1,5 @@
 import { callGeminiSync, type GeminiModelId } from "@/lib/ai-chat-engine";
+import { withGeminiLogging } from "@/lib/gemini-logger";
 import { useSettingsStore } from "@/stores/settings-store";
 import type {
     DocumentationCommentPatch,
@@ -271,13 +272,16 @@ export async function generateDocumentationComments(
         `INPUT_JSON:\n${JSON.stringify(inputPayload)}`,
     ].join("\n");
 
-    const response = await callGeminiSync(
-        modelId,
-        apiKey,
-        [{ role: "user", parts: [{ text: userPrompt }] }],
-        DOC_WRITER_SYSTEM_PROMPT,
-        options.signal,
-        { maxOutputTokens: 8192 }
+    const response = await withGeminiLogging(
+        () => callGeminiSync(
+            modelId,
+            apiKey,
+            [{ role: "user", parts: [{ text: userPrompt }] }],
+            DOC_WRITER_SYSTEM_PROMPT,
+            options.signal,
+            { maxOutputTokens: 8192 }
+        ),
+        { model: modelId, featureType: "doc-writer", endpoint: "generateContent" }
     );
 
     const parsed = parseItems(response);

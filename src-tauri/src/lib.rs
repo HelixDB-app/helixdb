@@ -1,13 +1,17 @@
 mod account_security_storage;
+mod auth;
 mod commands;
 mod connections_storage;
 mod db;
+mod device_fingerprint;
 mod local_postgres;
 mod notes_storage;
 mod query_history_storage;
 mod schema_designer_storage;
+mod trial;
 
 use commands::AppState;
+use tauri::{Emitter, Listener};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -15,6 +19,34 @@ pub fn run() {
         .manage(AppState::new())
         .plugin(tauri_plugin_log::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_shell::init())
+        .plugin(tauri_plugin_deep_link::init())
+        .setup(|app| {
+            // Listen for deep-link events and re-emit as a friendly event for the frontend.
+            // The web app sends:  pgstudio://auth/callback?token=JWT&state=NONCE
+            let handle = app.handle().clone();
+            app.handle().listen("deep-link://new-url", move |event: tauri::Event| {
+                log::debug!("[deep-link] received payload: {}", event.payload());
+                match serde_json::from_str::<Vec<String>>(event.payload()) {
+                    Ok(urls) => {
+                        for url in urls {
+                            if url.starts_with("pgstudio://auth/callback") {
+                                log::info!("[deep-link] emitting pgstudio-auth-callback");
+                                if let Err(e) = handle.emit("pgstudio-auth-callback", &url) {
+                                    log::error!("[deep-link] failed to emit event: {e}");
+                                }
+                            } else {
+                                log::debug!("[deep-link] ignored url: {url}");
+                            }
+                        }
+                    }
+                    Err(e) => {
+                        log::warn!("[deep-link] failed to parse payload as Vec<String>: {e} — raw: {}", event.payload());
+                    }
+                }
+            });
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::db_connect,
             commands::db_disconnect,
@@ -123,6 +155,23 @@ pub fn run() {
             commands::open_path,
             commands::app_log_write,
             commands::app_log_path,
+            // Auth commands
+            auth::auth_open_login,
+            auth::auth_open_url,
+            auth::auth_store_token,
+            auth::auth_get_token,
+            auth::auth_delete_token,
+            auth::auth_fetch_profile,
+            // Plans & Checkout commands
+            auth::auth_fetch_plans,
+            auth::auth_create_checkout,
+            // Subscription commands
+            auth::subscription_fetch_status,
+            // Trial commands
+            trial::trial_init,
+            trial::trial_get_status,
+            trial::trial_associate_user,
+            trial::trial_get_device_id,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

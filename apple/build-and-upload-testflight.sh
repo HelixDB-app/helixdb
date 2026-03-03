@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
-# One script: build → sign app → create .pkg → upload to TestFlight.
+# One script: bump build number → build → sign app → create .pkg → upload to TestFlight.
 # Set env once (or use apple/.env with source), then run: ./apple/build-and-upload-testflight.sh
+#
+# Options:
+#   --no-bump    Skip bumping the build number (use current bundle.macOS.bundleVersion).
 #
 # Required env:
 #   SIGNING_IDENTITY      "Apple Distribution: Name (TEAM_ID)" or its SHA-1 fingerprint (if ambiguous)
@@ -15,6 +18,11 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="pgStudio"
 PKG_NAME="pgStudio.pkg"
 ENTITLEMENTS_SRC="$REPO_ROOT/src-tauri/Entitlements.plist"
+TAURI_CONF="$REPO_ROOT/src-tauri/tauri.conf.json"
+BUMP_BUILD=1
+for arg in "$@"; do
+  [[ "$arg" == "--no-bump" ]] && BUMP_BUILD=0
+done
 
 # Optional: load apple/.env if present
 if [[ -f "$REPO_ROOT/apple/.env" ]]; then
@@ -65,6 +73,33 @@ if [[ "$INSTALL_ID" == *"3rd Party Mac Developer Application"* ]]; then
 fi
 
 cd "$REPO_ROOT"
+
+# ── Bump build number (CFBundleVersion) for TestFlight ─────────────────────
+export TAURI_CONF_PATH="$TAURI_CONF"
+if [[ $BUMP_BUILD -eq 1 ]]; then
+  if [[ ! -f "$TAURI_CONF" ]]; then
+    echo "Error: $TAURI_CONF not found"
+    exit 1
+  fi
+  BUILD_NOW=$(node -e '
+    const fs = require("fs");
+    const p = process.env.TAURI_CONF_PATH;
+    const conf = JSON.parse(fs.readFileSync(p, "utf8"));
+    const mac = conf.bundle && conf.bundle.macOS ? conf.bundle.macOS : {};
+    let n = parseInt(mac.bundleVersion || "0", 10) || 0;
+    n++;
+    conf.bundle = conf.bundle || {};
+    conf.bundle.macOS = { ...mac, bundleVersion: String(n) };
+    fs.writeFileSync(p, JSON.stringify(conf, null, 2));
+    console.log(n);
+  ')
+  MARKETING=$(node -e 'const fs=require("fs"); const c=JSON.parse(fs.readFileSync(process.env.TAURI_CONF_PATH,"utf8")); console.log(c.version);')
+  echo "=== Build number set to $BUILD_NOW (version $MARKETING) ==="
+else
+  BUILD_NOW=$(node -e 'const fs=require("fs"); const c=JSON.parse(fs.readFileSync(process.env.TAURI_CONF_PATH,"utf8")); console.log((c.bundle&&c.bundle.macOS&&c.bundle.macOS.bundleVersion)||"1");')
+  MARKETING=$(node -e 'const fs=require("fs"); const c=JSON.parse(fs.readFileSync(process.env.TAURI_CONF_PATH,"utf8")); console.log(c.version);')
+  echo "=== Using existing build number: $BUILD_NOW (--no-bump) ==="
+fi
 
 # Resolve TEAM_ID for entitlements (must match provisioning profile)
 TEAM_ID="${APPLE_TEAM_ID:-}"
@@ -126,5 +161,6 @@ xcrun altool --upload-app --type macos --file "$PKG_PATH" \
   --apiKeyPath "$ALTOOL_KEY_PATH"
 
 echo ""
-echo "Done. Build will appear in App Store Connect → pgStudio → TestFlight (5–15 min)."
+echo "Done. Version $MARKETING (build $BUILD_NOW) uploaded."
+echo "Build will appear in App Store Connect → pgStudio → TestFlight (5–15 min)."
 echo "Optional: rm $PKG_PATH"

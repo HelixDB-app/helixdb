@@ -1,4 +1,5 @@
 import { AIError, callGeminiSync, type GeminiModelId } from "@/lib/ai-chat-engine";
+import { withGeminiLogging } from "@/lib/gemini-logger";
 
 export type ReviewSeverity = "block" | "warn" | "info";
 
@@ -752,13 +753,16 @@ export async function runSqlSafetyReview(
         const start = nowMs();
         aiModel = options.geminiModel ?? "gemini-2.5-flash-lite";
         try {
-            const response = await callGeminiSync(
-                aiModel,
-                options.geminiApiKey!.trim(),
-                [{ role: "user", parts: [{ text: buildGeminiPrompt(sql, localIssues, context) }] }],
-                REVIEW_SYSTEM_PROMPT,
-                options.signal,
-                { maxOutputTokens: 1400 }
+            const response = await withGeminiLogging(
+                () => callGeminiSync(
+                    aiModel!,
+                    options.geminiApiKey!.trim(),
+                    [{ role: "user", parts: [{ text: buildGeminiPrompt(sql, localIssues, context) }] }],
+                    REVIEW_SYSTEM_PROMPT,
+                    options.signal,
+                    { maxOutputTokens: 1400 }
+                ),
+                { model: aiModel!, featureType: "sql-review", endpoint: "generateContent" }
             );
             aiIssues = toGeminiIssues(response);
         } catch (error) {

@@ -1096,3 +1096,137 @@ export async function schemaDesignerSaveProject(project: SchemaProject): Promise
 export async function schemaDesignerDeleteProject(id: string): Promise<SchemaProject[]> {
     return invoke<SchemaProject[]>("schema_designer_delete_project", { id });
 }
+
+// ─── Authentication ────────────────────────────────────────────────────────
+
+export interface UserProfile {
+    id: string;
+    name: string;
+    email: string;
+    image?: string | null;
+    provider: string;
+    createdAt: string;
+}
+
+/** Open the system browser at the pgstudio-web login page with a CSRF state nonce. */
+export async function authOpenLogin(state: string): Promise<void> {
+    return invoke<void>("auth_open_login", { state });
+}
+
+/** Open the system browser at any URL (e.g. the web profile page). */
+export async function authOpenBrowser(url: string): Promise<void> {
+    return invoke<void>("auth_open_url", { url });
+}
+
+/** Store a JWT in the OS keychain. */
+export async function authStoreToken(token: string): Promise<void> {
+    return invoke<void>("auth_store_token", { token });
+}
+
+/** Retrieve the stored JWT from the OS keychain. Returns null when not authenticated. */
+export async function authGetToken(): Promise<string | null> {
+    return invoke<string | null>("auth_get_token");
+}
+
+/** Delete the stored JWT (logout). */
+export async function authDeleteToken(): Promise<void> {
+    return invoke<void>("auth_delete_token");
+}
+
+/** Fetch the current user's profile from pgstudio-web using the stored token.
+ *  Returns null when unauthenticated or when the session has expired. */
+export async function authFetchProfile(): Promise<UserProfile | null> {
+    return invoke<UserProfile | null>("auth_fetch_profile");
+}
+
+// ─── Plans & Checkout ─────────────────────────────────────────────────────────
+
+export interface PlanInfo {
+    id: string;
+    name: string;
+    slug: string;
+    price: number;
+    currency: string;
+    durationDays: number;
+    features: string[];
+    discordAccess: string;
+    isFeatured: boolean;
+    promoTag?: string | null;
+}
+
+/** Fetch available subscription plans from pgstudio-web. */
+export async function authFetchPlans(): Promise<PlanInfo[]> {
+    return invoke<PlanInfo[]>("auth_fetch_plans");
+}
+
+/**
+ * Create a Stripe Checkout Session for the given plan using the stored desktop JWT.
+ * Returns the Stripe checkout URL to open in the browser.
+ */
+export async function authCreateCheckout(planId: string): Promise<string> {
+    return invoke<string>("auth_create_checkout", { planId });
+}
+
+// ─── Subscription ──────────────────────────────────────────────────────────
+
+export interface SubscriptionStatus {
+    id: string;
+    planName: string;
+    planSlug: string;
+    status: "active" | "expired" | "cancelled" | "pending";
+    discordAccess: string;
+    startDate: string;
+    endDate: string;
+    paymentAmount: number;
+    paymentCurrency: string;
+    cancelledAt?: string;
+}
+
+/** Fetch the current user's subscription status from pgstudio-web.
+ *  Returns null when unauthenticated or no active subscription. */
+export async function subscriptionFetchStatus(): Promise<SubscriptionStatus | null> {
+    return invoke<SubscriptionStatus | null>("subscription_fetch_status");
+}
+
+// ─── Trial ──────────────────────────────────────────────────────────────────
+
+export interface TrialStatus {
+    state: "active" | "expired" | "blocked";
+    trialStartDate: string;
+    trialExpiryDate: string;
+    daysRemaining: number;
+    trialUsed: boolean;
+}
+
+export interface TrialCheckResult {
+    /** Whether the user may use the app without a paid subscription */
+    allowed: boolean;
+    trial: TrialStatus | null;
+    trialDisabled: boolean;
+    message: string;
+}
+
+/**
+ * Initialize or re-check the device trial on app cold-start.
+ * Registers the device with the backend on first call.
+ */
+export async function trialInit(associatedUserId?: string): Promise<TrialCheckResult> {
+    return invoke<TrialCheckResult>("trial_init", {
+        associatedUserId: associatedUserId ?? null,
+    });
+}
+
+/** Lightweight periodic status check. */
+export async function trialGetStatus(): Promise<TrialCheckResult> {
+    return invoke<TrialCheckResult>("trial_get_status");
+}
+
+/** Associate the current device with a logged-in user after authentication. */
+export async function trialAssociateUser(userId: string): Promise<TrialCheckResult> {
+    return invoke<TrialCheckResult>("trial_associate_user", { userId });
+}
+
+/** Return the device fingerprint (64-char hex). */
+export async function trialGetDeviceId(): Promise<string> {
+    return invoke<string>("trial_get_device_id");
+}

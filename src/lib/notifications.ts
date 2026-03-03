@@ -54,6 +54,9 @@ async function isMessagingRuntimeSupported(): Promise<boolean> {
 
 /**
  * Show a system notification (native OS toast). Uses Tauri plugin when available.
+ * On macOS, when the app is in the foreground the OS may route the notification
+ * to Notification Center instead of showing a banner — the in-app toast handles
+ * that case so the user always sees it.
  */
 export async function showSystemNotification(
   title: string,
@@ -63,18 +66,35 @@ export async function showSystemNotification(
   if (typeof window === "undefined") return;
   void imageUrl;
   const finalTitle = title || DEFAULT_TITLE;
-  try {
-    if (isTauri()) {
-      const { sendNotification } = await import("@tauri-apps/plugin-notification");
-      sendNotification({ title: finalTitle, body: body ?? "" });
-    } else {
-      if (window.Notification.permission === "granted") {
+
+  if (isTauri()) {
+    try {
+      const { isPermissionGranted, sendNotification } = await import("@tauri-apps/plugin-notification");
+      const granted = await isPermissionGranted();
+      if (!granted) {
+        console.warn("[notifications] Tauri notification permission not granted — cannot show OS notification");
+        return;
+      }
+      // "Glass" is a pleasant macOS system notification sound.
+      // Falls back gracefully on Windows/Linux (sound field ignored).
+      sendNotification({
+        title: finalTitle,
+        body: body ?? "",
+        sound: "Glass",
+      });
+      console.log(`[notifications] Tauri OS notification sent: "${finalTitle}"`);
+    } catch (err) {
+      console.error("[notifications] Tauri sendNotification failed:", err);
+      // Fallback to Web Notification API if Tauri plugin unavailable
+      if (window.Notification?.permission === "granted") {
         new window.Notification(finalTitle, { body: body ?? "" });
       }
     }
-  } catch {
+  } else {
     if (window.Notification?.permission === "granted") {
       new window.Notification(finalTitle, { body: body ?? "" });
+    } else {
+      console.warn("[notifications] Web Notification permission not granted");
     }
   }
 }

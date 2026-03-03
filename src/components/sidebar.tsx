@@ -74,9 +74,18 @@ function formatRowCount(count: number): string {
     return count.toString();
 }
 
-const INDENT = 8;
-const LEAF_INDENT = 24;
 const SECTION_BATCH_SIZE = 120;
+
+// Consistent left-padding per depth level — avoids inline style calc everywhere
+const LEVEL_PL: Record<number, string> = {
+    0: "pl-2",
+    1: "pl-5",
+    2: "pl-8",
+    3: "pl-11",
+};
+function levelPl(level: number): string {
+    return LEVEL_PL[level] ?? "pl-11";
+}
 
 type SchemaSectionKey = "functions" | "triggerFunctions" | "types";
 type RenderSectionKey = "tables" | "views" | "functions" | "triggerFunctions" | "types";
@@ -89,7 +98,7 @@ function TreeNode({
     onToggle,
     isActive,
     level = 0,
-    iconColor = "text-muted-foreground/60",
+    iconColor = "text-muted-foreground/50",
     onAdd,
     addTitle,
 }: {
@@ -104,38 +113,17 @@ function TreeNode({
     onAdd?: () => void;
     addTitle?: string;
 }) {
-    const content = (
-        <>
-            <span className="flex items-center justify-center h-4 w-4 shrink-0 text-muted-foreground/40">
-                {expanded
-                    ? <ChevronDown className="h-3 w-3" />
-                    : <ChevronRight className="h-3 w-3" />}
-            </span>
-            <Icon className={cn("h-3.5 w-3.5 shrink-0", iconColor)} />
-            <span className={cn(
-                "truncate flex-1 font-medium text-muted-foreground/80 group-hover:text-foreground/90 transition-colors",
-                isActive && "text-foreground"
-            )}>
-                {label}
-            </span>
-            {count != null && (
-                <span className="shrink-0 text-[10px] font-mono tabular-nums text-muted-foreground/35 px-1">
-                    {count}
-                </span>
-            )}
-        </>
-    );
     return (
-        <div className="group flex w-full items-center gap-1.5 py-[5px] pr-1 rounded-md" style={{ paddingLeft: INDENT + level * 12 }}>
+        <div className={cn("group flex w-full items-center gap-1 py-[3px] pr-1 rounded-md", levelPl(level))}>
             <button
                 type="button"
                 role="treeitem"
                 aria-expanded={expanded}
                 aria-selected={isActive}
                 className={cn(
-                    "flex flex-1 min-w-0 items-center gap-1.5 text-left text-[11px] transition-all duration-100 cursor-pointer select-none rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-                    "hover:bg-white/[0.04]",
-                    isActive && "bg-white/[0.06] text-foreground"
+                    "flex flex-1 min-w-0 items-center gap-1.5 text-left text-[12px] font-medium transition-all duration-100 cursor-pointer select-none rounded-md px-1.5 py-1 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring",
+                    "text-muted-foreground/70 hover:text-foreground/90 hover:bg-sidebar-accent",
+                    isActive && "bg-sidebar-accent text-foreground"
                 )}
                 onClick={onToggle}
                 onKeyDown={(e) => {
@@ -145,7 +133,18 @@ function TreeNode({
                     }
                 }}
             >
-                {content}
+                <span className="flex items-center justify-center h-3.5 w-3.5 shrink-0 text-muted-foreground/35">
+                    {expanded
+                        ? <ChevronDown className="h-3 w-3" />
+                        : <ChevronRight className="h-3 w-3" />}
+                </span>
+                <Icon className={cn("h-3.5 w-3.5 shrink-0", iconColor)} />
+                <span className="truncate flex-1">{label}</span>
+                {count != null && (
+                    <span className="shrink-0 text-[10px] font-mono tabular-nums text-muted-foreground/30 pr-0.5">
+                        {count}
+                    </span>
+                )}
             </button>
             {onAdd && (
                 <button
@@ -153,9 +152,9 @@ function TreeNode({
                     onClick={(e) => { e.stopPropagation(); onAdd(); }}
                     title={addTitle ?? `Add ${label.toLowerCase()}`}
                     aria-label={addTitle ?? `Add ${label.toLowerCase()}`}
-                    className="opacity-0 group-hover:opacity-100 transition-all h-4 w-4 flex items-center justify-center rounded hover:bg-emerald-500/15 text-muted-foreground/40 hover:text-emerald-400 shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                    className="opacity-0 group-hover:opacity-100 transition-all h-5 w-5 flex items-center justify-center rounded-md hover:bg-primary/15 text-muted-foreground/40 hover:text-primary shrink-0 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                 >
-                    <Plus className="h-2.5 w-2.5" />
+                    <Plus className="h-3 w-3" />
                 </button>
             )}
         </div>
@@ -181,28 +180,31 @@ function SchemaSectionHeader({
     onAdd?: () => void;
     addTitle?: string;
 }) {
-    const content = (
+    const inner = (
         <>
             {onToggle ? (
-                <span className="flex h-3 w-3 items-center justify-center text-muted-foreground/35">
+                <span className="flex h-3 w-3 items-center justify-center text-muted-foreground/30 shrink-0">
                     {expanded ? <ChevronDown className="h-2.5 w-2.5" /> : <ChevronRight className="h-2.5 w-2.5" />}
                 </span>
             ) : (
                 <span className="h-3 w-3 shrink-0" />
             )}
-            <Icon className={cn("h-2.5 w-2.5 shrink-0", iconColor)} />
-            <span>{label}</span>
-            <span className="font-mono tabular-nums opacity-70">{count}</span>
+            <Icon className={cn("h-3 w-3 shrink-0", iconColor)} />
+            <span className="flex-1 truncate">{label}</span>
+            <span className="font-mono tabular-nums opacity-60 shrink-0">{count}</span>
         </>
     );
+
+    const baseClass = "group flex items-center gap-1.5 py-[3px] pr-1.5 pl-10 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/40 rounded-md";
+
     if (onToggle) {
         return (
-            <div className="group flex items-center gap-1.5 py-1 pr-1.5 text-[9px] font-semibold uppercase tracking-widest text-muted-foreground/35 rounded-md" style={{ paddingLeft: LEAF_INDENT + 16 }}>
+            <div className={baseClass}>
                 <button
                     type="button"
                     role="treeitem"
                     aria-expanded={expanded ?? false}
-                    className="flex flex-1 min-w-0 items-center gap-1.5 text-left rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background cursor-pointer hover:bg-white/[0.03]"
+                    className="flex flex-1 min-w-0 items-center gap-1.5 text-left rounded cursor-pointer hover:text-muted-foreground/60 transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     onClick={onToggle}
                     onKeyDown={(e) => {
                         if (e.key === "Enter" || e.key === " ") {
@@ -211,7 +213,7 @@ function SchemaSectionHeader({
                         }
                     }}
                 >
-                    {content}
+                    {inner}
                 </button>
                 {onAdd && (
                     <button
@@ -219,20 +221,17 @@ function SchemaSectionHeader({
                         onClick={(e) => { e.stopPropagation(); onAdd(); }}
                         title={addTitle ?? `Add ${label.toLowerCase()}`}
                         aria-label={addTitle ?? `Add ${label.toLowerCase()}`}
-                        className="opacity-0 group-hover:opacity-100 transition-all h-3.5 w-3.5 flex items-center justify-center rounded hover:bg-emerald-500/15 text-muted-foreground/40 hover:text-emerald-400 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        className="opacity-0 group-hover:opacity-100 transition-all h-4 w-4 flex items-center justify-center rounded-md hover:bg-primary/15 text-muted-foreground/40 hover:text-primary focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                     >
-                        <Plus className="h-2 w-2" />
+                        <Plus className="h-2.5 w-2.5" />
                     </button>
                 )}
             </div>
         );
     }
     return (
-        <div
-            className="group flex items-center gap-1.5 py-1 pr-1.5 text-[9px] font-semibold uppercase tracking-widest text-muted-foreground/35 rounded-md"
-            style={{ paddingLeft: LEAF_INDENT + 16 }}
-        >
-            {content}
+        <div className={baseClass}>
+            {inner}
         </div>
     );
 }
@@ -263,24 +262,25 @@ function ObjectLeaf({
                 }
             }}
             className={cn(
-                "group flex w-full items-center gap-1.5 py-[4px] pr-2 text-left text-[11px] transition-all duration-100 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-                "hover:bg-white/[0.04]",
+                "group flex w-full items-center gap-1.5 pl-12 pr-2 py-[4px] text-left transition-all duration-100 rounded-md focus:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                 isActive
                     ? "bg-primary/10 text-primary"
-                    : "text-muted-foreground/70 hover:text-foreground/85"
+                    : "text-muted-foreground/65 hover:text-foreground/85 hover:bg-sidebar-accent"
             )}
-            style={{ paddingLeft: LEAF_INDENT + 16 }}
         >
             <span className={cn(
                 "w-0.5 h-3 rounded-full shrink-0 transition-all",
-                isActive ? "bg-primary opacity-100" : "bg-transparent"
+                isActive ? "bg-primary" : "bg-transparent"
             )} />
-            <Icon className={cn("h-3 w-3 shrink-0", isActive ? "text-primary" : "text-muted-foreground/40 group-hover:text-muted-foreground/70")} />
-            <span className={cn("truncate flex-1 font-mono text-[10.5px]", isActive && "font-medium")}>
+            <Icon className={cn(
+                "h-3 w-3 shrink-0",
+                isActive ? "text-primary" : "text-muted-foreground/40 group-hover:text-muted-foreground/65"
+            )} />
+            <span className={cn("truncate flex-1 font-mono text-[11px]", isActive && "font-medium")}>
                 {label}
             </span>
             {rowCount != null && rowCount >= 0 && (
-                <span className="text-[9px] font-mono tabular-nums text-muted-foreground/30 shrink-0">
+                <span className="text-[9.5px] font-mono tabular-nums text-muted-foreground/30 shrink-0">
                     {formatRowCount(rowCount)}
                 </span>
             )}
@@ -330,27 +330,25 @@ function TableLeaf({
                     onClick={onClick}
                     title={tableComment?.trim() || undefined}
                     className={cn(
-                        "group flex w-full items-center gap-1.5 py-[4px] pr-2 text-left text-[11px] transition-all duration-100 rounded-md focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
-                        "hover:bg-white/[0.04]",
+                        "group flex w-full items-center gap-1.5 pl-12 pr-2 py-[4px] text-left transition-all duration-100 rounded-md focus:outline-none focus-visible:ring-1 focus-visible:ring-ring",
                         isActive
                             ? "bg-primary/10 text-primary"
-                            : "text-muted-foreground/70 hover:text-foreground/85"
+                            : "text-muted-foreground/65 hover:text-foreground/85 hover:bg-sidebar-accent"
                     )}
-                    style={{ paddingLeft: LEAF_INDENT + 16 }}
                 >
                     <span className={cn(
                         "w-0.5 h-3 rounded-full shrink-0 transition-all",
-                        isActive ? "bg-primary opacity-100" : "bg-transparent"
+                        isActive ? "bg-primary" : "bg-transparent"
                     )} />
                     <Icon className={cn(
                         "h-3 w-3 shrink-0",
-                        isActive ? "text-primary" : "text-muted-foreground/40 group-hover:text-muted-foreground/70"
+                        isActive ? "text-primary" : "text-muted-foreground/40 group-hover:text-muted-foreground/65"
                     )} />
-                    <span className={cn("truncate flex-1 font-mono text-[10.5px]", isActive && "font-medium")}>
+                    <span className={cn("truncate flex-1 font-mono text-[11px]", isActive && "font-medium")}>
                         {tableName}
                     </span>
                     {rowCount != null && rowCount >= 0 && (
-                        <span className="text-[9px] font-mono tabular-nums text-muted-foreground/30 shrink-0">
+                        <span className="text-[9.5px] font-mono tabular-nums text-muted-foreground/30 shrink-0">
                             {formatRowCount(rowCount)}
                         </span>
                     )}
@@ -407,7 +405,7 @@ function TableLeaf({
                 {!isView && (
                     <ContextMenuItem
                         onClick={() => onOpenManager("overview")}
-                        className="text-amber-400 focus:text-amber-300 focus:bg-amber-500/10"
+                        className="text-destructive focus:text-destructive focus:bg-destructive/10"
                     >
                         <AlertTriangle className="h-3.5 w-3.5" />Truncate Table…
                     </ContextMenuItem>
@@ -436,7 +434,7 @@ function DropDatabaseConfirm({
 }) {
     return (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm">
-            <div className="w-full max-w-sm rounded-2xl border border-white/[0.08] bg-[#0f0f0f] shadow-2xl p-5 space-y-4 mx-4">
+            <div className="w-full max-w-sm rounded-2xl border border-border bg-popover shadow-2xl p-5 space-y-4 mx-4">
                 <div className="flex items-start gap-3">
                     <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-destructive/10 border border-destructive/20">
                         <AlertTriangle className="h-4 w-4 text-destructive" />
@@ -445,7 +443,7 @@ function DropDatabaseConfirm({
                         <p className="text-sm font-semibold">Drop database?</p>
                         <p className="text-xs text-muted-foreground/70 leading-relaxed">
                             This will permanently delete{" "}
-                            <span className="font-mono font-medium text-foreground/90 bg-white/[0.05] px-1 rounded">
+                            <span className="font-mono font-medium text-foreground/90 bg-muted px-1 rounded">
                                 {name}
                             </span>{" "}
                             and all its data.
@@ -457,7 +455,7 @@ function DropDatabaseConfirm({
                         type="button"
                         onClick={onCancel}
                         disabled={isDropping}
-                        className="h-8 px-4 text-xs rounded-lg border border-white/[0.08] bg-white/[0.04] hover:bg-white/[0.07] text-foreground/70 hover:text-foreground transition-all disabled:opacity-50"
+                        className="h-8 px-4 text-xs rounded-lg border border-border bg-muted/50 hover:bg-muted text-foreground/70 hover:text-foreground transition-all disabled:opacity-50"
                     >
                         Cancel
                     </button>
@@ -828,8 +826,10 @@ export function Sidebar({
                 />
             )}
 
-            <div className="flex h-full w-full flex-col min-h-0 bg-[#0b0b0b] border-r border-white/[0.06] overflow-hidden">
-                <div className="px-2.5 pt-3 pb-2 border-b border-white/[0.05] space-y-2 shrink-0">
+            <div className="flex h-full w-full flex-col min-h-0 bg-sidebar border-r border-sidebar-border overflow-hidden">
+
+                {/* ── Zone A: Connections ── */}
+                <div className="px-2 pt-2.5 pb-2 border-b border-sidebar-border shrink-0 space-y-0.5">
                     <TreeNode
                         icon={Server}
                         label="Connections"
@@ -839,7 +839,7 @@ export function Sidebar({
                         iconColor="text-amber-400/70"
                     />
                     {connectionsOpen && (
-                        <div className="ml-3 border-l border-white/[0.05] pl-0.5 space-y-0.5 animate-in fade-in-0 slide-in-from-top-1 duration-200">
+                        <div className="ml-2 border-l border-sidebar-border pl-1 space-y-0.5 animate-in fade-in-0 slide-in-from-top-1 duration-200">
                             {savedConnections.map((saved) => {
                                 const openConn = connections.find((c) => c.savedConnectionId === saved.id);
                                 if (openConn) {
@@ -851,16 +851,21 @@ export function Sidebar({
                                                     type="button"
                                                     onClick={() => setActiveConnection(openConn.connectionId)}
                                                     className={cn(
-                                                        "flex w-full items-center gap-1.5 py-[4px] pr-2 text-[11px] text-left rounded-md transition-all hover:bg-white/[0.04]",
-                                                        isActive ? "bg-primary/10 text-primary" : "text-muted-foreground/70 hover:text-foreground/85"
+                                                        "flex w-full items-center gap-1.5 pl-3 pr-2 py-[4px] text-[11px] text-left rounded-md transition-all",
+                                                        isActive
+                                                            ? "bg-primary/10 text-primary"
+                                                            : "text-muted-foreground/65 hover:text-foreground/85 hover:bg-sidebar-accent"
                                                     )}
-                                                    style={{ paddingLeft: LEAF_INDENT + 8 }}
                                                 >
                                                     <span className={cn("w-0.5 h-3 rounded-full shrink-0", isActive ? "bg-primary" : "bg-transparent")} />
                                                     <CircleDot className="h-3 w-3 shrink-0 text-emerald-400/80" />
                                                     <span className="truncate flex-1">{saved.name}</span>
-                                                    {isActive && <span className="text-[9px] text-primary/80 font-medium shrink-0">Active</span>}
-                                                    <span className="text-[9px] font-mono text-muted-foreground/40 truncate max-w-[80px]">{openConn.databaseName}</span>
+                                                    {isActive && (
+                                                        <span className="text-[9px] text-primary/70 font-medium shrink-0 px-1 py-0.5 rounded bg-primary/10">
+                                                            Active
+                                                        </span>
+                                                    )}
+                                                    <span className="text-[9px] font-mono text-muted-foreground/35 truncate max-w-[72px]">{openConn.databaseName}</span>
                                                 </button>
                                             </ContextMenuTrigger>
                                             <ContextMenuContent className="w-48">
@@ -884,13 +889,12 @@ export function Sidebar({
                                         key={saved.id}
                                         type="button"
                                         onClick={() => connect(saved.connection_string, saved.id, saved.name)}
-                                        className="flex w-full items-center gap-1.5 py-[4px] pr-2 text-[11px] text-left rounded-md text-muted-foreground/60 hover:text-foreground/80 hover:bg-white/[0.04] transition-all"
-                                        style={{ paddingLeft: LEAF_INDENT + 8 }}
+                                        className="flex w-full items-center gap-1.5 pl-3 pr-2 py-[4px] text-[11px] text-left rounded-md text-muted-foreground/50 hover:text-foreground/75 hover:bg-sidebar-accent transition-all"
                                     >
                                         <span className="w-0.5 h-3 rounded-full bg-transparent shrink-0" />
-                                        <Unplug className="h-3 w-3 shrink-0 text-muted-foreground/40" />
+                                        <Unplug className="h-3 w-3 shrink-0 text-muted-foreground/35" />
                                         <span className="truncate flex-1">{saved.name}</span>
-                                        <span className="text-[9px] text-muted-foreground/35">Connect</span>
+                                        <span className="text-[9px] text-muted-foreground/30 shrink-0">Connect</span>
                                     </button>
                                 );
                             })}
@@ -903,16 +907,21 @@ export function Sidebar({
                                                 type="button"
                                                 onClick={() => setActiveConnection(conn.connectionId)}
                                                 className={cn(
-                                                    "flex w-full items-center gap-1.5 py-[4px] pr-2 text-[11px] text-left rounded-md transition-all hover:bg-white/[0.04]",
-                                                    isActive ? "bg-primary/10 text-primary" : "text-muted-foreground/70 hover:text-foreground/85"
+                                                    "flex w-full items-center gap-1.5 pl-3 pr-2 py-[4px] text-[11px] text-left rounded-md transition-all",
+                                                    isActive
+                                                        ? "bg-primary/10 text-primary"
+                                                        : "text-muted-foreground/65 hover:text-foreground/85 hover:bg-sidebar-accent"
                                                 )}
-                                                style={{ paddingLeft: LEAF_INDENT + 8 }}
                                             >
                                                 <span className={cn("w-0.5 h-3 rounded-full shrink-0", isActive ? "bg-primary" : "bg-transparent")} />
                                                 <CircleDot className="h-3 w-3 shrink-0 text-emerald-400/80" />
                                                 <span className="truncate flex-1">{conn.label}</span>
-                                                {isActive && <span className="text-[9px] text-primary/80 font-medium shrink-0">Active</span>}
-                                                <span className="text-[9px] font-mono text-muted-foreground/40 truncate max-w-[80px]">{conn.databaseName}</span>
+                                                {isActive && (
+                                                    <span className="text-[9px] text-primary/70 font-medium shrink-0 px-1 py-0.5 rounded bg-primary/10">
+                                                        Active
+                                                    </span>
+                                                )}
+                                                <span className="text-[9px] font-mono text-muted-foreground/35 truncate max-w-[72px]">{conn.databaseName}</span>
                                             </button>
                                         </ContextMenuTrigger>
                                         <ContextMenuContent className="w-48">
@@ -934,8 +943,7 @@ export function Sidebar({
                             <button
                                 type="button"
                                 onClick={() => onOpenConnectionDialog?.()}
-                                className="flex w-full items-center gap-1.5 py-[4px] pr-2 text-[10px] text-emerald-400/50 hover:text-emerald-400 hover:bg-emerald-500/[0.06] rounded-md transition-all"
-                                style={{ paddingLeft: LEAF_INDENT + 8 }}
+                                className="flex w-full items-center gap-1.5 pl-3 pr-2 py-[4px] text-[10.5px] text-primary/70 hover:text-primary hover:bg-primary/10 rounded-md transition-all"
                             >
                                 <span className="w-0.5 h-3 rounded-full bg-transparent shrink-0" />
                                 <Plus className="h-2.5 w-2.5 shrink-0" />
@@ -943,42 +951,45 @@ export function Sidebar({
                             </button>
                         </div>
                     )}
+                </div>
 
+                {/* ── Zone B: Database Picker + Refresh ── */}
+                <div className="px-2 py-2 border-b border-sidebar-border shrink-0">
                     <div className="flex items-center gap-1.5">
                         <div ref={dbPickerRef} className="relative flex-1 min-w-0">
                             <button
                                 onClick={() => { setDbPickerOpen((o) => !o); setDbSearch(""); }}
                                 disabled={isSwitchingDatabase || databases.length === 0}
                                 className={cn(
-                                    "flex w-full items-center gap-2 rounded-lg px-2 py-1.5 text-[11px] transition-all duration-150",
-                                    "bg-white/[0.04] border border-white/[0.06] hover:bg-white/[0.06] hover:border-white/[0.10]",
+                                    "flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-[11.5px] transition-all duration-150",
+                                    "bg-muted/50 border border-sidebar-border hover:bg-muted hover:border-border",
                                     "disabled:opacity-40",
-                                    dbPickerOpen && "bg-white/[0.06] border-primary/30 ring-1 ring-primary/10"
+                                    dbPickerOpen && "bg-muted border-primary/25 ring-1 ring-primary/10"
                                 )}
                             >
-                                <div className="flex h-5 w-5 items-center justify-center rounded-md bg-amber-500/15 border border-amber-500/20 shrink-0">
+                                <div className="flex h-6 w-6 items-center justify-center rounded-lg bg-amber-500/15 border border-amber-500/20 shrink-0">
                                     {isSwitchingDatabase
-                                        ? <Loader2 className="h-2.5 w-2.5 text-amber-400 animate-spin" />
-                                        : <Server className="h-2.5 w-2.5 text-amber-400/90" />}
+                                        ? <Loader2 className="h-3 w-3 text-amber-400 animate-spin" />
+                                        : <Server className="h-3 w-3 text-amber-400/90" />}
                                 </div>
-                                <span className="truncate font-semibold text-foreground/90 flex-1">
+                                <span className="truncate font-semibold text-foreground/90 flex-1 text-[12px]">
                                     {isSwitchingDatabase ? "Switching…" : databaseName || "Database"}
                                 </span>
                                 {pgVersion && (
-                                    <span className="shrink-0 text-[9px] font-mono text-muted-foreground/30 hidden sm:block">
+                                    <span className="shrink-0 text-[9px] font-mono text-muted-foreground/30 hidden sm:block bg-muted/50 px-1.5 py-0.5 rounded border border-sidebar-border">
                                         PG {pgVersion}
                                     </span>
                                 )}
                                 <ChevronDown className={cn(
-                                    "h-3 w-3 text-muted-foreground/30 shrink-0 transition-transform duration-150",
+                                    "h-3.5 w-3.5 text-muted-foreground/30 shrink-0 transition-transform duration-150",
                                     dbPickerOpen && "rotate-180"
                                 )} />
                             </button>
 
                             {dbPickerOpen && databases.length > 0 && (
-                                <div className="absolute left-0 right-0 top-full mt-1.5 z-50 rounded-xl border border-white/[0.08] bg-[#101010] shadow-2xl shadow-black/60 overflow-hidden">
+                                <div className="absolute left-0 right-0 top-full mt-1.5 z-50 rounded-xl border border-sidebar-border bg-popover shadow-2xl overflow-hidden">
                                     {databases.length > 5 && (
-                                        <div className="px-2 pt-2 pb-1.5 border-b border-white/[0.05]">
+                                        <div className="px-2 pt-2 pb-1.5 border-b border-sidebar-border">
                                             <div className="relative">
                                                 <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground/30 pointer-events-none" />
                                                 <Input
@@ -986,7 +997,7 @@ export function Sidebar({
                                                     value={dbSearch}
                                                     onChange={(e) => setDbSearch(e.target.value)}
                                                     placeholder="Search databases…"
-                                                    className="h-7 pl-7 text-xs bg-white/[0.04] border-white/[0.06] focus-visible:ring-0 rounded-lg"
+                                                    className="h-7 pl-7 text-xs bg-muted/50 border-sidebar-border focus-visible:ring-0 rounded-lg"
                                                 />
                                             </div>
                                         </div>
@@ -1002,7 +1013,7 @@ export function Sidebar({
                                                         disabled={isCurrent}
                                                         className={cn(
                                                             "flex w-full items-center gap-2 px-2.5 py-1.5 text-[11px] text-left rounded-lg transition-all",
-                                                            "hover:bg-white/[0.05]",
+                                                            "hover:bg-sidebar-accent",
                                                             isCurrent ? "text-primary font-medium" : "text-foreground/70"
                                                         )}
                                                     >
@@ -1014,10 +1025,10 @@ export function Sidebar({
                                             })}
                                         </div>
                                     </ScrollArea>
-                                    <div className="border-t border-white/[0.05] p-1">
+                                    <div className="border-t border-sidebar-border p-1">
                                         <button
                                             onClick={() => { setDbPickerOpen(false); setDbSearch(""); setCreateDatabaseOpen(true); }}
-                                            className="flex w-full items-center gap-2 px-2.5 py-1.5 text-[11px] text-left text-emerald-400/60 hover:text-emerald-400 hover:bg-emerald-500/8 rounded-lg transition-all"
+                                            className="flex w-full items-center gap-2 px-2.5 py-1.5 text-[11px] text-left text-primary/80 hover:text-primary hover:bg-primary/10 rounded-lg transition-all"
                                         >
                                             <Plus className="h-3 w-3 shrink-0" />
                                             <span>Create new database</span>
@@ -1033,72 +1044,77 @@ export function Sidebar({
                                     type="button"
                                     onClick={handleRefresh}
                                     disabled={isLoadingSchemas || isSwitchingDatabase}
-                                    className="flex h-8 w-8 items-center justify-center rounded-lg border border-white/[0.06] bg-white/[0.03] text-muted-foreground/40 hover:text-foreground/80 hover:bg-white/[0.06] hover:border-white/[0.09] transition-all disabled:opacity-30 shrink-0 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                                    className="flex h-9 w-9 items-center justify-center rounded-lg border border-sidebar-border bg-muted/30 text-muted-foreground/40 hover:text-foreground/80 hover:bg-sidebar-accent hover:border-border transition-all disabled:opacity-30 shrink-0 focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
                                     aria-label="Refresh schema tree"
                                 >
                                     <RefreshCw className={cn("h-3.5 w-3.5", isLoadingSchemas && "animate-spin")} />
                                 </button>
                             </TooltipTrigger>
-                            <TooltipContent side="right">Refresh</TooltipContent>
+                            <TooltipContent side="right">Refresh schema</TooltipContent>
                         </Tooltip>
                     </div>
+                </div>
 
+                {/* ── Zone C: Search + Quick Links ── */}
+                <div className="px-2 py-2 border-b border-sidebar-border shrink-0 space-y-2">
                     <div className="relative">
-                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground/30 pointer-events-none" />
+                        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground/25 pointer-events-none" />
                         <Input
                             value={search}
                             onChange={(e) => setSearch(e.target.value)}
                             placeholder="Filter objects…"
-                            className="h-7 pl-7 pr-7 text-[11px] bg-white/[0.03] border-white/[0.06] focus:border-primary/30 focus-visible:ring-0 rounded-lg placeholder:text-muted-foreground/25"
+                            className="h-8 pl-8 pr-7 text-[11.5px] bg-muted/30 border-sidebar-border focus:border-primary/25 focus-visible:ring-0 rounded-lg placeholder:text-muted-foreground/20"
                         />
                         {search && (
                             <button
                                 type="button"
                                 onClick={() => setSearch("")}
-                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/30 hover:text-muted-foreground/70 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring rounded"
+                                className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground/30 hover:text-muted-foreground/60 transition-colors focus:outline-none focus-visible:ring-1 focus-visible:ring-ring rounded"
                                 aria-label="Clear filter"
                             >
-                                <X className="h-3 w-3" />
+                                <X className="h-3.5 w-3.5" />
                             </button>
                         )}
                     </div>
 
-                    <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-1.5">
                         <button
                             type="button"
                             onClick={() => setDocWriterOpen(true)}
-                            className="flex h-7 items-center gap-1.5 rounded-md border border-violet-500/30 bg-violet-500/10 px-2 text-[10px] font-medium text-violet-200 hover:bg-violet-500/15 transition-colors"
+                            className="flex flex-1 h-7 items-center justify-center gap-1.5 rounded-md bg-muted/50 border border-sidebar-border px-2 text-[10.5px] font-medium text-muted-foreground/60 hover:text-violet-600 dark:hover:text-violet-300 hover:bg-violet-500/10 hover:border-violet-500/20 transition-all"
                         >
-                            <Sparkles className="h-3 w-3" />
+                            <Sparkles className="h-3 w-3 shrink-0" />
                             AI Docs
                         </button>
                         <Link
                             href="/query-history"
-                            className="flex h-7 items-center gap-1.5 rounded-md border border-cyan-500/30 bg-cyan-500/10 px-2 text-[10px] font-medium text-cyan-200 hover:bg-cyan-500/15 transition-colors"
+                            className="flex flex-1 h-7 items-center justify-center gap-1.5 rounded-md bg-muted/50 border border-sidebar-border px-2 text-[10.5px] font-medium text-muted-foreground/60 hover:text-cyan-600 dark:hover:text-cyan-300 hover:bg-cyan-500/10 hover:border-cyan-500/20 transition-all"
                         >
-                            <Clock3 className="h-3 w-3" />
+                            <Clock3 className="h-3 w-3 shrink-0" />
                             Query History
                         </Link>
                     </div>
                 </div>
 
+                {/* ── Zone D: Schema Tree ── */}
                 <ScrollArea className="flex-1 min-h-0">
                     <div className="py-1.5 px-1.5">
                         {isLoadingSchemas ? (
-                            <div className="space-y-1 px-1">
+                            <div className="space-y-1.5 px-2 pt-1">
                                 {[1, 2, 3, 4, 5].map((i) => (
-                                    <Skeleton key={i} className="h-7 w-full rounded-lg opacity-30" />
+                                    <Skeleton key={i} className="h-7 w-full rounded-lg opacity-25" />
                                 ))}
                             </div>
                         ) : !hasSearchMatch && hasSearch ? (
-                            <div className="flex flex-col items-center justify-center py-10 text-muted-foreground/30 px-4">
-                                <Search className="h-7 w-7 mb-2.5 opacity-40" />
-                                <p className="text-[11px] text-center">
+                            <div className="flex flex-col items-center justify-center py-12 text-muted-foreground/30 px-4">
+                                <Search className="h-8 w-8 mb-3 opacity-30" />
+                                <p className="text-[11px] text-center leading-relaxed">
                                     No matches for &ldquo;{search}&rdquo;
                                 </p>
                             </div>
                         ) : (
                             <div className="space-y-0.5" role="tree" aria-label="Schema tree">
+                                {/* Event Triggers */}
                                 <TreeNode
                                     icon={Zap}
                                     label="Event Triggers"
@@ -1108,15 +1124,15 @@ export function Sidebar({
                                     iconColor="text-violet-400/70"
                                 />
                                 {eventTriggersOpen && (
-                                    <div className="ml-3 border-l border-white/[0.05] pl-0 animate-in fade-in-0 slide-in-from-top-1 duration-200">
+                                    <div className="ml-2 border-l border-sidebar-border pl-1 animate-in fade-in-0 slide-in-from-top-1 duration-200">
                                         {eventTriggersStatus === "loading" && (
-                                            <div className="flex items-center gap-1.5 py-1.5 text-[10px] text-muted-foreground/35" style={{ paddingLeft: LEAF_INDENT + 12 }}>
+                                            <div className="flex items-center gap-1.5 pl-4 py-1.5 text-[10px] text-muted-foreground/35">
                                                 <Loader2 className="h-3 w-3 animate-spin" />
                                                 Loading event triggers…
                                             </div>
                                         )}
                                         {eventTriggersStatus === "error" && (
-                                            <div className="flex items-center gap-2 py-1.5" style={{ paddingLeft: LEAF_INDENT + 12 }}>
+                                            <div className="flex items-center gap-2 pl-4 py-1.5">
                                                 <span className="text-[10px] text-destructive/80 truncate max-w-[130px]">{eventTriggersError ?? "Failed to load"}</span>
                                                 <button
                                                     type="button"
@@ -1128,7 +1144,7 @@ export function Sidebar({
                                             </div>
                                         )}
                                         {eventTriggersStatus === "success" && eventTriggers.length === 0 && (
-                                            <div className="py-1.5 text-[10px] text-muted-foreground/30 italic" style={{ paddingLeft: LEAF_INDENT + 12 }}>
+                                            <div className="pl-4 py-1.5 text-[10px] text-muted-foreground/30 italic">
                                                 None
                                             </div>
                                         )}
@@ -1144,6 +1160,7 @@ export function Sidebar({
                                     </div>
                                 )}
 
+                                {/* Databases */}
                                 <TreeNode
                                     icon={Database}
                                     label="Databases"
@@ -1155,13 +1172,13 @@ export function Sidebar({
                                     addTitle="Create new database"
                                 />
                                 {databasesOpen && (
-                                    <div className="ml-3 border-l border-white/[0.05] animate-in fade-in-0 slide-in-from-top-1 duration-200">
+                                    <div className="ml-2 border-l border-sidebar-border pl-1 animate-in fade-in-0 slide-in-from-top-1 duration-200">
                                         {isLoadingDatabases ? (
-                                            <div className="flex items-center gap-1.5 py-1.5 text-[10px] text-muted-foreground/30" style={{ paddingLeft: LEAF_INDENT + 12 }}>
+                                            <div className="flex items-center gap-1.5 pl-4 py-1.5 text-[10px] text-muted-foreground/30">
                                                 <Loader2 className="h-3 w-3 animate-spin" />Loading…
                                             </div>
                                         ) : databases.length === 0 ? (
-                                            <div className="py-1.5 text-[10px] text-muted-foreground/30 italic" style={{ paddingLeft: LEAF_INDENT + 12 }}>
+                                            <div className="pl-4 py-1.5 text-[10px] text-muted-foreground/30 italic">
                                                 No databases
                                             </div>
                                         ) : (
@@ -1175,10 +1192,11 @@ export function Sidebar({
                                                                 onClick={() => !isCurrent && handleSwitchDatabase(db)}
                                                                 disabled={isSwitchingDatabase}
                                                                 className={cn(
-                                                                    "group flex w-full items-center gap-1.5 py-[4px] pr-2 text-[11px] text-left transition-all rounded-md hover:bg-white/[0.04]",
-                                                                    isCurrent ? "text-primary font-medium" : "text-muted-foreground/65 hover:text-foreground/85"
+                                                                    "group flex w-full items-center gap-1.5 pl-3 pr-2 py-[4px] text-[11px] text-left transition-all rounded-md",
+                                                                    isCurrent
+                                                                        ? "text-primary font-medium"
+                                                                        : "text-muted-foreground/60 hover:text-foreground/85 hover:bg-sidebar-accent"
                                                                 )}
-                                                                style={{ paddingLeft: LEAF_INDENT + 16 }}
                                                             >
                                                                 <span className={cn("w-0.5 h-3 rounded-full shrink-0", isCurrent ? "bg-primary" : "bg-transparent")} />
                                                                 <Database className="h-3 w-3 shrink-0 text-amber-400/50" />
@@ -1212,8 +1230,7 @@ export function Sidebar({
                                         <button
                                             type="button"
                                             onClick={() => setCreateDatabaseOpen(true)}
-                                            className="flex w-full items-center gap-1.5 py-[4px] pr-2 text-[10px] text-emerald-400/40 hover:text-emerald-400/80 transition-all rounded-md hover:bg-emerald-500/[0.06]"
-                                            style={{ paddingLeft: LEAF_INDENT + 16 }}
+                                            className="flex w-full items-center gap-1.5 pl-3 pr-2 py-[4px] text-[10.5px] text-primary/60 hover:text-primary transition-all rounded-md hover:bg-primary/10"
                                         >
                                             <span className="w-0.5 h-3 rounded-full bg-transparent shrink-0" />
                                             <Plus className="h-2.5 w-2.5 shrink-0" />
@@ -1222,6 +1239,7 @@ export function Sidebar({
                                     </div>
                                 )}
 
+                                {/* Schemas */}
                                 <TreeNode
                                     icon={Layers}
                                     label="Schemas"
@@ -1232,7 +1250,7 @@ export function Sidebar({
                                 />
 
                                 {schemasOpen && (
-                                    <div className="ml-3 border-l border-white/[0.05] animate-in fade-in-0 slide-in-from-top-1 duration-200">
+                                    <div className="ml-2 border-l border-sidebar-border pl-1 animate-in fade-in-0 slide-in-from-top-1 duration-200">
                                         {schemas.map((schema) => {
                                             const schemaName = schema.name;
                                             const isExpanded = expandedSchemas.has(schemaName);
@@ -1276,7 +1294,8 @@ export function Sidebar({
                                                     />
 
                                                     {shouldExpand && (
-                                                        <div className="ml-3 border-l border-white/[0.05] py-0.5 space-y-0.5 animate-in fade-in-0 slide-in-from-top-1 duration-150">
+                                                        <div className="ml-2 border-l border-sidebar-border pl-1 py-0.5 space-y-0.5 animate-in fade-in-0 slide-in-from-top-1 duration-150">
+                                                            {/* Tables section */}
                                                             <SchemaSectionHeader
                                                                 icon={Table2}
                                                                 label="Tables"
@@ -1286,7 +1305,7 @@ export function Sidebar({
                                                                 addTitle="Create new table"
                                                             />
                                                             {!tablesLoaded && isLoadingTables && (
-                                                                <div className="flex items-center gap-1.5 py-1.5 text-[10px] text-muted-foreground/35" style={{ paddingLeft: LEAF_INDENT + 16 }}>
+                                                                <div className="flex items-center gap-1.5 pl-12 py-1.5 text-[10px] text-muted-foreground/35">
                                                                     <Loader2 className="h-3 w-3 animate-spin" />
                                                                     Loading tables…
                                                                 </div>
@@ -1309,12 +1328,13 @@ export function Sidebar({
                                                                 <button
                                                                     type="button"
                                                                     onClick={() => ensureSectionLimit(schemaName, "tables", tableList.length)}
-                                                                    className="ml-10 text-[10px] text-muted-foreground/45 hover:text-foreground/75 transition-colors"
+                                                                    className="pl-12 py-0.5 text-[10px] text-muted-foreground/40 hover:text-foreground/70 transition-colors"
                                                                 >
                                                                     Show {Math.min(tableList.length - visibleTables.shown, SECTION_BATCH_SIZE)} more tables
                                                                 </button>
                                                             )}
 
+                                                            {/* Views section */}
                                                             {viewList.length > 0 && (
                                                                 <>
                                                                     <SchemaSectionHeader
@@ -1340,7 +1360,7 @@ export function Sidebar({
                                                                         <button
                                                                             type="button"
                                                                             onClick={() => ensureSectionLimit(schemaName, "views", viewList.length)}
-                                                                            className="ml-10 text-[10px] text-muted-foreground/45 hover:text-foreground/75 transition-colors"
+                                                                            className="pl-12 py-0.5 text-[10px] text-muted-foreground/40 hover:text-foreground/70 transition-colors"
                                                                         >
                                                                             Show {Math.min(viewList.length - visibleViews.shown, SECTION_BATCH_SIZE)} more views
                                                                         </button>
@@ -1348,6 +1368,7 @@ export function Sidebar({
                                                                 </>
                                                             )}
 
+                                                            {/* Functions section */}
                                                             <SchemaSectionHeader
                                                                 icon={Code2}
                                                                 label="Functions"
@@ -1359,13 +1380,13 @@ export function Sidebar({
                                                             {functionsOpen && (
                                                                 <>
                                                                     {functionStatus === "loading" && (
-                                                                        <div className="flex items-center gap-1.5 py-1.5 text-[10px] text-muted-foreground/35" style={{ paddingLeft: LEAF_INDENT + 16 }}>
+                                                                        <div className="flex items-center gap-1.5 pl-12 py-1.5 text-[10px] text-muted-foreground/35">
                                                                             <Loader2 className="h-3 w-3 animate-spin" />
                                                                             Loading functions…
                                                                         </div>
                                                                     )}
                                                                     {functionStatus === "error" && (
-                                                                        <div className="flex items-center gap-2 py-1.5" style={{ paddingLeft: LEAF_INDENT + 16 }}>
+                                                                        <div className="flex items-center gap-2 pl-12 py-1.5">
                                                                             <span className="text-[10px] text-destructive/80 truncate max-w-[130px]">
                                                                                 {schemaFunctionsError[schemaName] ?? "Failed to load"}
                                                                             </span>
@@ -1402,19 +1423,20 @@ export function Sidebar({
                                                                         <button
                                                                             type="button"
                                                                             onClick={() => ensureSectionLimit(schemaName, "functions", funcs.length)}
-                                                                            className="ml-10 text-[10px] text-muted-foreground/45 hover:text-foreground/75 transition-colors"
+                                                                            className="pl-12 py-0.5 text-[10px] text-muted-foreground/40 hover:text-foreground/70 transition-colors"
                                                                         >
                                                                             Show {Math.min(funcs.length - visibleFunctions.shown, SECTION_BATCH_SIZE)} more functions
                                                                         </button>
                                                                     )}
                                                                     {functionStatus === "success" && funcs.length === 0 && (
-                                                                        <div className="py-1.5 text-[10px] text-muted-foreground/30 italic" style={{ paddingLeft: LEAF_INDENT + 16 }}>
+                                                                        <div className="pl-12 py-1.5 text-[10px] text-muted-foreground/30 italic">
                                                                             {hasSearch ? "No matches" : "None"}
                                                                         </div>
                                                                     )}
                                                                 </>
                                                             )}
 
+                                                            {/* Trigger Functions section */}
                                                             <SchemaSectionHeader
                                                                 icon={Zap}
                                                                 label="Trigger Functions"
@@ -1426,13 +1448,13 @@ export function Sidebar({
                                                             {triggerFunctionsOpen && (
                                                                 <>
                                                                     {functionStatus === "loading" && (
-                                                                        <div className="flex items-center gap-1.5 py-1.5 text-[10px] text-muted-foreground/35" style={{ paddingLeft: LEAF_INDENT + 16 }}>
+                                                                        <div className="flex items-center gap-1.5 pl-12 py-1.5 text-[10px] text-muted-foreground/35">
                                                                             <Loader2 className="h-3 w-3 animate-spin" />
                                                                             Loading trigger functions…
                                                                         </div>
                                                                     )}
                                                                     {functionStatus === "error" && (
-                                                                        <div className="flex items-center gap-2 py-1.5" style={{ paddingLeft: LEAF_INDENT + 16 }}>
+                                                                        <div className="flex items-center gap-2 pl-12 py-1.5">
                                                                             <span className="text-[10px] text-destructive/80 truncate max-w-[130px]">
                                                                                 {schemaFunctionsError[schemaName] ?? "Failed to load"}
                                                                             </span>
@@ -1469,19 +1491,20 @@ export function Sidebar({
                                                                         <button
                                                                             type="button"
                                                                             onClick={() => ensureSectionLimit(schemaName, "triggerFunctions", triggerFuncs.length)}
-                                                                            className="ml-10 text-[10px] text-muted-foreground/45 hover:text-foreground/75 transition-colors"
+                                                                            className="pl-12 py-0.5 text-[10px] text-muted-foreground/40 hover:text-foreground/70 transition-colors"
                                                                         >
                                                                             Show {Math.min(triggerFuncs.length - visibleTriggerFunctions.shown, SECTION_BATCH_SIZE)} more trigger functions
                                                                         </button>
                                                                     )}
                                                                     {functionStatus === "success" && triggerFuncs.length === 0 && (
-                                                                        <div className="py-1.5 text-[10px] text-muted-foreground/30 italic" style={{ paddingLeft: LEAF_INDENT + 16 }}>
+                                                                        <div className="pl-12 py-1.5 text-[10px] text-muted-foreground/30 italic">
                                                                             {hasSearch ? "No matches" : "None"}
                                                                         </div>
                                                                     )}
                                                                 </>
                                                             )}
 
+                                                            {/* Types section */}
                                                             <SchemaSectionHeader
                                                                 icon={Type}
                                                                 label="Types"
@@ -1495,13 +1518,13 @@ export function Sidebar({
                                                             {typesOpen && (
                                                                 <>
                                                                     {typeStatus === "loading" && (
-                                                                        <div className="flex items-center gap-1.5 py-1.5 text-[10px] text-muted-foreground/35" style={{ paddingLeft: LEAF_INDENT + 16 }}>
+                                                                        <div className="flex items-center gap-1.5 pl-12 py-1.5 text-[10px] text-muted-foreground/35">
                                                                             <Loader2 className="h-3 w-3 animate-spin" />
                                                                             Loading types…
                                                                         </div>
                                                                     )}
                                                                     {typeStatus === "error" && (
-                                                                        <div className="flex items-center gap-2 py-1.5" style={{ paddingLeft: LEAF_INDENT + 16 }}>
+                                                                        <div className="flex items-center gap-2 pl-12 py-1.5">
                                                                             <span className="text-[10px] text-destructive/80 truncate max-w-[130px]">
                                                                                 {schemaTypesError[schemaName] ?? "Failed to load"}
                                                                             </span>
@@ -1534,13 +1557,13 @@ export function Sidebar({
                                                                         <button
                                                                             type="button"
                                                                             onClick={() => ensureSectionLimit(schemaName, "types", typeList.length)}
-                                                                            className="ml-10 text-[10px] text-muted-foreground/45 hover:text-foreground/75 transition-colors"
+                                                                            className="pl-12 py-0.5 text-[10px] text-muted-foreground/40 hover:text-foreground/70 transition-colors"
                                                                         >
                                                                             Show {Math.min(typeList.length - visibleTypes.shown, SECTION_BATCH_SIZE)} more types
                                                                         </button>
                                                                     )}
                                                                     {typeStatus === "success" && typeList.length === 0 && (
-                                                                        <div className="py-1.5 text-[10px] text-muted-foreground/30 italic" style={{ paddingLeft: LEAF_INDENT + 16 }}>
+                                                                        <div className="pl-12 py-1.5 text-[10px] text-muted-foreground/30 italic">
                                                                             {hasSearch ? "No matches" : "None"}
                                                                         </div>
                                                                     )}
@@ -1552,7 +1575,7 @@ export function Sidebar({
                                                                 viewList.length === 0 &&
                                                                 functionStatus === "idle" &&
                                                                 typeStatus === "idle" && (
-                                                                    <div style={{ paddingLeft: LEAF_INDENT + 16 }} className="py-1.5 flex items-center gap-2">
+                                                                    <div className="pl-12 py-1.5 flex items-center gap-2">
                                                                         <span className="text-[10px] text-muted-foreground/30 italic">
                                                                             {hasSearch ? "No matches" : "Empty schema"}
                                                                         </span>
@@ -1560,7 +1583,7 @@ export function Sidebar({
                                                                             <button
                                                                                 type="button"
                                                                                 onClick={() => setCreateTableSchema(schemaName)}
-                                                                                className="flex items-center gap-1 h-5 px-1.5 rounded text-[10px] text-emerald-400/50 hover:text-emerald-400 hover:bg-emerald-500/8 border border-emerald-500/15 transition-all"
+                                                                                className="flex items-center gap-1 h-5 px-1.5 rounded text-[10px] text-primary/70 hover:text-primary hover:bg-primary/10 border border-primary/20 transition-all"
                                                                             >
                                                                                 <Plus className="h-2.5 w-2.5" />
                                                                                 Create table
@@ -1580,9 +1603,13 @@ export function Sidebar({
                     </div>
                 </ScrollArea>
 
-                <div className="px-3 py-2 border-t border-white/[0.05] shrink-0">
-                    <p className="text-[9.5px] font-mono text-muted-foreground/25 tabular-nums">
-                        {schemas.length} schema{schemas.length !== 1 ? "s" : ""} &middot; {totalObjects} loaded objects
+                {/* ── Zone E: Footer ── */}
+                <div className="px-3 py-2 border-t border-sidebar-border shrink-0 flex items-center gap-2">
+                    {isLoadingSchemas && (
+                        <span className="h-1.5 w-1.5 rounded-full bg-emerald-500/60 animate-pulse shrink-0" />
+                    )}
+                    <p className="text-[10px] font-mono text-muted-foreground/40 tabular-nums">
+                        {schemas.length} schema{schemas.length !== 1 ? "s" : ""} &middot; {totalObjects} objects
                     </p>
                 </div>
             </div>

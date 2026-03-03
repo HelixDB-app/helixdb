@@ -7,6 +7,7 @@ import { callGeminiSync } from "@/lib/ai-chat-engine";
 import type { GeminiModelId } from "@/lib/ai-chat-engine";
 import { useSettingsStore } from "@/stores/settings-store";
 import { AIError } from "@/lib/ai-chat-engine";
+import { withGeminiLogging } from "@/lib/gemini-logger";
 
 const AI_ERROR_SYSTEM_PROMPT = `You are a PostgreSQL expert inside a database IDE. The user's query failed and they need a clear, actionable explanation.
 
@@ -72,13 +73,16 @@ export async function explainQueryErrorWithAI(
     }
 
     const userPrompt = buildErrorAnalysisPrompt(sql, errorMessage, schemaContext);
-    const response = await callGeminiSync(
-        model,
-        apiKey,
-        [{ role: "user", parts: [{ text: userPrompt }] }],
-        AI_ERROR_SYSTEM_PROMPT,
-        options?.signal,
-        { maxOutputTokens: 2048 }
+    const response = await withGeminiLogging(
+        () => callGeminiSync(
+            model,
+            apiKey,
+            [{ role: "user", parts: [{ text: userPrompt }] }],
+            AI_ERROR_SYSTEM_PROMPT,
+            options?.signal,
+            { maxOutputTokens: 2048 }
+        ),
+        { model, featureType: "query-error", endpoint: "generateContent" }
     );
 
     return response?.trim() ?? "No explanation generated.";

@@ -48,6 +48,8 @@ export interface MonacoSqlEditorProps {
     className?: string;
     /** Editor height in px; default 200 */
     editorHeight?: number;
+    /** Hide the Nova AI next-action suggestions bar above the results area */
+    hideNextActionSuggestions?: boolean;
 }
 
 export function MonacoSqlEditor({
@@ -63,6 +65,7 @@ export function MonacoSqlEditor({
     disabled,
     className,
     editorHeight = EDITOR_HEIGHT,
+    hideNextActionSuggestions = false,
 }: MonacoSqlEditorProps) {
     const { resolvedTheme } = useTheme();
     const {
@@ -711,52 +714,52 @@ export function MonacoSqlEditor({
                 )} */}
             </div>
 
-            {/* ── Next-action suggestions bar ──────────────────────────────────── */}
-            {(nextActions.length > 0 || nextActionsLoading) && !disabled && aiAutocompleteEnabled && aiNextActionSuggestions && (
-                <div className="flex items-center gap-1.5 px-2 py-1.5 border border-t-0 border-border/30 bg-muted/20 rounded-b overflow-x-auto">
-                    <div className="flex items-center gap-1 shrink-0 text-[10px] text-muted-foreground/50 font-medium">
-                        {nextActionsLoading ? (
-                            <Zap className="h-3 w-3 animate-pulse text-yellow-500/70" />
-                        ) : (
-                            <Sparkles className="h-3 w-3 text-purple-400/70" />
-                        )}
-                        <span>Nova</span>
-                    </div>
-
-                    {nextActionsLoading && (
-                        <div className="flex gap-1">
-                            {[1, 2, 3].map((i) => (
-                                <div
-                                    key={i}
-                                    className="h-5 rounded bg-muted/40 animate-pulse"
-                                    style={{ width: `${60 + i * 20}px` }}
-                                />
-                            ))}
+            {/* Next-action suggestions bar — hidden when hideNextActionSuggestions (cleaner results view) */}
+            {!hideNextActionSuggestions &&
+                (nextActions.length > 0 || nextActionsLoading) &&
+                !disabled &&
+                aiAutocompleteEnabled &&
+                aiNextActionSuggestions && (
+                    <div className="flex items-center gap-1.5 px-2 py-1.5 border border-t-0 border-border/30 bg-muted/20 rounded-b overflow-x-auto">
+                        <div className="flex items-center gap-1 shrink-0 text-[10px] text-muted-foreground/50 font-medium">
+                            {nextActionsLoading ? (
+                                <Zap className="h-3 w-3 animate-pulse text-yellow-500/70" />
+                            ) : (
+                                <Sparkles className="h-3 w-3 text-purple-400/70" />
+                            )}
+                            <span>Nova</span>
                         </div>
-                    )}
-
-                    {!nextActionsLoading &&
-                        nextActions.map((action, i) => (
-                            <button
-                                key={i}
-                                onClick={() => {
-                                    if (onNextActionRef.current) {
-                                        onNextActionRef.current(action);
-                                    }
-                                }}
-                                className={cn(
-                                    "shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px]",
-                                    "border border-border/40 bg-background/60 hover:bg-accent/60",
-                                    "text-muted-foreground hover:text-foreground",
-                                    "transition-colors duration-150 cursor-pointer whitespace-nowrap font-mono"
-                                )}
-                                title="Click to apply this suggestion"
-                            >
-                                {action}
-                            </button>
-                        ))}
-                </div>
-            )}
+                        {nextActionsLoading && (
+                            <div className="flex gap-1">
+                                {[1, 2, 3].map((i) => (
+                                    <div
+                                        key={i}
+                                        className="h-5 rounded bg-muted/40 animate-pulse"
+                                        style={{ width: `${60 + i * 20}px` }}
+                                    />
+                                ))}
+                            </div>
+                        )}
+                        {!nextActionsLoading &&
+                            nextActions.map((action, i) => (
+                                <button
+                                    key={i}
+                                    onClick={() => {
+                                        if (onNextActionRef.current) onNextActionRef.current(action);
+                                    }}
+                                    className={cn(
+                                        "shrink-0 inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px]",
+                                        "border border-border/40 bg-background/60 hover:bg-accent/60",
+                                        "text-muted-foreground hover:text-foreground",
+                                        "transition-colors duration-150 cursor-pointer whitespace-nowrap font-mono"
+                                    )}
+                                    title="Click to apply this suggestion"
+                                >
+                                    {action}
+                                </button>
+                            ))}
+                    </div>
+                )}
         </div>
     );
 }

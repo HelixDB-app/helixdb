@@ -13,6 +13,7 @@ export { GEMINI_MODELS } from "./ai-chat-engine";
 export type { GeminiModelId } from "./ai-chat-engine";
 import type { SchemaDesignerTable, SchemaDesignerColumn, AISchemaReport } from "./types";
 import { useSettingsStore } from "@/stores/settings-store";
+import { withGeminiLogging } from "@/lib/gemini-logger";
 
 // ── System Prompts ──────────────────────────────────────────────────────────
 
@@ -149,13 +150,16 @@ export async function generateSchema(
     parts.push("Generate a complete PostgreSQL schema for this application. Output the full JSON with all tables and columns.");
     const userMessage = parts.join("\n");
 
-    const fullText = await callGeminiSync(
-        model,
-        apiKey,
-        [{ role: "user", parts: [{ text: userMessage }] }],
-        SCHEMA_GENERATION_PROMPT,
-        signal,
-        { maxOutputTokens: 8192 }
+    const fullText = await withGeminiLogging(
+        () => callGeminiSync(
+            model,
+            apiKey,
+            [{ role: "user", parts: [{ text: userMessage }] }],
+            SCHEMA_GENERATION_PROMPT,
+            signal,
+            { maxOutputTokens: 8192 }
+        ),
+        { model, featureType: "schema-designer", endpoint: "generateContent" }
     );
 
     const jsonStr = fullText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
@@ -199,12 +203,15 @@ export async function optimizeSchema(
     const { apiKey, model } = getApiKeyAndModel();
     const context = tablesToContext(tables);
 
-    const response = await callGeminiSync(
-        model,
-        apiKey,
-        [{ role: "user", parts: [{ text: `Analyze and optimize this schema:\n\n${context}` }] }],
-        SCHEMA_OPTIMIZATION_PROMPT,
-        signal
+    const response = await withGeminiLogging(
+        () => callGeminiSync(
+            model,
+            apiKey,
+            [{ role: "user", parts: [{ text: `Analyze and optimize this schema:\n\n${context}` }] }],
+            SCHEMA_OPTIMIZATION_PROMPT,
+            signal
+        ),
+        { model, featureType: "schema-designer", endpoint: "generateContent" }
     );
 
     const jsonStr = response.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
@@ -232,13 +239,16 @@ export async function generateReport(
     const { apiKey, model } = getApiKeyAndModel();
     const context = tablesToContext(tables);
 
-    const fullText = await callGeminiStream(
-        model,
-        apiKey,
-        [{ role: "user", parts: [{ text: `Generate a performance and scalability report for this schema:\n\n${context}` }] }],
-        SCHEMA_REPORT_PROMPT,
-        onChunk,
-        signal
+    const fullText = await withGeminiLogging(
+        () => callGeminiStream(
+            model,
+            apiKey,
+            [{ role: "user", parts: [{ text: `Generate a performance and scalability report for this schema:\n\n${context}` }] }],
+            SCHEMA_REPORT_PROMPT,
+            onChunk,
+            signal
+        ),
+        { model, featureType: "schema-designer", endpoint: "streamGenerateContent" }
     );
 
     const jsonStr = fullText.replace(/```json\n?/g, "").replace(/```\n?/g, "").trim();
@@ -278,13 +288,16 @@ ${context}
 
 Help them refine, add, optimize, or troubleshoot their schema. Be specific, practical, and reference their actual tables and columns. If suggesting changes, include the exact SQL or describe the column changes precisely.`;
 
-    return callGeminiStream(
-        model,
-        apiKey,
-        [{ role: "user", parts: [{ text: userMessage }] }],
-        systemPrompt,
-        onChunk,
-        signal
+    return withGeminiLogging(
+        () => callGeminiStream(
+            model,
+            apiKey,
+            [{ role: "user", parts: [{ text: userMessage }] }],
+            systemPrompt,
+            onChunk,
+            signal
+        ),
+        { model, featureType: "schema-designer", endpoint: "streamGenerateContent" }
     );
 }
 
@@ -308,13 +321,16 @@ export async function generatePostgresScript(
 ): Promise<string> {
     const { apiKey, model } = getApiKeyAndModel();
     const modelId = options?.model ?? model;
-    const fullText = await callGeminiStream(
-        modelId,
-        apiKey,
-        [{ role: "user", parts: [{ text: prompt }] }],
-        SCRIPT_GENERATION_PROMPT,
-        onChunk,
-        options?.signal
+    const fullText = await withGeminiLogging(
+        () => callGeminiStream(
+            modelId,
+            apiKey,
+            [{ role: "user", parts: [{ text: prompt }] }],
+            SCRIPT_GENERATION_PROMPT,
+            onChunk,
+            options?.signal
+        ),
+        { model: modelId, featureType: "schema-designer", endpoint: "streamGenerateContent" }
     );
     return fullText.replace(/^```sql\n?|^```\n?|\n?```$/g, "").trim();
 }

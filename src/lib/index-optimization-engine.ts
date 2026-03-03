@@ -6,6 +6,7 @@
 import { callGeminiSync } from "@/lib/ai-chat-engine";
 import type { GeminiModelId } from "@/lib/ai-chat-engine";
 import { useSettingsStore } from "@/stores/settings-store";
+import { withGeminiLogging } from "@/lib/gemini-logger";
 import type { ColumnInfo, IndexStats, QuerySample } from "@/lib/types";
 
 export interface IndexSuggestion {
@@ -117,13 +118,16 @@ export async function getIndexSuggestions(
         throw new Error("Add your Gemini API key in Settings → AI to use AI index optimization.");
     }
     const userPrompt = buildUserPrompt(schema, table, columns, existingIndexes, querySamples);
-    const response = await callGeminiSync(
-        modelId,
-        apiKey,
-        [{ role: "user", parts: [{ text: userPrompt }] }],
-        SYSTEM_PROMPT,
-        options.signal,
-        { maxOutputTokens: 2048 }
+    const response = await withGeminiLogging(
+        () => callGeminiSync(
+            modelId,
+            apiKey,
+            [{ role: "user", parts: [{ text: userPrompt }] }],
+            SYSTEM_PROMPT,
+            options.signal,
+            { maxOutputTokens: 2048 }
+        ),
+        { model: modelId, featureType: "index-optimization", endpoint: "generateContent" }
     );
     return parseSuggestions(response);
 }

@@ -43,6 +43,9 @@ export interface AppSettings {
     // Notifications
     notificationsEnabled: boolean;
 
+    // Release notes
+    lastSeenVersion: string;
+
     // AI
     geminiApiKey: string;
     defaultAiModel: GeminiModelId;
@@ -79,6 +82,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     aiReviewModel: "gemini-2.5-flash-lite",
     aiReviewComplexLineThreshold: 10,
     notificationsEnabled: true,
+    lastSeenVersion: "",
     geminiApiKey: "AIzaSyCtgJ0ORZ-Bd7tnFoqYK4IHUIHpMExqgKM",
     defaultAiModel: "gemini-2.5-flash",
     aiAutocompleteEnabled: true,

@@ -81,6 +81,13 @@
   --sidebar-accent-foreground: oklch(0.12 0 0);
   --sidebar-border: oklch(0.87 0 0);
   --sidebar-ring: oklch(0.52 0.15 162);
+  /* SQL block (light): readable on light background */
+  --sql-bg: oklch(0.97 0.005 240);
+  --sql-kw: oklch(0.45 0.15 250);
+  --sql-str: oklch(0.55 0.18 45);
+  --sql-num: oklch(0.45 0.2 300);
+  --sql-type: oklch(0.42 0.12 155);
+  --sql-comment: oklch(0.5 0 0);
 }
 
 .dark {
@@ -117,6 +124,13 @@
   --sidebar-accent-foreground: oklch(0.985 0 0);
   --sidebar-border: oklch(1 0 0 / 10%);
   --sidebar-ring: oklch(0.556 0 0);
+  /* SQL block (dark) */
+  --sql-bg: oklch(0.18 0.02 250);
+  --sql-kw: oklch(0.75 0.12 230);
+  --sql-str: oklch(0.8 0.15 75);
+  --sql-num: oklch(0.75 0.15 300);
+  --sql-type: oklch(0.72 0.12 160);
+  --sql-comment: oklch(0.55 0 0);
 }
 
 @layer base {
@@ -241,3 +255,10 @@
 .ai-message-in {
   animation: ai-fade-in 0.25s ease-out both;
 }
+
+/* SQL code block syntax (theme-aware for light and dark) */
+.sql-kw { color: var(--sql-kw); font-weight: 500; }
+.sql-str { color: var(--sql-str); }
+.sql-num { color: var(--sql-num); }
+.sql-type { color: var(--sql-type); }
+.sql-comment { color: var(--sql-comment); opacity: 0.7; font-style: italic; }

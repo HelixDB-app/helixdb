@@ -15,6 +15,7 @@ import {
     isNoInternetError,
     notifyNoInternetDetected,
 } from "@/lib/network-errors";
+import { geminiLogger } from "@/lib/gemini-logger";
 
 // ── Model Configuration ──────────────────────────────────────────────────────
 
@@ -544,6 +545,8 @@ export class AIChatEngine {
         this.abortController?.abort();
         this.abortController = new AbortController();
 
+        const _logStart = Date.now();
+        const _logTs = new Date().toISOString();
         try {
             const response = await callGeminiStream(
                 model,
@@ -557,12 +560,33 @@ export class AIChatEngine {
             // Add AI response to history
             history.push({ role: "model", content: response });
 
+            geminiLogger.log({
+                model,
+                featureType: "chat",
+                endpoint: "streamGenerateContent",
+                requestTimestamp: _logTs,
+                responseTime: Date.now() - _logStart,
+                status: "success",
+            });
+
             return response;
         } catch (error) {
             // Remove the user message if the request failed
             history.pop();
 
-            if (error instanceof DOMException && error.name === "AbortError") {
+            const isAbort = error instanceof DOMException && error.name === "AbortError";
+            geminiLogger.log({
+                model,
+                featureType: "chat",
+                endpoint: "streamGenerateContent",
+                requestTimestamp: _logTs,
+                responseTime: Date.now() - _logStart,
+                status: isAbort ? "aborted" : "error",
+                errorMessage: error instanceof Error ? error.message : String(error),
+                errorCode: (error as { code?: number })?.code,
+            });
+
+            if (isAbort) {
                 throw new AIError(0, "Aborted", "Request was cancelled.", false);
             }
             throw error;
@@ -606,6 +630,8 @@ export class AIChatEngine {
         this.abortController?.abort();
         this.abortController = new AbortController();
 
+        const _regenStart = Date.now();
+        const _regenTs = new Date().toISOString();
         try {
             const response = await callGeminiStream(
                 model,
@@ -617,9 +643,28 @@ export class AIChatEngine {
             );
 
             history.push({ role: "model", content: response });
+            geminiLogger.log({
+                model,
+                featureType: "chat",
+                endpoint: "streamGenerateContent",
+                requestTimestamp: _regenTs,
+                responseTime: Date.now() - _regenStart,
+                status: "success",
+            });
             return response;
         } catch (error) {
-            if (error instanceof DOMException && error.name === "AbortError") {
+            const isAbort = error instanceof DOMException && error.name === "AbortError";
+            geminiLogger.log({
+                model,
+                featureType: "chat",
+                endpoint: "streamGenerateContent",
+                requestTimestamp: _regenTs,
+                responseTime: Date.now() - _regenStart,
+                status: isAbort ? "aborted" : "error",
+                errorMessage: error instanceof Error ? error.message : String(error),
+                errorCode: (error as { code?: number })?.code,
+            });
+            if (isAbort) {
                 throw new AIError(0, "Aborted", "Request was cancelled.", false);
             }
             throw error;
@@ -658,6 +703,8 @@ export class AIChatEngine {
         this.abortController?.abort();
         this.abortController = new AbortController();
 
+        const _editStart = Date.now();
+        const _editTs = new Date().toISOString();
         try {
             const response = await callGeminiStream(
                 model,
@@ -669,9 +716,28 @@ export class AIChatEngine {
             );
 
             history.push({ role: "model", content: response });
+            geminiLogger.log({
+                model,
+                featureType: "chat",
+                endpoint: "streamGenerateContent",
+                requestTimestamp: _editTs,
+                responseTime: Date.now() - _editStart,
+                status: "success",
+            });
             return response;
         } catch (error) {
-            if (error instanceof DOMException && error.name === "AbortError") {
+            const isAbort = error instanceof DOMException && error.name === "AbortError";
+            geminiLogger.log({
+                model,
+                featureType: "chat",
+                endpoint: "streamGenerateContent",
+                requestTimestamp: _editTs,
+                responseTime: Date.now() - _editStart,
+                status: isAbort ? "aborted" : "error",
+                errorMessage: error instanceof Error ? error.message : String(error),
+                errorCode: (error as { code?: number })?.code,
+            });
+            if (isAbort) {
                 throw new AIError(0, "Aborted", "Request was cancelled.", false);
             }
             throw error;
