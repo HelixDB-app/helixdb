@@ -2,12 +2,19 @@ import { create } from "zustand";
 import type {
     SchemaInfo,
     TableInfo,
+    RecentTableOpen,
     ConnectionResponse,
     EventTriggerInfo,
     FunctionInfo,
     TypeInfo,
     PreviewSelection,
+    ConnectionEnvironment,
+    ConnectionCriticality,
 } from "@/lib/types";
+import {
+    normalizeConnectionMetadata,
+    type ConnectionMetadataInput,
+} from "@/lib/connection-metadata";
 import {
     dbConnect,
     dbDisconnect,
@@ -20,6 +27,8 @@ import {
     dbListEventTriggers,
     dbListFunctions,
     dbListTypes,
+    dbListRecentTables,
+    dbTrackRecentTableOpen,
     updateSavedConnectionDatabaseName,
 } from "@/lib/tauri";
 import { notifyNoInternetDetected } from "@/lib/network-errors";
@@ -32,6 +41,9 @@ export interface ConnectionEntry {
     databaseName: string;
     serverVersion: string;
     connectionString: string;
+    environment: ConnectionEnvironment;
+    owner: string | null;
+    criticality: ConnectionCriticality;
     savedConnectionId?: string;
 }
 
@@ -44,6 +56,7 @@ export interface PerConnectionState {
     tables: TableInfo[];
     selectedTable: string | null;
     previewSelection: PreviewSelection | null;
+    recentTables: RecentTableOpen[];
     expandedSchemas: Set<string>;
     databases: string[];
     isLoadingDatabases: boolean;
@@ -72,6 +85,7 @@ function emptyPerConnectionState(connectionString: string, databaseName: string,
         tables: [],
         selectedTable: null,
         previewSelection: null,
+        recentTables: [],
         expandedSchemas: new Set(),
         databases: [],
         isLoadingDatabases: false,
@@ -202,6 +216,7 @@ function syncCurrentFromActive(state: {
     tables: TableInfo[];
     selectedTable: string | null;
     previewSelection: PreviewSelection | null;
+    recentTables: RecentTableOpen[];
     expandedSchemas: Set<string>;
     databases: string[];
     isLoadingDatabases: boolean;
@@ -235,6 +250,7 @@ function syncCurrentFromActive(state: {
             tables: [],
             selectedTable: null,
             previewSelection: null,
+            recentTables: [],
             expandedSchemas: new Set(),
             databases: [],
             isLoadingDatabases: false,
@@ -264,6 +280,7 @@ function syncCurrentFromActive(state: {
         tables: per.tables,
         selectedTable: per.selectedTable,
         previewSelection: per.previewSelection,
+        recentTables: per.recentTables,
         expandedSchemas: per.expandedSchemas,
         databases: per.databases,
         isLoadingDatabases: per.isLoadingDatabases,
@@ -305,6 +322,7 @@ interface ConnectionState {
     tables: TableInfo[];
     selectedTable: string | null;
     previewSelection: PreviewSelection | null;
+    recentTables: RecentTableOpen[];
     isLoadingSchemas: boolean;
     isLoadingTables: boolean;
     expandedSchemas: Set<string>;
@@ -321,7 +339,12 @@ interface ConnectionState {
     refreshTrigger: number;
     isRefreshingAll: boolean;
 
-    connect: (connectionString: string, savedConnectionId?: string, savedLabel?: string) => Promise<void>;
+    connect: (
+        connectionString: string,
+        savedConnectionId?: string,
+        savedLabel?: string,
+        metadata?: ConnectionMetadataInput
+    ) => Promise<void>;
     disconnect: (connectionId: string) => Promise<void>;
     setActiveConnection: (connectionId: string | null) => void;
     switchDatabase: (connectionId: string, databaseName: string) => Promise<void>;
@@ -338,6 +361,7 @@ interface ConnectionState {
     loadSchemaFunctions: (schema: string, connectionId?: string, force?: boolean) => Promise<void>;
     loadSchemaTypes: (schema: string, connectionId?: string, force?: boolean) => Promise<void>;
     loadSchemaObjects: (schema: string, connectionId?: string, force?: boolean) => Promise<void>;
+    loadRecentTables: (connectionId?: string, limit?: number) => Promise<void>;
     setConnectionString: (s: string) => void;
     clearError: () => void;
     markPostConnectRedirectConsumed: () => void;
@@ -347,6 +371,21 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
     const syncCurrent = () => {
         const state = get();
         set(syncCurrentFromActive(state));
+    };
+
+    const setRecentTablesForConnection = (connectionId: string, recentTables: RecentTableOpen[]) => {
+        set((s) => {
+            const per = s.byConnectionId[connectionId];
+            if (!per) return s;
+            const next = { ...per, recentTables };
+            const out: Partial<ConnectionState> = {
+                byConnectionId: { ...s.byConnectionId, [connectionId]: next },
+            };
+            if (s.activeConnectionId === connectionId) {
+                out.recentTables = recentTables;
+            }
+            return out;
+        });
     };
 
     const ensureTablesLoaded = async (connectionId: string, schema: string, force = false): Promise<void> => {
@@ -545,6 +584,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
         tables: [],
         selectedTable: null,
         previewSelection: null,
+        recentTables: [],
         isLoadingSchemas: false,
         isLoadingTables: false,
         expandedSchemas: new Set(),
@@ -568,9 +608,12 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
         setActiveConnection: (connectionId) => {
             set({ activeConnectionId: connectionId });
             syncCurrent();
+            if (connectionId) {
+                void get().loadRecentTables(connectionId);
+            }
         },
 
-        connect: async (connectionString, savedConnectionId, savedLabel) => {
+        connect: async (connectionString, savedConnectionId, savedLabel, metadata) => {
             clearAllPendingLoads();
             set({ isConnecting: true, connectionError: null, connectionString });
             try {
@@ -591,12 +634,16 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                 }
 
                 const label = savedLabel ?? response.database_name ?? "Connection";
+                const normalizedMetadata = normalizeConnectionMetadata(metadata);
                 const entry: ConnectionEntry = {
                     connectionId: connId,
                     label,
                     databaseName: response.database_name,
                     serverVersion: response.server_version,
                     connectionString,
+                    environment: normalizedMetadata.environment,
+                    owner: normalizedMetadata.owner,
+                    criticality: normalizedMetadata.criticality,
                     savedConnectionId,
                 };
                 const per = emptyPerConnectionState(connectionString, response.database_name, response.server_version);
@@ -619,6 +666,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                         byConnectionId: { ...s.byConnectionId, [connId]: per },
                     }),
                 }));
+                void get().loadRecentTables(connId);
 
                 if (savedConnectionId) {
                     updateSavedConnectionDatabaseName(savedConnectionId, response.database_name).catch(() => {});
@@ -744,6 +792,17 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
             if (cid) await Promise.all([ensureSchemaFunctionsLoaded(cid, schema, force), ensureSchemaTypesLoaded(cid, schema, force)]);
         },
 
+        loadRecentTables: async (connectionIdArg?, limit = 8) => {
+            const cid = connectionIdArg ?? get().activeConnectionId;
+            if (!cid) return;
+            try {
+                const recent = await dbListRecentTables(cid, limit);
+                setRecentTablesForConnection(cid, recent);
+            } catch {
+                // ignore transient Rust/backend errors for this non-critical UI list
+            }
+        },
+
         switchDatabase: async (connId, targetDatabase) => {
             const state = get();
             const entry = state.connections.find((c) => c.connectionId === connId);
@@ -801,6 +860,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                         ...syncCurrentFromActive({ activeConnectionId, connections, byConnectionId }),
                     };
                 });
+                void get().loadRecentTables(newId);
             } catch (error) {
                 set((s) => {
                     const next = { ...s.byConnectionId[connId], isSwitchingDatabase: false, isLoadingSchemas: false };
@@ -889,18 +949,32 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
             const per = get().byConnectionId[cid];
             if (!per) return;
             const isView = per.tables.find((t) => t.schema === schema && t.name === table)?.table_type === "VIEW";
+            const tableType: "BASE TABLE" | "VIEW" = isView ? "VIEW" : "BASE TABLE";
             const selection: PreviewSelection = { kind: isView ? "view" : "table", schema, name: table };
             set((s) => {
-                const next = { ...s.byConnectionId[cid], selectedSchema: schema, selectedTable: table, previewSelection: selection };
+                const expanded = new Set(s.byConnectionId[cid].expandedSchemas);
+                expanded.add(schema);
+                const next = {
+                    ...s.byConnectionId[cid],
+                    selectedSchema: schema,
+                    selectedTable: table,
+                    previewSelection: selection,
+                    expandedSchemas: expanded,
+                };
                 const out: Partial<ConnectionState> = { byConnectionId: { ...s.byConnectionId, [cid]: next }, activeConnectionId: cid };
                 if (s.activeConnectionId === cid) {
                     out.selectedSchema = schema;
                     out.selectedTable = table;
                     out.previewSelection = selection;
+                    out.expandedSchemas = expanded;
                 }
                 return out;
             });
             syncCurrent();
+            void ensureTablesLoaded(cid, schema).catch(() => {});
+            void dbTrackRecentTableOpen(cid, schema, table, tableType)
+                .then((recent) => setRecentTablesForConnection(cid, recent))
+                .catch(() => {});
         },
 
         selectPreview: (selection, connectionIdArg?) => {

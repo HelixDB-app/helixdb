@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::device_fingerprint::get_device_fingerprint;
 
-const WEB_BASE_URL: &str = "http://localhost:3001";
+const WEB_BASE_URL: &str = "https://pgstudio-web.vercel.app";
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 

@@ -8,10 +8,16 @@ import { APP_NAME } from "@/lib/app-config";
 import { useSavedConnectionsStore } from "@/stores/saved-connections-store";
 import { ConnectionDialog } from "@/components/connection-dialog";
 import { SaveConnectionDialog } from "@/components/save-connection-dialog";
+import { ConnectionEnvBadge } from "@/components/connection-env-badge";
 import { LocalPostgresCard } from "@/components/local-postgres-card";
 import { StatusBar } from "@/components/status-bar";
 import { ProfilePanel } from "@/components/profile-panel";
 import { LoginPrompt } from "@/components/login-prompt";
+import {
+    formatCriticalityLabel,
+    normalizeConnectionCriticality,
+    normalizeConnectionMetadata,
+} from "@/lib/connection-metadata";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -101,7 +107,13 @@ export function LandingConnections() {
 
     useEffect(() => {
         if (pendingConnect) {
-            connect(pendingConnect.connection_string, pendingConnect.id);
+            const metadata = normalizeConnectionMetadata(pendingConnect);
+            connect(
+                pendingConnect.connection_string,
+                pendingConnect.id,
+                pendingConnect.name,
+                metadata
+            );
             setPendingConnect(null);
         }
     }, [pendingConnect, connect]);
@@ -124,7 +136,8 @@ export function LandingConnections() {
 
     const handleConnect = (conn: SavedConnection) => {
         setConnectingId(conn.id);
-        connect(conn.connection_string, conn.id);
+        const metadata = normalizeConnectionMetadata(conn);
+        connect(conn.connection_string, conn.id, conn.name, metadata);
     };
 
     const handleSaveAndConnect = (conn: SavedConnection) => setPendingConnect(conn);
@@ -393,6 +406,7 @@ function ConnectionCard({
     const host = parseHost(conn.connection_string);
     const db = conn.database_name ?? parseDb(conn.connection_string);
     const initials = getInitials(conn.name);
+    const criticality = normalizeConnectionCriticality(conn.criticality);
 
     return (
         <div
@@ -419,9 +433,12 @@ function ConnectionCard({
 
                 {/* Name + meta */}
                 <div className="min-w-0 flex-1">
-                    <p className="font-semibold text-sm text-foreground/90 truncate leading-tight">
-                        {conn.name}
-                    </p>
+                    <div className="flex items-center gap-1.5 min-w-0">
+                        <p className="font-semibold text-sm text-foreground/90 truncate leading-tight">
+                            {conn.name}
+                        </p>
+                        <ConnectionEnvBadge environment={conn.environment} compact className="shrink-0" />
+                    </div>
                     <div className="flex items-center gap-1.5 mt-0.5">
                         <Globe className="h-2.5 w-2.5 text-muted-foreground/30 shrink-0" />
                         <p className="text-[10px] font-mono text-muted-foreground/50 truncate">
@@ -435,6 +452,10 @@ function ConnectionCard({
                                 </p>
                             </>
                         )}
+                    </div>
+                    <div className="mt-1 flex items-center gap-2 text-[10px] text-muted-foreground/55">
+                        <span>Criticality: {formatCriticalityLabel(criticality)}</span>
+                        {conn.owner && <span className="truncate">Owner: {conn.owner}</span>}
                     </div>
                 </div>
 

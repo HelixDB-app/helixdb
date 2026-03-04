@@ -46,6 +46,7 @@ import type {
 import { useConnectionStore } from "@/stores/connection-store";
 import { cn } from "@/lib/utils";
 import { QueryPlanViewer } from "@/components/query-plan-viewer";
+import { ConnectionEnvBadge } from "@/components/connection-env-badge";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -314,6 +315,7 @@ function QueryRow({
                     <Badge variant="outline" className="h-5 px-1.5 text-[10px] border-border/50">
                         {item.query_type}
                     </Badge>
+                    {item.environment && <ConnectionEnvBadge environment={item.environment} compact />}
                     {item.bookmark && <Pin className="h-3 w-3 text-amber-300" />}
                 </div>
                 <span className="text-[11px] text-muted-foreground/70 shrink-0">{timeAgo(item.executed_at)}</span>
@@ -1246,6 +1248,9 @@ export default function QueryHistoryPage() {
                                     <Badge variant="outline" className="h-5 px-1.5 text-[10px] border-border/50">
                                         {selectedItem.query_type}
                                     </Badge>
+                                    {selectedItem.environment && (
+                                        <ConnectionEnvBadge environment={selectedItem.environment} compact />
+                                    )}
                                 </div>
                                 <div className="flex items-center gap-2">
                                     <Button variant="outline" size="sm" className="h-7 gap-1.5" onClick={handleCopySql}>
@@ -1284,6 +1289,12 @@ export default function QueryHistoryPage() {
                             <pre className="mt-3 overflow-x-auto rounded-lg bg-black/30 p-3 text-xs leading-relaxed text-emerald-200/90">
                                 {selectedItem.query_text}
                             </pre>
+                            {selectedItem.guard_reason && (
+                                <div className="mt-3 rounded-lg border border-border/40 bg-background/40 px-3 py-2 text-xs text-muted-foreground">
+                                    <span className="font-medium text-foreground/90">Production guard reason:</span>{" "}
+                                    {selectedItem.guard_reason}
+                                </div>
+                            )}
                         </section>
 
                         <section className="rounded-xl border border-border/40 bg-card/20 p-4">

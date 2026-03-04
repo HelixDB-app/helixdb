@@ -15,12 +15,22 @@ import { NotesPanel } from "@/components/notes-panel";
 import { QueryPlanViewer } from "@/components/query-plan-viewer";
 import { SandboxDiffViewer } from "@/components/sandbox-diff-viewer";
 import { DataCanvas } from "@/components/data-canvas";
+import { ConnectionEnvBadge } from "@/components/connection-env-badge";
 import { VirtualizedQueryResultTable } from "@/components/virtualized-query-result-table";
 import { QueryReviewPanel } from "@/components/query-review-panel";
 import { format as formatSQL } from "sql-formatter";
 import { MonacoSqlEditor } from "@/components/monaco-sql-editor";
 import { aiSuggestionEngine } from "@/lib/ai-suggestions";
 import { getSqlReviewIntent, runSqlSafetyReview, type SqlReviewReport } from "@/lib/sql-review";
+import {
+    formatEnvironmentLabel,
+    normalizeConnectionEnvironment,
+} from "@/lib/connection-metadata";
+import {
+    STRICT_PRODUCTION_CONFIRMATION,
+    shouldRequireProductionGuard,
+    type SqlRiskClassification,
+} from "@/lib/sql-risk-guard";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -31,6 +41,7 @@ import {
     DialogFooter,
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import {
     Tooltip,
@@ -665,14 +676,33 @@ function HistoryPanel({
 
 // ── Main component ─────────────────────────────────────────────────────────
 
+interface PendingProductionGuardExecution {
+    connectionId: string;
+    tabId: string;
+    sqlSnapshot: string;
+    mode: "direct" | "sandbox";
+    reviewAudit?: QueryHistoryEntry["aiReview"];
+    classification: SqlRiskClassification;
+}
+
 export function QueryEditor() {
-    const { connectionId, databaseName, tables, selectedSchema, schemaFunctions } = useConnectionStore(
+    const {
+        connectionId,
+        databaseName,
+        tables,
+        selectedSchema,
+        schemaFunctions,
+        connections,
+        activeConnectionId,
+    } = useConnectionStore(
         useShallow((state) => ({
             connectionId: state.connectionId,
             databaseName: state.databaseName,
             tables: state.tables,
             selectedSchema: state.selectedSchema,
             schemaFunctions: state.schemaFunctions,
+            connections: state.connections,
+            activeConnectionId: state.activeConnectionId,
         }))
     );
     const {
@@ -682,6 +712,7 @@ export function QueryEditor() {
         aiReviewModel,
         aiReviewComplexLineThreshold,
         geminiApiKey,
+        strictProductionGuard,
     } = useSettingsStore();
     const {
         tabs,
@@ -749,6 +780,11 @@ export function QueryEditor() {
     }, [loadSandboxHistory]);
 
     const activeTab = tabs.find((t) => t.id === activeTabId);
+    const activeConnectionEntry = useMemo(
+        () => connections.find((entry) => entry.connectionId === activeConnectionId) ?? null,
+        [connections, activeConnectionId]
+    );
+    const activeEnvironment = normalizeConnectionEnvironment(activeConnectionEntry?.environment);
     const [reviewReport, setReviewReport] = useState<SqlReviewReport | null>(null);
     const [reviewLoading, setReviewLoading] = useState(false);
     const [reviewPendingApproval, setReviewPendingApproval] = useState<{
@@ -763,6 +799,9 @@ export function QueryEditor() {
     const [saveNoteTitle, setSaveNoteTitle] = useState("");
     const [saveNoteLoading, setSaveNoteLoading] = useState(false);
     const [editorFullScreen, setEditorFullScreen] = useState(false);
+    const [prodGuardPending, setProdGuardPending] = useState<PendingProductionGuardExecution | null>(null);
+    const [prodGuardTypedText, setProdGuardTypedText] = useState("");
+    const [prodGuardReason, setProdGuardReason] = useState("");
     const historyPanelRef = useRef<HTMLDivElement>(null);
 
     // Notes store
@@ -965,6 +1004,19 @@ export function QueryEditor() {
         }
     }, [reviewPendingApproval, activeTab?.sql]);
 
+    useEffect(() => {
+        if (!prodGuardPending) return;
+        const sql = activeTab?.sql.trim() ?? "";
+        const guardExpired =
+            prodGuardPending.connectionId !== connectionId ||
+            prodGuardPending.tabId !== activeTabId ||
+            normalizeSqlForCompare(prodGuardPending.sqlSnapshot) !== normalizeSqlForCompare(sql);
+        if (!guardExpired) return;
+        setProdGuardPending(null);
+        setProdGuardTypedText("");
+        setProdGuardReason("");
+    }, [prodGuardPending, connectionId, activeTabId, activeTab?.sql]);
+
     // ⌘+Shift+P command palette / ⌘+Shift+H history / Esc exit full-screen
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
@@ -989,31 +1041,67 @@ export function QueryEditor() {
         return () => window.removeEventListener("keydown", onKey);
     }, []);
 
+    const buildReviewAudit = useCallback(
+        (mode: "manual" | "auto", report?: SqlReviewReport): QueryHistoryEntry["aiReview"] | undefined => {
+            if (!report) return undefined;
+            return {
+                mode,
+                overridden: report.issues.some(
+                    (issue) => issue.severity === "block" || issue.severity === "warn"
+                ),
+                aiModel: report.aiModel,
+                issueCounts: getReviewIssueCounts(report),
+            };
+        },
+        []
+    );
+
     const executeCurrentSql = useCallback(
-        (mode: "direct" | "sandbox", reviewMode?: "manual" | "auto", reviewReportForAudit?: SqlReviewReport) => {
+        (mode: "direct" | "sandbox", reviewAudit?: QueryHistoryEntry["aiReview"], guardReason?: string) => {
             if (!connectionId || !activeTabId) return;
             const sql = activeTab?.sql.trim() ?? "";
             if (!sql) return;
 
-            const reviewAudit = reviewReportForAudit
-                ? {
-                    mode: reviewMode ?? "manual",
-                    overridden: reviewReportForAudit.issues.some(
-                        (issue) => issue.severity === "block" || issue.severity === "warn"
-                    ),
-                    aiModel: reviewReportForAudit.aiModel,
-                    issueCounts: getReviewIssueCounts(reviewReportForAudit),
-                }
-                : undefined;
+            const guardDecision = shouldRequireProductionGuard({
+                strictProductionGuard,
+                environment: activeEnvironment,
+                sql,
+            });
+            if (guardDecision.required && !guardReason) {
+                setProdGuardPending({
+                    connectionId,
+                    tabId: activeTabId,
+                    sqlSnapshot: sql,
+                    mode,
+                    reviewAudit,
+                    classification: guardDecision.classification,
+                });
+                setProdGuardTypedText("");
+                setProdGuardReason("");
+                return;
+            }
 
             if (mode === "sandbox") {
                 runInSandbox(connectionId, sql);
                 return;
             }
 
-            executeQuery(connectionId, activeTabId, databaseName || undefined, { aiReview: reviewAudit });
+            executeQuery(connectionId, activeTabId, databaseName || undefined, {
+                aiReview: reviewAudit,
+                environment: activeEnvironment,
+                productionGuardReason: guardReason?.trim() || undefined,
+            });
         },
-        [connectionId, activeTabId, activeTab?.sql, databaseName, executeQuery, runInSandbox]
+        [
+            connectionId,
+            activeTabId,
+            activeTab?.sql,
+            strictProductionGuard,
+            activeEnvironment,
+            databaseName,
+            executeQuery,
+            runInSandbox,
+        ]
     );
 
     const runQueryReview = useCallback(
@@ -1090,13 +1178,59 @@ export function QueryEditor() {
             return;
         }
 
-        executeCurrentSql(reviewPendingApproval.mode, reviewPendingApproval.trigger, reviewReport ?? undefined);
+        const reviewAudit = buildReviewAudit(reviewPendingApproval.trigger, reviewReport ?? undefined);
+        executeCurrentSql(reviewPendingApproval.mode, reviewAudit);
         setReviewPendingApproval(null);
-    }, [reviewPendingApproval, activeTab?.sql, executeCurrentSql, reviewReport]);
+    }, [reviewPendingApproval, activeTab?.sql, executeCurrentSql, reviewReport, buildReviewAudit]);
 
     const handleCancelPendingReview = useCallback(() => {
         setReviewPendingApproval(null);
     }, []);
+
+    const closeProdGuardDialog = useCallback(() => {
+        setProdGuardPending(null);
+        setProdGuardTypedText("");
+        setProdGuardReason("");
+    }, []);
+
+    const handleConfirmProdGuard = useCallback(() => {
+        if (!prodGuardPending) return;
+
+        const typedToken = prodGuardTypedText.trim();
+        if (typedToken !== STRICT_PRODUCTION_CONFIRMATION) {
+            toast.error(`Type exactly "${STRICT_PRODUCTION_CONFIRMATION}" to continue.`);
+            return;
+        }
+
+        const reason = prodGuardReason.trim();
+        if (!reason) {
+            toast.error("Please enter a reason before executing on production.");
+            return;
+        }
+
+        const sql = activeTab?.sql.trim() ?? "";
+        const isStillValid =
+            prodGuardPending.connectionId === connectionId &&
+            prodGuardPending.tabId === activeTabId &&
+            normalizeSqlForCompare(prodGuardPending.sqlSnapshot) === normalizeSqlForCompare(sql);
+        if (!isStillValid) {
+            closeProdGuardDialog();
+            toast.info("Query changed. Re-run to review production guard again.");
+            return;
+        }
+
+        executeCurrentSql(prodGuardPending.mode, prodGuardPending.reviewAudit, reason);
+        closeProdGuardDialog();
+    }, [
+        prodGuardPending,
+        prodGuardTypedText,
+        prodGuardReason,
+        activeTab?.sql,
+        connectionId,
+        activeTabId,
+        closeProdGuardDialog,
+        executeCurrentSql,
+    ]);
 
     const handleExecute = useCallback(async () => {
         if (!connectionId || !activeTabId) return;
@@ -1111,11 +1245,8 @@ export function QueryEditor() {
             if (reviewPendingApproval) setReviewPendingApproval(null);
             const reviewedForCurrentSql =
                 reviewReport && !reviewIsStale ? reviewReport : undefined;
-            executeCurrentSql(
-                mode,
-                reviewedForCurrentSql ? "manual" : undefined,
-                reviewedForCurrentSql
-            );
+            const reviewAudit = buildReviewAudit("manual", reviewedForCurrentSql);
+            executeCurrentSql(mode, reviewAudit);
             return;
         }
 
@@ -1138,6 +1269,7 @@ export function QueryEditor() {
         reviewPendingApproval,
         reviewReport,
         reviewIsStale,
+        buildReviewAudit,
         executeCurrentSql,
         runQueryReview,
     ]);
@@ -1163,13 +1295,13 @@ export function QueryEditor() {
     const handleApplyFix = useCallback(async (fixSql: string) => {
         if (!connectionId || !activeTabId) return;
         try {
-            await dbExecuteQuery(connectionId, fixSql);
+            await dbExecuteQuery(connectionId, fixSql, { environment: activeEnvironment });
             toast.success("Fix applied — re-analysing plan…", { duration: 2000 });
             await handleExplain(activeTabId, activeTab?.sql.trim());
         } catch (err) {
             toast.error(`Fix failed: ${String(err)}`, { duration: 4000 });
         }
-    }, [connectionId, activeTabId, activeTab?.sql, handleExplain]);
+    }, [connectionId, activeTabId, activeTab?.sql, activeEnvironment, handleExplain]);
 
     const runCommand = useCallback(
         (cmd: "run" | "new-tab" | "close-tab") => {
@@ -1201,7 +1333,11 @@ export function QueryEditor() {
                 // Execute after the tab state updates
                 setTimeout(() => {
                     const { activeTabId: newTabId } = useQueryStore.getState();
-                    if (newTabId) executeQuery(connectionId, newTabId, databaseName || undefined);
+                    if (newTabId) {
+                        executeQuery(connectionId, newTabId, databaseName || undefined, {
+                            environment: activeEnvironment,
+                        });
+                    }
                 }, 50);
             } else {
                 updateSql(activeTabId, sql);
@@ -1209,7 +1345,7 @@ export function QueryEditor() {
             }
             setHistoryOpen(false);
         },
-        [connectionId, activeTabId, addTab, updateSql, executeQuery, databaseName, handleExecute]
+        [connectionId, activeTabId, addTab, updateSql, executeQuery, databaseName, activeEnvironment, handleExecute]
     );
 
     const handleExport = (format: "csv" | "json") => {
@@ -1263,6 +1399,73 @@ export function QueryEditor() {
                 </DialogContent>
             </Dialog>
 
+            <Dialog open={Boolean(prodGuardPending)} onOpenChange={(open) => { if (!open) closeProdGuardDialog(); }}>
+                <DialogContent className="sm:max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center gap-2 text-base">
+                            <ShieldCheck className="h-4.5 w-4.5 text-red-300" />
+                            Production guard required
+                        </DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-3">
+                        <div className="rounded-lg border border-red-500/25 bg-red-500/8 px-3 py-2 text-xs text-red-100/85">
+                            This connection is tagged as{" "}
+                            <span className="font-semibold">{formatEnvironmentLabel(activeEnvironment)}</span>.
+                            Confirm before executing risky SQL.
+                        </div>
+                        <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="text-xs text-muted-foreground">Detected risky statements:</span>
+                            {(prodGuardPending?.classification.riskyStatements ?? []).map((statement) => (
+                                <Badge
+                                    key={statement}
+                                    variant="outline"
+                                    className="h-5 px-1.5 text-[10px] border-red-500/30 text-red-300 bg-red-500/10"
+                                >
+                                    {statement}
+                                </Badge>
+                            ))}
+                        </div>
+                        <div className="space-y-1.5">
+                            <label className="text-xs text-muted-foreground">
+                                Type <span className="font-mono text-foreground">{STRICT_PRODUCTION_CONFIRMATION}</span>
+                            </label>
+                            <Input
+                                value={prodGuardTypedText}
+                                onChange={(event) => setProdGuardTypedText(event.target.value)}
+                                placeholder={STRICT_PRODUCTION_CONFIRMATION}
+                                className="h-9 font-mono text-xs"
+                                autoFocus
+                            />
+                        </div>
+                        <div className="space-y-1.5">
+                            <label className="text-xs text-muted-foreground">Reason for this production query</label>
+                            <Textarea
+                                value={prodGuardReason}
+                                onChange={(event) => setProdGuardReason(event.target.value)}
+                                placeholder="Describe why this change is needed and what scope it impacts."
+                                className="min-h-24 text-sm resize-none"
+                            />
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="ghost" size="sm" onClick={closeProdGuardDialog}>
+                            Cancel
+                        </Button>
+                        <Button
+                            size="sm"
+                            className="bg-red-600 hover:bg-red-500 text-white"
+                            onClick={handleConfirmProdGuard}
+                            disabled={
+                                prodGuardTypedText.trim() !== STRICT_PRODUCTION_CONFIRMATION ||
+                                !prodGuardReason.trim()
+                            }
+                        >
+                            Continue on production
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
             {/* Tab bar */}
             <div className="flex items-center border-b border-border/30 bg-card/30">
                 <ScrollArea className="flex-1">
@@ -1301,6 +1504,17 @@ export function QueryEditor() {
 
                 {/* Tab actions */}
                 <div className="flex items-center gap-0.5 px-2 shrink-0">
+                    <div className="mr-1 flex items-center gap-1.5">
+                        <ConnectionEnvBadge environment={activeEnvironment} compact />
+                        {strictProductionGuard && activeEnvironment === "prod" && (
+                            <Badge
+                                variant="outline"
+                                className="h-4 px-1.5 text-[9px] border-red-500/30 text-red-300 bg-red-500/10"
+                            >
+                                Guard
+                            </Badge>
+                        )}
+                    </div>
                     <Tooltip>
                         <TooltipTrigger asChild>
                             <Button
@@ -1591,8 +1805,18 @@ export function QueryEditor() {
                         </div>
                     )}
 
-                    <ResizablePanelGroup orientation="vertical" className="flex-1 min-h-0">
-                        <ResizablePanel defaultSize={42} minSize={20} maxSize={75} className="flex flex-col min-h-0">
+                    <ResizablePanelGroup
+                        id="query-editor-resize-group"
+                        orientation="vertical"
+                        className="flex-1 min-h-0"
+                    >
+                        <ResizablePanel
+                            id="query-editor-sql-panel"
+                            defaultSize={42}
+                            minSize={20}
+                            maxSize={75}
+                            className="flex flex-col min-h-0"
+                        >
                             <div className="relative border-b border-border/30 flex flex-col min-h-0">
                                 <MonacoSqlEditor
                                     value={activeTab.sql}
@@ -1820,9 +2044,18 @@ export function QueryEditor() {
                             </div>
                         </ResizablePanel>
 
-                        <ResizableHandle withHandle className="shrink-0 bg-border/20 hover:bg-border/50 data-[resize-handle-active]:bg-emerald-500/40 transition-colors" />
+                        <ResizableHandle
+                            withHandle
+                            className="shrink-0 min-h-2 py-1 bg-border/20 hover:bg-border/50 data-[resize-handle-active]:bg-emerald-500/40 transition-colors"
+                        />
 
-                        <ResizablePanel defaultSize={58} minSize={28} maxSize={80} className="flex flex-col min-h-0 overflow-hidden">
+                        <ResizablePanel
+                            id="query-editor-results-panel"
+                            defaultSize={58}
+                            minSize={28}
+                            maxSize={80}
+                            className="flex flex-col min-h-0 overflow-hidden"
+                        >
                     {/* Results */}
                     <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
 

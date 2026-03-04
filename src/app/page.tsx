@@ -3,7 +3,7 @@
 import Link from "next/link";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useShortcutsStore } from "@/stores/shortcuts-store";
 import { useAuthStore } from "@/stores/auth-store";
@@ -44,6 +44,7 @@ import {
     TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Badge } from "@/components/ui/badge";
+import { ConnectionEnvBadge } from "@/components/connection-env-badge";
 import { cn } from "@/lib/utils";
 import {
     Activity,
@@ -73,6 +74,8 @@ export default function Home() {
         selectTable,
         refreshAll,
         isRefreshingAll,
+        connections,
+        activeConnectionId,
     } = useConnectionStore();
     const getCombo = useShortcutsStore((s) => s.getCombo);
     const { user, isAuthenticated, setUser, setLoading: setAuthLoading } = useAuthStore();
@@ -208,6 +211,10 @@ export default function Home() {
     const pgVersion = serverVersion
         ? serverVersion.match(/PostgreSQL\s+([\d.]+)/i)?.[1] ?? ""
         : "";
+    const activeConnectionEnvironment = useMemo(
+        () => connections.find((entry) => entry.connectionId === activeConnectionId)?.environment,
+        [connections, activeConnectionId]
+    );
     const sc = (id: Parameters<typeof getCombo>[0]) => formatShortcut(getCombo(id));
 
     // Landing: saved connections list + quick connect
@@ -227,7 +234,7 @@ export default function Home() {
             {/* Block access when trial has expired and user isn't logged in */}
             {trialExpired && <TrialExpiredGate />}
             {/* Top bar — 3-zone grid: left | center | right */}
-            <header className="grid grid-cols-3 h-11 items-center border-b border-border/20 bg-card/20 px-3 shrink-0 gap-2">
+            <header className="grid h-12 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-b border-border/30 bg-card/70 px-3 backdrop-blur-sm shrink-0">
                 {/* Left: Logo + connection indicator */}
                 <div className="flex items-center gap-2.5 min-w-0">
                     <button
@@ -255,6 +262,7 @@ export default function Home() {
                                 <span className="text-xs font-mono text-muted-foreground/80 truncate">
                                     {databaseName}
                                 </span>
+                                <ConnectionEnvBadge environment={activeConnectionEnvironment} compact />
                                 {pgVersion && (
                                     <Badge
                                         variant="outline"
@@ -269,13 +277,13 @@ export default function Home() {
                 </div>
 
                 {/* Center: Primary view tabs */}
-                <div className="flex items-center justify-center">
+                <div className="flex min-w-0 items-center justify-center">
                     {isConnected && (
                         <Tabs value={activeView} onValueChange={(v) => setActiveView(v as typeof activeView)}>
-                            <TabsList aria-label="View tabs" className="h-7 rounded-lg bg-muted/50 p-0.5 gap-0">
+                            <TabsList aria-label="View tabs" className="h-8 gap-0.5 rounded-xl border border-border/40 bg-muted/55 p-1 shadow-sm">
                                 <TabsTrigger
                                     value="data"
-                                    className="h-6 gap-1.5 px-2.5 text-[11px]"
+                                    className="h-6 gap-1.5 px-2 text-[10.5px]"
                                     title={sc("view_data") ? `Data (${sc("view_data")})` : "Data"}
                                 >
                                     <Table2 className="h-3 w-3" />
@@ -283,7 +291,7 @@ export default function Home() {
                                 </TabsTrigger>
                                 <TabsTrigger
                                     value="query"
-                                    className="h-6 gap-1.5 px-2.5 text-[11px]"
+                                    className="h-6 gap-1.5 px-2 text-[10.5px]"
                                     title={sc("view_query") ? `Query (${sc("view_query")})` : "Query"}
                                 >
                                     <Terminal className="h-3 w-3" />
@@ -291,7 +299,7 @@ export default function Home() {
                                 </TabsTrigger>
                                 <TabsTrigger
                                     value="sessions"
-                                    className="h-6 gap-1.5 px-2.5 text-[11px]"
+                                    className="h-6 gap-1.5 px-2 text-[10.5px]"
                                     title={sc("view_sessions") ? `Sessions (${sc("view_sessions")})` : "Sessions"}
                                 >
                                     <Activity className="h-3 w-3" />
@@ -299,7 +307,7 @@ export default function Home() {
                                 </TabsTrigger>
                                 <TabsTrigger
                                     value="indexes"
-                                    className="h-6 gap-1.5 px-2.5 text-[11px]"
+                                    className="h-6 gap-1.5 px-2 text-[10.5px]"
                                     title={sc("view_indexes") ? `Indexes (${sc("view_indexes")})` : "Indexes"}
                                 >
                                     <Layers className="h-3 w-3" />
@@ -307,7 +315,7 @@ export default function Home() {
                                 </TabsTrigger>
                                 <TabsTrigger
                                     value="topology"
-                                    className="h-6 gap-1.5 px-2.5 text-[11px]"
+                                    className="h-6 gap-1.5 px-2 text-[10.5px]"
                                     title={sc("view_topology") ? `Topology (${sc("view_topology")})` : "Topology"}
                                 >
                                     <Network className="h-3 w-3" />
@@ -315,7 +323,7 @@ export default function Home() {
                                 </TabsTrigger>
                                 <TabsTrigger
                                     value="ai"
-                                    className="h-6 gap-1.5 px-2.5 text-[11px]"
+                                    className="h-6 gap-1.5 px-2 text-[10.5px]"
                                     title={sc("view_ai") ? `AI (${sc("view_ai")})` : "AI"}
                                 >
                                     <Sparkles className="h-3 w-3" />
@@ -327,7 +335,7 @@ export default function Home() {
                 </div>
 
                 {/* Right: Action buttons — grouped with dividers */}
-                <div className="flex items-center justify-end gap-1">
+                <div className="flex min-w-0 items-center justify-end gap-1 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
                     {/* Primary actions: Refresh + Search */}
                     {isConnected && (
                         <>
@@ -336,7 +344,7 @@ export default function Home() {
                                     <Button
                                         variant="ghost"
                                         size="sm"
-                                        className="h-7 w-7 p-0 text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-all"
+                                        className="h-7 w-7 p-0 shrink-0 text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
                                         onClick={() => refreshAll()}
                                         disabled={isRefreshingAll}
                                         aria-label={isRefreshingAll ? "Refreshing" : "Refresh"}
@@ -354,12 +362,12 @@ export default function Home() {
                                     <Button
                                         variant="ghost"
                                         size="sm"
-                                        className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-all"
+                                        className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
                                         onClick={() => setSearchOpen(true)}
                                         aria-label="Open search"
                                     >
                                         <Search className="h-3.5 w-3.5" />
-                                        <span className="hidden sm:inline">Search</span>
+                                        <span className="hidden lg:inline">Find</span>
                                         {sc("search") && (
                                             <kbd className="hidden sm:inline-flex h-4 items-center rounded border border-border/30 bg-muted/40 px-1 font-mono text-[9px] text-muted-foreground/40">
                                                 {sc("search")}
@@ -383,11 +391,11 @@ export default function Home() {
                                 asChild
                                 variant="ghost"
                                 size="sm"
-                                className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-all"
+                                className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
                             >
                                 <Link href="/query-history">
                                     <Clock3 className="h-3.5 w-3.5" />
-                                    <span className="hidden md:inline">History</span>
+                                    <span className="hidden lg:inline">Hist</span>
                                 </Link>
                             </Button>
                         </TooltipTrigger>
@@ -402,11 +410,11 @@ export default function Home() {
                                 asChild
                                 variant="ghost"
                                 size="sm"
-                                className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-all"
+                                className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
                             >
                                 <Link href="/extensions-management">
                                     <ShieldCheck className="h-3.5 w-3.5" />
-                                    <span className="hidden md:inline">Extensions</span>
+                                    <span className="hidden lg:inline">Ext</span>
                                 </Link>
                             </Button>
                         </TooltipTrigger>
@@ -421,11 +429,11 @@ export default function Home() {
                                 asChild
                                 variant="ghost"
                                 size="sm"
-                                className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-all"
+                                className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
                             >
                                 <Link href="/bug-report">
                                     <Bug className="h-3.5 w-3.5" />
-                                    <span className="hidden md:inline">Feedback</span>
+                                    <span className="hidden lg:inline">Bug</span>
                                 </Link>
                             </Button>
                         </TooltipTrigger>
@@ -443,12 +451,12 @@ export default function Home() {
                                 <Button
                                     variant="ghost"
                                     size="sm"
-                                    className="h-7 gap-1.5 px-2 text-[11px] text-muted-foreground/50 hover:text-destructive/80 hover:bg-destructive/10 transition-all"
+                                    className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-destructive/80 hover:bg-destructive/10 transition-all"
                                     onClick={() => connectionId && disconnect(connectionId)}
                                     aria-label="Disconnect from database"
                                 >
                                     <Unplug className="h-3.5 w-3.5" />
-                                    <span className="hidden sm:inline">Disconnect</span>
+                                    <span className="hidden lg:inline">Disconnect</span>
                                 </Button>
                             </TooltipTrigger>
                             <TooltipContent>
@@ -461,12 +469,12 @@ export default function Home() {
                                 <Button
                                     variant="ghost"
                                     size="sm"
-                                    className="h-7 gap-1.5 px-2 text-[11px] text-emerald-400/70 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all"
+                                    className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-emerald-400/70 hover:text-emerald-400 hover:bg-emerald-500/10 transition-all"
                                     onClick={() => setShowConnectionDialog(true)}
                                     aria-label="Connect to database"
                                 >
                                     <PlugZap className="h-3.5 w-3.5" />
-                                    <span className="hidden sm:inline">Connect</span>
+                                    <span className="hidden lg:inline">Connect</span>
                                 </Button>
                             </TooltipTrigger>
                             <TooltipContent>
@@ -480,7 +488,7 @@ export default function Home() {
                             <Button
                                 variant="ghost"
                                 size="icon"
-                                className="h-7 w-7 text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-all"
+                                className="h-7 w-7 shrink-0 text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
                                 onClick={() => setSettingsOpen(true)}
                                 aria-label="Open settings"
                             >
@@ -532,7 +540,7 @@ export default function Home() {
                         <ResizableHandle className="w-px bg-border/20 hover:bg-emerald-500/40 transition-colors data-[resize-handle-active]:bg-emerald-500/60" />
 
                         <ResizablePanel defaultSize={80}>
-                            <div className="h-full" role="tabpanel" tabIndex={0} aria-label="Active view content">
+                            <div className="h-full min-h-0" role="tabpanel" tabIndex={0} aria-label="Active view content">
                                 {activeView === "data" && <DataTable />}
                                 {activeView === "query" && <QueryEditor />}
                                 {activeView === "sessions" && <SessionMonitor />}
@@ -558,6 +566,7 @@ export default function Home() {
                 open={searchOpen}
                 onOpenChange={setSearchOpen}
                 onNavigateToQuery={() => setActiveView("query")}
+                onNavigateToData={() => setActiveView("data")}
                 onNavigateToTable={(schema, table) => {
                     setActiveView("data");
                     selectTable(schema, table);

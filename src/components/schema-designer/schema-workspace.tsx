@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useMemo, useCallback } from "react";
+import { useState, useCallback } from "react";
 import { useSchemaDesignerStore } from "@/stores/schema-designer-store";
 import { TableEditor } from "./table-editor";
 import { SchemaDiagram } from "./schema-diagram";
@@ -22,7 +22,7 @@ import {
 import {
     Table2,
     Network,
-    Sparkles,
+    BookOpen,
     FileDown,
     Undo2,
     Redo2,
@@ -37,6 +37,7 @@ import {
 import { ImportSqlDialog } from "./import-sql-dialog";
 import { AIScriptPanel } from "./ai-script-panel";
 import { SchemaScriptPanel } from "./schema-script-panel";
+import { TemplateSelectionDialog } from "./template-selection-dialog";
 import { toast } from "sonner";
 
 type RightPanelTab = "ai" | "script";
@@ -68,6 +69,7 @@ export function SchemaWorkspace() {
     const [showReport, setShowReport] = useState(false);
     const [showHistory, setShowHistory] = useState(false);
     const [showImportSql, setShowImportSql] = useState(false);
+    const [showTemplates, setShowTemplates] = useState(false);
     const [showAiScript, setShowAiScript] = useState(false);
     const [selectedTableId, setSelectedTableId] = useState<string | null>(null);
     const [rightPanelTab, setRightPanelTab] = useState<RightPanelTab>("ai");
@@ -185,6 +187,22 @@ export function SchemaWorkspace() {
                             </Button>
                         </TooltipTrigger>
                         <TooltipContent>Convert SQL script to schema</TooltipContent>
+                    </Tooltip>
+
+                    {/* Templates */}
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-7 gap-1.5 text-xs text-muted-foreground"
+                                onClick={() => setShowTemplates(true)}
+                            >
+                                <BookOpen className="h-3 w-3" />
+                                Templates
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Apply full schemas or insert modules</TooltipContent>
                     </Tooltip>
 
                     {/* AI Generate Script */}
@@ -345,6 +363,8 @@ export function SchemaWorkspace() {
             <AIReportPanel open={showReport} onOpenChange={setShowReport} />
 
             <ImportSqlDialog open={showImportSql} onOpenChange={setShowImportSql} hasActiveProject={true} />
+
+            <TemplateSelectionDialog open={showTemplates} onOpenChange={setShowTemplates} />
 
             <AIScriptPanel open={showAiScript} onOpenChange={setShowAiScript} />
 

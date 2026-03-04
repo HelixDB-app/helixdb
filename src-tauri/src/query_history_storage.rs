@@ -19,6 +19,8 @@ pub struct QueryHistoryRecordInput {
     pub query_text: String,
     pub connection_id: String,
     pub connection_label: String,
+    pub environment: Option<String>,
+    pub guard_reason: Option<String>,
     pub executed_at: i64,
     pub planning_ms: Option<f64>,
     pub execution_ms: f64,
@@ -84,6 +86,8 @@ pub struct QueryHistorySummary {
     pub slowest_ms: f64,
     pub bookmark: bool,
     pub note: Option<String>,
+    pub environment: Option<String>,
+    pub guard_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -253,7 +257,9 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
           was_cached         INTEGER NOT NULL DEFAULT 0,
           ai_analysis        TEXT,
           bookmark           INTEGER NOT NULL DEFAULT 0,
-          note               TEXT
+          note               TEXT,
+          environment        TEXT,
+          guard_reason       TEXT
         );
 
         CREATE INDEX IF NOT EXISTS idx_qh_executed_at  ON query_history(executed_at DESC);
@@ -268,6 +274,33 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
         "#,
     )
     .map_err(|e| format!("Failed to initialize query history schema: {}", e))?;
+
+    // Backward-compatible migrations for existing local DBs.
+    match conn.execute("ALTER TABLE query_history ADD COLUMN environment TEXT", []) {
+        Ok(_) => {}
+        Err(err) => {
+            let msg = err.to_string().to_ascii_lowercase();
+            if !msg.contains("duplicate column name") {
+                return Err(format!(
+                    "Failed to migrate query history (environment column): {}",
+                    err
+                ));
+            }
+        }
+    }
+
+    match conn.execute("ALTER TABLE query_history ADD COLUMN guard_reason TEXT", []) {
+        Ok(_) => {}
+        Err(err) => {
+            let msg = err.to_string().to_ascii_lowercase();
+            if !msg.contains("duplicate column name") {
+                return Err(format!(
+                    "Failed to migrate query history (guard_reason column): {}",
+                    err
+                ));
+            }
+        }
+    }
 
     Ok(())
 }
@@ -666,6 +699,8 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> rusqlite::Result<QueryHistorySumma
         slowest_ms: row.get(26)?,
         bookmark: row.get::<_, i64>(27)? == 1,
         note: row.get(28)?,
+        environment: row.get(29)?,
+        guard_reason: row.get(30)?,
     })
 }
 
@@ -710,12 +745,14 @@ pub fn record_query(
             query_text, query_hash, query_normalized, connection_id, connection_label,
             executed_at, planning_ms, execution_ms, total_ms, rows_returned, rows_affected,
             status, error_code, error_message, explain_json, blks_hit, blks_read,
-            temp_blks_written, query_type, tables_touched, was_cached, ai_analysis
+            temp_blks_written, query_type, tables_touched, was_cached, ai_analysis,
+            environment, guard_reason
         ) VALUES (
             ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, NULL
+            ?, ?, ?, ?, NULL,
+            ?, ?
         )
         "#,
         params![
@@ -740,6 +777,8 @@ pub fn record_query(
             query_type,
             tables_json,
             if entry.was_cached { 1_i64 } else { 0_i64 },
+            entry.environment,
+            entry.guard_reason,
         ],
     )
     .map_err(|e| format!("Failed to insert query history row: {}", e))?;
@@ -806,7 +845,9 @@ pub fn list_queries(
             MIN(total_ms) OVER (PARTITION BY query_hash) AS fastest_ms,
             MAX(total_ms) OVER (PARTITION BY query_hash) AS slowest_ms,
             bookmark,
-            note
+            note,
+            environment,
+            guard_reason
         FROM query_history
         {}
         ORDER BY {}, executed_at DESC
@@ -967,7 +1008,9 @@ pub fn get_query_detail(
                 (SELECT COALESCE(MIN(q2.total_ms), 0.0) FROM query_history q2 WHERE q2.query_hash = query_history.query_hash) AS fastest_ms,
                 (SELECT COALESCE(MAX(q2.total_ms), 0.0) FROM query_history q2 WHERE q2.query_hash = query_history.query_hash) AS slowest_ms,
                 bookmark,
-                note
+                note,
+                environment,
+                guard_reason
             FROM query_history
             WHERE id = ?
             "#,
@@ -1447,7 +1490,9 @@ pub fn export_csv(
             blks_read,
             temp_blks_written,
             tables_touched,
-            was_cached
+            was_cached,
+            environment,
+            guard_reason
         FROM query_history
         {}
         ORDER BY executed_at DESC
@@ -1463,7 +1508,7 @@ pub fn export_csv(
         .query(params_from_iter(filter_parts.params.iter()))
         .map_err(|e| format!("Failed to execute CSV export SQL: {}", e))?;
 
-    let mut csv = String::from("id,query_text,query_hash,connection_label,executed_at,query_type,total_ms,execution_ms,planning_ms,rows_returned,rows_affected,status,error_code,error_message,blks_hit,blks_read,temp_blks_written,tables_touched,was_cached\n");
+    let mut csv = String::from("id,query_text,query_hash,connection_label,executed_at,query_type,total_ms,execution_ms,planning_ms,rows_returned,rows_affected,status,error_code,error_message,blks_hit,blks_read,temp_blks_written,tables_touched,was_cached,environment,guard_reason\n");
 
     while let Some(row) = rows
         .next()
@@ -1472,6 +1517,8 @@ pub fn export_csv(
         let query_text: String = row.get(1).unwrap_or_default();
         let error_message: Option<String> = row.get(13).unwrap_or(None);
         let tables_touched: Option<String> = row.get(17).unwrap_or(None);
+        let environment: Option<String> = row.get(19).unwrap_or(None);
+        let guard_reason: Option<String> = row.get(20).unwrap_or(None);
 
         let cols = vec![
             row.get::<_, i64>(0).unwrap_or_default().to_string(),
@@ -1515,6 +1562,8 @@ pub fn export_csv(
                 .unwrap_or_default(),
             csv_escape(&tables_touched.unwrap_or_default()),
             row.get::<_, i64>(18).unwrap_or_default().to_string(),
+            csv_escape(&environment.unwrap_or_default()),
+            csv_escape(&guard_reason.unwrap_or_default()),
         ];
         csv.push_str(&cols.join(","));
         csv.push('\n');

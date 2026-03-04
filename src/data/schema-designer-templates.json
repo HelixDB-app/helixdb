@@ -1,0 +1,1482 @@
+{
+  "version": 1,
+  "updated_at": "2026-03-03",
+  "full_schema_templates": [
+    {
+      "id": "saas_multi_tenant",
+      "name": "SaaS Multi-Tenant Core",
+      "description": "Production-ready schema for B2B SaaS with tenants, memberships, billing, API keys, and audit logs.",
+      "category": "saas",
+      "tags": ["b2b", "multi-tenant", "billing", "audit"],
+      "tables": [
+        {
+          "name": "organizations",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "name", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "slug", "data_type": "VARCHAR(100)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "plan_tier", "data_type": "VARCHAR(50)", "nullable": false, "default_value": "'starter'", "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_organizations_slug", "columns": ["slug"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "users",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "email", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "full_name", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "password_hash", "data_type": "TEXT", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'active'", "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false},
+            {"name": "updated_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_users_email", "columns": ["email"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "organization_memberships",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "organization_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "organizations", "target_column": "id"}},
+            {"name": "user_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "users", "target_column": "id"}},
+            {"name": "role", "data_type": "VARCHAR(40)", "nullable": false, "default_value": "'member'", "is_primary_key": false},
+            {"name": "invited_by", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "users", "target_column": "id"}},
+            {"name": "joined_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_memberships_org_user", "columns": ["organization_id", "user_id"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "workspaces",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "organization_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "organizations", "target_column": "id"}},
+            {"name": "name", "data_type": "VARCHAR(150)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "workspace_key", "data_type": "VARCHAR(80)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_workspaces_org", "columns": ["organization_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_workspaces_key", "columns": ["workspace_key"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "api_keys",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "organization_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "organizations", "target_column": "id"}},
+            {"name": "workspace_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "workspaces", "target_column": "id"}},
+            {"name": "label", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "token_hash", "data_type": "TEXT", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "last_used_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_api_keys_org", "columns": ["organization_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "plans",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "code", "data_type": "VARCHAR(60)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "name", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "monthly_price", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "annual_price", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "is_active", "data_type": "BOOLEAN", "nullable": false, "default_value": "TRUE", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_plans_code", "columns": ["code"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "subscriptions",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "organization_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "organizations", "target_column": "id"}},
+            {"name": "plan_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "plans", "target_column": "id"}},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'active'", "is_primary_key": false},
+            {"name": "current_period_start", "data_type": "DATE", "nullable": false, "default_value": "CURRENT_DATE", "is_primary_key": false},
+            {"name": "current_period_end", "data_type": "DATE", "nullable": false, "default_value": "CURRENT_DATE", "is_primary_key": false},
+            {"name": "cancel_at_period_end", "data_type": "BOOLEAN", "nullable": false, "default_value": "FALSE", "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_subscriptions_org", "columns": ["organization_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "invoices",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "organization_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "organizations", "target_column": "id"}},
+            {"name": "subscription_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "subscriptions", "target_column": "id"}},
+            {"name": "amount", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "currency", "data_type": "VARCHAR(3)", "nullable": false, "default_value": "'USD'", "is_primary_key": false},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'pending'", "is_primary_key": false},
+            {"name": "due_date", "data_type": "DATE", "nullable": false, "default_value": "CURRENT_DATE", "is_primary_key": false},
+            {"name": "paid_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_invoices_org", "columns": ["organization_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_invoices_status", "columns": ["status"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "audit_logs",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "organization_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "organizations", "target_column": "id"}},
+            {"name": "actor_user_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "users", "target_column": "id"}},
+            {"name": "action", "data_type": "VARCHAR(100)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "resource_type", "data_type": "VARCHAR(80)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "resource_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "metadata", "data_type": "JSONB", "nullable": false, "default_value": "'{}'::jsonb", "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_audit_logs_org", "columns": ["organization_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_audit_logs_action", "columns": ["action"], "unique": false, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "ecommerce_retail",
+      "name": "eCommerce Retail Platform",
+      "description": "Complete transactional schema for products, catalog, cart, checkout, fulfillment, and payments.",
+      "category": "commerce",
+      "tags": ["store", "orders", "catalog", "payments"],
+      "tables": [
+        {
+          "name": "customers",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "email", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "full_name", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "phone", "data_type": "VARCHAR(30)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_customers_email", "columns": ["email"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "addresses",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "customer_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "customers", "target_column": "id"}},
+            {"name": "label", "data_type": "VARCHAR(80)", "nullable": false, "default_value": "'home'", "is_primary_key": false},
+            {"name": "line1", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "line2", "data_type": "VARCHAR(255)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "city", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "state", "data_type": "VARCHAR(80)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "postal_code", "data_type": "VARCHAR(20)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "country", "data_type": "VARCHAR(2)", "nullable": false, "default_value": "'US'", "is_primary_key": false},
+            {"name": "is_default", "data_type": "BOOLEAN", "nullable": false, "default_value": "FALSE", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_addresses_customer", "columns": ["customer_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "categories",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "name", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "slug", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "parent_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "categories", "target_column": "id"}}
+          ],
+          "indexes": [
+            {"name": "idx_categories_slug", "columns": ["slug"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "products",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "sku", "data_type": "VARCHAR(80)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "name", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "description", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "price", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "currency", "data_type": "VARCHAR(3)", "nullable": false, "default_value": "'USD'", "is_primary_key": false},
+            {"name": "inventory_count", "data_type": "INTEGER", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "is_active", "data_type": "BOOLEAN", "nullable": false, "default_value": "TRUE", "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false},
+            {"name": "updated_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_products_sku", "columns": ["sku"], "unique": true, "method": "BTREE"},
+            {"name": "idx_products_active", "columns": ["is_active"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "product_categories",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "product_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "products", "target_column": "id"}},
+            {"name": "category_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "categories", "target_column": "id"}}
+          ],
+          "indexes": [
+            {"name": "idx_product_categories_pair", "columns": ["product_id", "category_id"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "carts",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "customer_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "customers", "target_column": "id"}},
+            {"name": "status", "data_type": "VARCHAR(20)", "nullable": false, "default_value": "'active'", "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false},
+            {"name": "updated_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_carts_customer", "columns": ["customer_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "cart_items",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "cart_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "carts", "target_column": "id"}},
+            {"name": "product_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "products", "target_column": "id"}},
+            {"name": "quantity", "data_type": "INTEGER", "nullable": false, "default_value": "1", "is_primary_key": false},
+            {"name": "unit_price", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_cart_items_cart", "columns": ["cart_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "orders",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "customer_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "customers", "target_column": "id"}},
+            {"name": "address_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "addresses", "target_column": "id"}},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'pending'", "is_primary_key": false},
+            {"name": "subtotal", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "tax_amount", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "shipping_amount", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "total_amount", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "placed_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_orders_customer", "columns": ["customer_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_orders_status", "columns": ["status"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "order_items",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "order_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "orders", "target_column": "id"}},
+            {"name": "product_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "products", "target_column": "id"}},
+            {"name": "quantity", "data_type": "INTEGER", "nullable": false, "default_value": "1", "is_primary_key": false},
+            {"name": "unit_price", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "discount_amount", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_order_items_order", "columns": ["order_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "payments",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "order_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "orders", "target_column": "id"}},
+            {"name": "provider", "data_type": "VARCHAR(50)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "provider_ref", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "amount", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'authorized'", "is_primary_key": false},
+            {"name": "paid_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_payments_order", "columns": ["order_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_payments_provider_ref", "columns": ["provider_ref"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "shipments",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "order_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "orders", "target_column": "id"}},
+            {"name": "carrier", "data_type": "VARCHAR(80)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "tracking_number", "data_type": "VARCHAR(100)", "nullable": true, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'pending'", "is_primary_key": false},
+            {"name": "shipped_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "delivered_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_shipments_order", "columns": ["order_id"], "unique": false, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "learning_platform",
+      "name": "Learning Platform",
+      "description": "Schema for online courses, enrollments, lessons, submissions, and progress tracking.",
+      "category": "education",
+      "tags": ["lms", "courses", "progress", "assignments"],
+      "tables": [
+        {
+          "name": "users",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "email", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "display_name", "data_type": "VARCHAR(160)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "role", "data_type": "VARCHAR(40)", "nullable": false, "default_value": "'student'", "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_lms_users_email", "columns": ["email"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "courses",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "author_user_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "users", "target_column": "id"}},
+            {"name": "title", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "slug", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "description", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'draft'", "is_primary_key": false},
+            {"name": "published_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_courses_author", "columns": ["author_user_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_courses_slug", "columns": ["slug"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "course_modules",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "course_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "courses", "target_column": "id"}},
+            {"name": "title", "data_type": "VARCHAR(200)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "sort_order", "data_type": "INTEGER", "nullable": false, "default_value": "0", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_modules_course", "columns": ["course_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "lessons",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "module_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "course_modules", "target_column": "id"}},
+            {"name": "title", "data_type": "VARCHAR(200)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "content", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "sort_order", "data_type": "INTEGER", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "duration_minutes", "data_type": "INTEGER", "nullable": false, "default_value": "0", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_lessons_module", "columns": ["module_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "enrollments",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "course_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "courses", "target_column": "id"}},
+            {"name": "user_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "users", "target_column": "id"}},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'active'", "is_primary_key": false},
+            {"name": "enrolled_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false},
+            {"name": "completed_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_enrollments_course_user", "columns": ["course_id", "user_id"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "lesson_progress",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "enrollment_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "enrollments", "target_column": "id"}},
+            {"name": "lesson_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "lessons", "target_column": "id"}},
+            {"name": "is_complete", "data_type": "BOOLEAN", "nullable": false, "default_value": "FALSE", "is_primary_key": false},
+            {"name": "completed_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_progress_unique", "columns": ["enrollment_id", "lesson_id"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "assignments",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "lesson_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "lessons", "target_column": "id"}},
+            {"name": "title", "data_type": "VARCHAR(200)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "instructions", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "max_score", "data_type": "INTEGER", "nullable": false, "default_value": "100", "is_primary_key": false},
+            {"name": "due_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_assignments_lesson", "columns": ["lesson_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "submissions",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "assignment_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "assignments", "target_column": "id"}},
+            {"name": "enrollment_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "enrollments", "target_column": "id"}},
+            {"name": "content", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "grade", "data_type": "NUMERIC(5,2)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "submitted_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_submissions_assignment", "columns": ["assignment_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "certificates",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "enrollment_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true, "foreign_key": {"target_table": "enrollments", "target_column": "id"}},
+            {"name": "certificate_code", "data_type": "VARCHAR(80)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "issued_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_certificates_code", "columns": ["certificate_code"], "unique": true, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "crm_sales",
+      "name": "CRM Sales Pipeline",
+      "description": "Practical CRM schema for leads, deals, accounts, activities, and task management.",
+      "category": "crm",
+      "tags": ["crm", "sales", "pipeline", "deals"],
+      "tables": [
+        {
+          "name": "users",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "email", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "full_name", "data_type": "VARCHAR(160)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "title", "data_type": "VARCHAR(120)", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_crm_users_email", "columns": ["email"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "accounts",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "owner_user_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "users", "target_column": "id"}},
+            {"name": "name", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "website", "data_type": "VARCHAR(255)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "industry", "data_type": "VARCHAR(80)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "employee_count", "data_type": "INTEGER", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_accounts_owner", "columns": ["owner_user_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "contacts",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "account_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "accounts", "target_column": "id"}},
+            {"name": "owner_user_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "users", "target_column": "id"}},
+            {"name": "email", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "full_name", "data_type": "VARCHAR(180)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "job_title", "data_type": "VARCHAR(120)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "phone", "data_type": "VARCHAR(30)", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_contacts_account", "columns": ["account_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_contacts_owner", "columns": ["owner_user_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "leads",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "owner_user_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "users", "target_column": "id"}},
+            {"name": "email", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "full_name", "data_type": "VARCHAR(180)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "company", "data_type": "VARCHAR(180)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "source", "data_type": "VARCHAR(80)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "status", "data_type": "VARCHAR(40)", "nullable": false, "default_value": "'new'", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_leads_owner", "columns": ["owner_user_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_leads_status", "columns": ["status"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "pipelines",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "name", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "is_default", "data_type": "BOOLEAN", "nullable": false, "default_value": "FALSE", "is_primary_key": false}
+          ],
+          "indexes": []
+        },
+        {
+          "name": "pipeline_stages",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "pipeline_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "pipelines", "target_column": "id"}},
+            {"name": "name", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "sort_order", "data_type": "INTEGER", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "win_probability", "data_type": "INTEGER", "nullable": false, "default_value": "0", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_stages_pipeline", "columns": ["pipeline_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "deals",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "account_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "accounts", "target_column": "id"}},
+            {"name": "owner_user_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "users", "target_column": "id"}},
+            {"name": "stage_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "pipeline_stages", "target_column": "id"}},
+            {"name": "title", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "amount", "data_type": "NUMERIC(12,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "expected_close_date", "data_type": "DATE", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "status", "data_type": "VARCHAR(40)", "nullable": false, "default_value": "'open'", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_deals_owner", "columns": ["owner_user_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_deals_stage", "columns": ["stage_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "activities",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "deal_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "deals", "target_column": "id"}},
+            {"name": "contact_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "contacts", "target_column": "id"}},
+            {"name": "owner_user_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "users", "target_column": "id"}},
+            {"name": "activity_type", "data_type": "VARCHAR(40)", "nullable": false, "default_value": "'call'", "is_primary_key": false},
+            {"name": "subject", "data_type": "VARCHAR(200)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "scheduled_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "completed_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_activities_owner", "columns": ["owner_user_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "tasks",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "owner_user_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "users", "target_column": "id"}},
+            {"name": "deal_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "deals", "target_column": "id"}},
+            {"name": "title", "data_type": "VARCHAR(200)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'todo'", "is_primary_key": false},
+            {"name": "priority", "data_type": "VARCHAR(20)", "nullable": false, "default_value": "'medium'", "is_primary_key": false},
+            {"name": "due_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_tasks_owner", "columns": ["owner_user_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_tasks_status", "columns": ["status"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "notes",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "author_user_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "users", "target_column": "id"}},
+            {"name": "deal_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "deals", "target_column": "id"}},
+            {"name": "contact_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "contacts", "target_column": "id"}},
+            {"name": "body", "data_type": "TEXT", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_notes_author", "columns": ["author_user_id"], "unique": false, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "healthcare_clinic",
+      "name": "Healthcare Clinic",
+      "description": "Template for outpatient clinic operations with patient records, appointments, encounters, and prescriptions.",
+      "category": "healthcare",
+      "tags": ["clinic", "patients", "appointments", "ehr"],
+      "tables": [
+        {
+          "name": "patients",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "patient_number", "data_type": "VARCHAR(40)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "first_name", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "last_name", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "date_of_birth", "data_type": "DATE", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "phone", "data_type": "VARCHAR(30)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "email", "data_type": "VARCHAR(255)", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_patients_number", "columns": ["patient_number"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "practitioners",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "license_number", "data_type": "VARCHAR(80)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "full_name", "data_type": "VARCHAR(180)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "specialty", "data_type": "VARCHAR(120)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "email", "data_type": "VARCHAR(255)", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_practitioners_license", "columns": ["license_number"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "appointments",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "patient_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "patients", "target_column": "id"}},
+            {"name": "practitioner_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "practitioners", "target_column": "id"}},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'scheduled'", "is_primary_key": false},
+            {"name": "starts_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "ends_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "reason", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_appointments_patient", "columns": ["patient_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_appointments_practitioner", "columns": ["practitioner_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_appointments_starts_at", "columns": ["starts_at"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "encounters",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "appointment_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "appointments", "target_column": "id"}},
+            {"name": "patient_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "patients", "target_column": "id"}},
+            {"name": "practitioner_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "practitioners", "target_column": "id"}},
+            {"name": "notes", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "occurred_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_encounters_patient", "columns": ["patient_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_encounters_practitioner", "columns": ["practitioner_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "diagnoses",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "encounter_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "encounters", "target_column": "id"}},
+            {"name": "icd10_code", "data_type": "VARCHAR(20)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "description", "data_type": "TEXT", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "is_primary", "data_type": "BOOLEAN", "nullable": false, "default_value": "FALSE", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_diagnoses_encounter", "columns": ["encounter_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "medications",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "name", "data_type": "VARCHAR(200)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "strength", "data_type": "VARCHAR(120)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "form", "data_type": "VARCHAR(80)", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": []
+        },
+        {
+          "name": "prescriptions",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "encounter_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "encounters", "target_column": "id"}},
+            {"name": "medication_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "medications", "target_column": "id"}},
+            {"name": "dose", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "frequency", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "duration_days", "data_type": "INTEGER", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "issued_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_prescriptions_encounter", "columns": ["encounter_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "billing_claims",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "encounter_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "encounters", "target_column": "id"}},
+            {"name": "payer", "data_type": "VARCHAR(160)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "claim_number", "data_type": "VARCHAR(80)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'submitted'", "is_primary_key": false},
+            {"name": "amount", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "submitted_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_claims_encounter", "columns": ["encounter_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_claims_number", "columns": ["claim_number"], "unique": true, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "event_booking",
+      "name": "Event Booking Platform",
+      "description": "Modern event and ticketing schema with venues, sessions, bookings, and check-ins.",
+      "category": "events",
+      "tags": ["events", "tickets", "bookings", "payments"],
+      "tables": [
+        {
+          "name": "users",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "email", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "full_name", "data_type": "VARCHAR(180)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": []
+        },
+        {
+          "name": "venues",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "name", "data_type": "VARCHAR(200)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "city", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "country", "data_type": "VARCHAR(2)", "nullable": false, "default_value": "'US'", "is_primary_key": false},
+            {"name": "capacity", "data_type": "INTEGER", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": []
+        },
+        {
+          "name": "events",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "organizer_user_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "users", "target_column": "id"}},
+            {"name": "venue_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "venues", "target_column": "id"}},
+            {"name": "title", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "slug", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "description", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'draft'", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_events_organizer", "columns": ["organizer_user_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_events_slug", "columns": ["slug"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "event_sessions",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "event_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "events", "target_column": "id"}},
+            {"name": "starts_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "ends_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "capacity", "data_type": "INTEGER", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_event_sessions_event", "columns": ["event_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "tickets",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "event_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "events", "target_column": "id"}},
+            {"name": "name", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "price", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "quantity", "data_type": "INTEGER", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "sales_start", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "sales_end", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_tickets_event", "columns": ["event_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "bookings",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "user_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "users", "target_column": "id"}},
+            {"name": "event_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "events", "target_column": "id"}},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'pending'", "is_primary_key": false},
+            {"name": "total_amount", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "booked_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_bookings_user", "columns": ["user_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_bookings_event", "columns": ["event_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "booking_items",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "booking_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "bookings", "target_column": "id"}},
+            {"name": "ticket_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "tickets", "target_column": "id"}},
+            {"name": "quantity", "data_type": "INTEGER", "nullable": false, "default_value": "1", "is_primary_key": false},
+            {"name": "unit_price", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_booking_items_booking", "columns": ["booking_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "payments",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "booking_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "bookings", "target_column": "id"}},
+            {"name": "provider", "data_type": "VARCHAR(50)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "provider_reference", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'authorized'", "is_primary_key": false},
+            {"name": "amount", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "paid_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_event_payments_booking", "columns": ["booking_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "checkins",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "booking_item_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "booking_items", "target_column": "id"}},
+            {"name": "session_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "event_sessions", "target_column": "id"}},
+            {"name": "checked_in_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false},
+            {"name": "gate", "data_type": "VARCHAR(40)", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_checkins_booking_item", "columns": ["booking_item_id"], "unique": true, "method": "BTREE"}
+          ]
+        }
+      ]
+    }
+  ],
+  "module_templates": [
+    {
+      "id": "module_auth_core",
+      "name": "Auth Core",
+      "description": "User accounts, login sessions, and password reset tokens.",
+      "category": "identity",
+      "tags": ["auth", "users", "sessions"],
+      "tables": [
+        {
+          "name": "auth_accounts",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "email", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "password_hash", "data_type": "TEXT", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "status", "data_type": "VARCHAR(20)", "nullable": false, "default_value": "'active'", "is_primary_key": false},
+            {"name": "last_login_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_auth_accounts_email", "columns": ["email"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "auth_sessions",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "account_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "auth_accounts", "target_column": "id"}},
+            {"name": "session_token", "data_type": "TEXT", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "ip_address", "data_type": "INET", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "user_agent", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "expires_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_auth_sessions_account", "columns": ["account_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_auth_sessions_token", "columns": ["session_token"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "password_reset_tokens",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "account_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "auth_accounts", "target_column": "id"}},
+            {"name": "token_hash", "data_type": "TEXT", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "expires_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "used_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_password_reset_token", "columns": ["token_hash"], "unique": true, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "module_rbac",
+      "name": "Roles and Permissions",
+      "description": "Role-based access control tables for granular authorization.",
+      "category": "security",
+      "tags": ["rbac", "roles", "permissions"],
+      "tables": [
+        {
+          "name": "roles",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "code", "data_type": "VARCHAR(80)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "name", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "description", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_roles_code", "columns": ["code"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "permissions",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "resource", "data_type": "VARCHAR(100)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "action", "data_type": "VARCHAR(100)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "description", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_permissions_resource_action", "columns": ["resource", "action"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "role_permissions",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "role_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "roles", "target_column": "id"}},
+            {"name": "permission_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "permissions", "target_column": "id"}}
+          ],
+          "indexes": [
+            {"name": "idx_role_permissions_pair", "columns": ["role_id", "permission_id"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "actor_roles",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "actor_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "role_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "roles", "target_column": "id"}},
+            {"name": "scope", "data_type": "VARCHAR(80)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "assigned_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_actor_roles_actor", "columns": ["actor_id"], "unique": false, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "module_notifications",
+      "name": "Notifications",
+      "description": "Template, queue, and delivery tracking for multi-channel notifications.",
+      "category": "communication",
+      "tags": ["notifications", "email", "sms", "queue"],
+      "tables": [
+        {
+          "name": "notification_templates",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "code", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "channel", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'email'", "is_primary_key": false},
+            {"name": "subject", "data_type": "VARCHAR(255)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "body_template", "data_type": "TEXT", "nullable": false, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_notification_templates_code", "columns": ["code"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "notifications",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "template_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "notification_templates", "target_column": "id"}},
+            {"name": "recipient", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "channel", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'email'", "is_primary_key": false},
+            {"name": "payload", "data_type": "JSONB", "nullable": false, "default_value": "'{}'::jsonb", "is_primary_key": false},
+            {"name": "status", "data_type": "VARCHAR(20)", "nullable": false, "default_value": "'queued'", "is_primary_key": false},
+            {"name": "scheduled_for", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_notifications_status", "columns": ["status"], "unique": false, "method": "BTREE"},
+            {"name": "idx_notifications_scheduled", "columns": ["scheduled_for"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "notification_deliveries",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "notification_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "notifications", "target_column": "id"}},
+            {"name": "provider", "data_type": "VARCHAR(80)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "provider_message_id", "data_type": "VARCHAR(255)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "status", "data_type": "VARCHAR(20)", "nullable": false, "default_value": "'sent'", "is_primary_key": false},
+            {"name": "sent_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "error_message", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_notification_deliveries_notification", "columns": ["notification_id"], "unique": false, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "module_file_storage",
+      "name": "File Storage",
+      "description": "Buckets, files, and version metadata for durable object storage tracking.",
+      "category": "storage",
+      "tags": ["files", "storage", "uploads"],
+      "tables": [
+        {
+          "name": "file_buckets",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "name", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "is_public", "data_type": "BOOLEAN", "nullable": false, "default_value": "FALSE", "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": []
+        },
+        {
+          "name": "files",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "bucket_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "file_buckets", "target_column": "id"}},
+            {"name": "path", "data_type": "TEXT", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "mime_type", "data_type": "VARCHAR(120)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "size_bytes", "data_type": "BIGINT", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "checksum", "data_type": "VARCHAR(128)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_files_bucket_path", "columns": ["bucket_id", "path"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "file_versions",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "file_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "files", "target_column": "id"}},
+            {"name": "version_no", "data_type": "INTEGER", "nullable": false, "default_value": "1", "is_primary_key": false},
+            {"name": "storage_key", "data_type": "TEXT", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "size_bytes", "data_type": "BIGINT", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_file_versions_file_version", "columns": ["file_id", "version_no"], "unique": true, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "module_audit",
+      "name": "Audit Trail",
+      "description": "High-volume append-only audit events and field-level changes.",
+      "category": "observability",
+      "tags": ["audit", "compliance", "history"],
+      "tables": [
+        {
+          "name": "audit_events",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "actor_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "action", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "resource_type", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "resource_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "metadata", "data_type": "JSONB", "nullable": false, "default_value": "'{}'::jsonb", "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_audit_events_resource", "columns": ["resource_type", "resource_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_audit_events_created", "columns": ["created_at"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "audit_event_changes",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "event_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "audit_events", "target_column": "id"}},
+            {"name": "field_name", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "old_value", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "new_value", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_audit_changes_event", "columns": ["event_id"], "unique": false, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "module_tagging",
+      "name": "Tagging",
+      "description": "Flexible tag dictionary and polymorphic tag assignments.",
+      "category": "content",
+      "tags": ["tags", "taxonomy", "metadata"],
+      "tables": [
+        {
+          "name": "tags",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "name", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "slug", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "color", "data_type": "VARCHAR(20)", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_tags_slug", "columns": ["slug"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "tag_assignments",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "tag_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "tags", "target_column": "id"}},
+            {"name": "target_type", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "target_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_tag_assignments_target", "columns": ["target_type", "target_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_tag_assignments_unique", "columns": ["tag_id", "target_type", "target_id"], "unique": true, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "module_feature_flags",
+      "name": "Feature Flags",
+      "description": "Configurable rollout controls with rules and actor overrides.",
+      "category": "platform",
+      "tags": ["flags", "rollout", "experiments"],
+      "tables": [
+        {
+          "name": "feature_flags",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "key", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "name", "data_type": "VARCHAR(160)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "description", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "enabled", "data_type": "BOOLEAN", "nullable": false, "default_value": "FALSE", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_feature_flags_key", "columns": ["key"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "feature_flag_rules",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "flag_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "feature_flags", "target_column": "id"}},
+            {"name": "rule_type", "data_type": "VARCHAR(60)", "nullable": false, "default_value": "'percentage'", "is_primary_key": false},
+            {"name": "rule_value", "data_type": "JSONB", "nullable": false, "default_value": "'{}'::jsonb", "is_primary_key": false},
+            {"name": "priority", "data_type": "INTEGER", "nullable": false, "default_value": "0", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_feature_flag_rules_flag", "columns": ["flag_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "feature_flag_overrides",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "flag_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "feature_flags", "target_column": "id"}},
+            {"name": "actor_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "enabled", "data_type": "BOOLEAN", "nullable": false, "default_value": "TRUE", "is_primary_key": false},
+            {"name": "expires_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_feature_flag_overrides_actor", "columns": ["actor_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_feature_flag_overrides_unique", "columns": ["flag_id", "actor_id"], "unique": true, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "module_support",
+      "name": "Support Tickets",
+      "description": "Support desk structure with tickets, threaded messages, and status transitions.",
+      "category": "operations",
+      "tags": ["support", "tickets", "helpdesk"],
+      "tables": [
+        {
+          "name": "support_tickets",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "ticket_number", "data_type": "VARCHAR(40)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "requester_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "assignee_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "subject", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "status", "data_type": "VARCHAR(20)", "nullable": false, "default_value": "'open'", "is_primary_key": false},
+            {"name": "priority", "data_type": "VARCHAR(20)", "nullable": false, "default_value": "'normal'", "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_support_tickets_number", "columns": ["ticket_number"], "unique": true, "method": "BTREE"},
+            {"name": "idx_support_tickets_status", "columns": ["status"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "ticket_messages",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "ticket_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "support_tickets", "target_column": "id"}},
+            {"name": "author_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "body", "data_type": "TEXT", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "is_internal", "data_type": "BOOLEAN", "nullable": false, "default_value": "FALSE", "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_ticket_messages_ticket", "columns": ["ticket_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "ticket_status_history",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "ticket_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "support_tickets", "target_column": "id"}},
+            {"name": "from_status", "data_type": "VARCHAR(20)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "to_status", "data_type": "VARCHAR(20)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "changed_by", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "changed_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_ticket_status_history_ticket", "columns": ["ticket_id"], "unique": false, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "module_workflow",
+      "name": "Workflow Jobs",
+      "description": "Workflow definitions, run tracking, and step-level execution state.",
+      "category": "automation",
+      "tags": ["workflow", "jobs", "orchestration"],
+      "tables": [
+        {
+          "name": "workflows",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "key", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "name", "data_type": "VARCHAR(160)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "is_active", "data_type": "BOOLEAN", "nullable": false, "default_value": "TRUE", "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_workflows_key", "columns": ["key"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "workflow_runs",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "workflow_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "workflows", "target_column": "id"}},
+            {"name": "status", "data_type": "VARCHAR(20)", "nullable": false, "default_value": "'queued'", "is_primary_key": false},
+            {"name": "input_payload", "data_type": "JSONB", "nullable": false, "default_value": "'{}'::jsonb", "is_primary_key": false},
+            {"name": "started_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "finished_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_workflow_runs_workflow", "columns": ["workflow_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_workflow_runs_status", "columns": ["status"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "workflow_steps",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "workflow_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "workflows", "target_column": "id"}},
+            {"name": "step_key", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "step_type", "data_type": "VARCHAR(80)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "config", "data_type": "JSONB", "nullable": false, "default_value": "'{}'::jsonb", "is_primary_key": false},
+            {"name": "sort_order", "data_type": "INTEGER", "nullable": false, "default_value": "0", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_workflow_steps_unique", "columns": ["workflow_id", "step_key"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "workflow_step_runs",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "workflow_run_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "workflow_runs", "target_column": "id"}},
+            {"name": "workflow_step_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "workflow_steps", "target_column": "id"}},
+            {"name": "status", "data_type": "VARCHAR(20)", "nullable": false, "default_value": "'queued'", "is_primary_key": false},
+            {"name": "attempt", "data_type": "INTEGER", "nullable": false, "default_value": "1", "is_primary_key": false},
+            {"name": "error", "data_type": "TEXT", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "started_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "finished_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_workflow_step_runs_run", "columns": ["workflow_run_id"], "unique": false, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "module_billing",
+      "name": "Billing Core",
+      "description": "Subscription billing tables for plans, subscriptions, invoices, and invoice lines.",
+      "category": "finance",
+      "tags": ["billing", "subscriptions", "invoices"],
+      "tables": [
+        {
+          "name": "billing_customers",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "external_id", "data_type": "VARCHAR(120)", "nullable": true, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "email", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "name", "data_type": "VARCHAR(180)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_billing_customers_external", "columns": ["external_id"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "billing_plans",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "code", "data_type": "VARCHAR(80)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "name", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "price_monthly", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "currency", "data_type": "VARCHAR(3)", "nullable": false, "default_value": "'USD'", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_billing_plans_code", "columns": ["code"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "billing_subscriptions",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "customer_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "billing_customers", "target_column": "id"}},
+            {"name": "plan_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "billing_plans", "target_column": "id"}},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'active'", "is_primary_key": false},
+            {"name": "current_period_start", "data_type": "DATE", "nullable": false, "default_value": "CURRENT_DATE", "is_primary_key": false},
+            {"name": "current_period_end", "data_type": "DATE", "nullable": false, "default_value": "CURRENT_DATE", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_billing_subscriptions_customer", "columns": ["customer_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "billing_invoices",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "subscription_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "billing_subscriptions", "target_column": "id"}},
+            {"name": "invoice_number", "data_type": "VARCHAR(80)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "status", "data_type": "VARCHAR(30)", "nullable": false, "default_value": "'draft'", "is_primary_key": false},
+            {"name": "total", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "issued_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false},
+            {"name": "paid_at", "data_type": "TIMESTAMPTZ", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_billing_invoices_subscription", "columns": ["subscription_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "billing_invoice_line_items",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "invoice_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "billing_invoices", "target_column": "id"}},
+            {"name": "description", "data_type": "VARCHAR(255)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "quantity", "data_type": "INTEGER", "nullable": false, "default_value": "1", "is_primary_key": false},
+            {"name": "unit_price", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false},
+            {"name": "line_total", "data_type": "NUMERIC(10,2)", "nullable": false, "default_value": "0", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_billing_invoice_lines_invoice", "columns": ["invoice_id"], "unique": false, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "module_geo",
+      "name": "Geo Directory",
+      "description": "Normalized country, region, and city lookup data model.",
+      "category": "location",
+      "tags": ["geo", "countries", "cities"],
+      "tables": [
+        {
+          "name": "countries",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "iso2", "data_type": "VARCHAR(2)", "nullable": false, "default_value": null, "is_primary_key": false, "unique": true},
+            {"name": "name", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_countries_iso2", "columns": ["iso2"], "unique": true, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "regions",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "country_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "countries", "target_column": "id"}},
+            {"name": "code", "data_type": "VARCHAR(20)", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "name", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_regions_country", "columns": ["country_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "cities",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "country_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "countries", "target_column": "id"}},
+            {"name": "region_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "regions", "target_column": "id"}},
+            {"name": "name", "data_type": "VARCHAR(140)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "latitude", "data_type": "REAL", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "longitude", "data_type": "REAL", "nullable": true, "default_value": null, "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_cities_country", "columns": ["country_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_cities_region", "columns": ["region_id"], "unique": false, "method": "BTREE"}
+          ]
+        }
+      ]
+    },
+    {
+      "id": "module_comments",
+      "name": "Comments and Reactions",
+      "description": "Threaded comments with per-actor emoji reactions.",
+      "category": "engagement",
+      "tags": ["comments", "threads", "reactions"],
+      "tables": [
+        {
+          "name": "comments",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "parent_comment_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "comments", "target_column": "id"}},
+            {"name": "author_id", "data_type": "UUID", "nullable": true, "default_value": null, "is_primary_key": false},
+            {"name": "target_type", "data_type": "VARCHAR(120)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "target_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "body", "data_type": "TEXT", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false},
+            {"name": "updated_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_comments_target", "columns": ["target_type", "target_id"], "unique": false, "method": "BTREE"},
+            {"name": "idx_comments_parent", "columns": ["parent_comment_id"], "unique": false, "method": "BTREE"}
+          ]
+        },
+        {
+          "name": "comment_reactions",
+          "columns": [
+            {"name": "id", "data_type": "UUID", "nullable": false, "default_value": "gen_random_uuid()", "is_primary_key": true},
+            {"name": "comment_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false, "foreign_key": {"target_table": "comments", "target_column": "id"}},
+            {"name": "actor_id", "data_type": "UUID", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "emoji", "data_type": "VARCHAR(16)", "nullable": false, "default_value": null, "is_primary_key": false},
+            {"name": "created_at", "data_type": "TIMESTAMPTZ", "nullable": false, "default_value": "NOW()", "is_primary_key": false}
+          ],
+          "indexes": [
+            {"name": "idx_comment_reactions_unique", "columns": ["comment_id", "actor_id", "emoji"], "unique": true, "method": "BTREE"}
+          ]
+        }
+      ]
+    }
+  ]
+}

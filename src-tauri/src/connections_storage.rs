@@ -15,6 +15,12 @@ pub struct SavedConnection {
     pub connection_string: String,
     #[serde(default)]
     pub database_name: Option<String>,
+    #[serde(default)]
+    pub environment: Option<String>,
+    #[serde(default)]
+    pub owner: Option<String>,
+    #[serde(default)]
+    pub criticality: Option<String>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -61,6 +67,9 @@ pub fn save(
         existing.name = conn.name;
         existing.connection_string = conn.connection_string;
         existing.database_name = conn.database_name.or(existing.database_name.clone());
+        existing.environment = conn.environment.or(existing.environment.clone());
+        existing.owner = conn.owner;
+        existing.criticality = conn.criticality.or(existing.criticality.clone());
     } else {
         file.connections.push(conn);
     }

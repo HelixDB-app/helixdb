@@ -61,7 +61,12 @@ interface SchemaDesignerState {
 
     // Actions — project management
     loadProjects: () => Promise<void>;
-    createProject: (name: string, appType: string, description: string) => Promise<string>;
+    createProject: (
+        name: string,
+        appType: string,
+        description: string,
+        initialTables?: SchemaDesignerTable[]
+    ) => Promise<string>;
     createProjectFromSql: (name: string, sql: string) => Promise<string>;
     importSqlToCurrent: (sql: string) => boolean;
     deleteProject: (id: string) => Promise<void>;
@@ -132,14 +137,14 @@ export const useSchemaDesignerStore = create<SchemaDesignerState>()(
                 }
             },
 
-            createProject: async (name, appType, description) => {
+            createProject: async (name, appType, description, initialTables = []) => {
                 const id = genId();
                 const project: SchemaProject = {
                     id,
                     name,
                     app_type: appType,
                     description,
-                    tables: [],
+                    tables: initialTables,
                     version_history: [],
                     created_at: now(),
                     updated_at: now(),

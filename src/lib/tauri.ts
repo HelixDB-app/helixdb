@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
     ConnectionResponse,
+    ConnectionEnvironment,
     CreateDatabaseRoleRequest,
     CreateDatabaseUserRequest,
     SchemaInfo,
@@ -8,6 +9,7 @@ import type {
     TopologyData,
     ColumnInfo,
     QueryResult,
+    RecentTableOpen,
     SavedConnection,
     DatabaseAccessProfile,
     DatabaseExtensionDetail,
@@ -73,6 +75,32 @@ export async function dbListTables(
     schema: string
 ): Promise<TableInfo[]> {
     return invoke<TableInfo[]>("db_list_tables", { connectionId, schema });
+}
+
+/** List recently opened tables/views for one connection */
+export async function dbListRecentTables(
+    connectionId: string,
+    limit = 8
+): Promise<RecentTableOpen[]> {
+    return invoke<RecentTableOpen[]>("db_list_recent_tables", {
+        connectionId,
+        limit,
+    });
+}
+
+/** Record one table/view open action and get the latest recent list */
+export async function dbTrackRecentTableOpen(
+    connectionId: string,
+    schema: string,
+    table: string,
+    tableType: "BASE TABLE" | "VIEW"
+): Promise<RecentTableOpen[]> {
+    return invoke<RecentTableOpen[]>("db_track_recent_table_open", {
+        connectionId,
+        schema,
+        table,
+        tableType,
+    });
 }
 
 /** Get schema topology (nodes + FK edges) for ER diagram */
@@ -160,11 +188,22 @@ export async function dbGetTableDataGeojson(
 }
 
 /** Execute a raw SQL query */
+export interface DbExecuteQueryOptions {
+    environment?: ConnectionEnvironment | null;
+    guardReason?: string | null;
+}
+
 export async function dbExecuteQuery(
     connectionId: string,
-    sql: string
+    sql: string,
+    options?: DbExecuteQueryOptions
 ): Promise<QueryResult> {
-    return invoke<QueryResult>("db_execute_query", { connectionId, sql });
+    return invoke<QueryResult>("db_execute_query", {
+        connectionId,
+        sql,
+        environment: options?.environment ?? null,
+        guardReason: options?.guardReason ?? null,
+    });
 }
 
 /** Export database to SQL file. Progress via "db-export-progress" event. */

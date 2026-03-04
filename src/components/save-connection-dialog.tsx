@@ -11,6 +11,19 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
+import {
+    normalizeConnectionCriticality,
+    normalizeConnectionEnvironment,
+    normalizeConnectionOwner,
+} from "@/lib/connection-metadata";
+import type { ConnectionCriticality, ConnectionEnvironment } from "@/lib/types";
 import { Database, Loader2, Plug, AlertCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
 
@@ -38,6 +51,9 @@ export function SaveConnectionDialog({
     const [database, setDatabase] = useState("");
     const [username, setUsername] = useState("");
     const [password, setPassword] = useState("");
+    const [environment, setEnvironment] = useState<ConnectionEnvironment>("dev");
+    const [owner, setOwner] = useState("");
+    const [criticality, setCriticality] = useState<ConnectionCriticality>("medium");
     const [saving, setSaving] = useState(false);
     const [saveAndConnect, setSaveAndConnect] = useState(false);
 
@@ -49,6 +65,9 @@ export function SaveConnectionDialog({
             if (editConnection) {
                 setName(editConnection.name);
                 setUriValue(editConnection.connection_string);
+                setEnvironment(normalizeConnectionEnvironment(editConnection.environment));
+                setOwner(editConnection.owner ?? "");
+                setCriticality(normalizeConnectionCriticality(editConnection.criticality));
                 try {
                     const url = new URL(editConnection.connection_string);
                     setHost(url.hostname || "localhost");
@@ -65,6 +84,9 @@ export function SaveConnectionDialog({
                 setDatabase("");
                 setUsername("");
                 setPassword("");
+                setEnvironment("dev");
+                setOwner("");
+                setCriticality("medium");
             }
             setSaveAndConnect(false);
         }
@@ -89,6 +111,9 @@ export function SaveConnectionDialog({
                     ...editConnection,
                     name: name.trim(),
                     connection_string: connectionString.trim(),
+                    environment: normalizeConnectionEnvironment(environment),
+                    owner: normalizeConnectionOwner(owner),
+                    criticality: normalizeConnectionCriticality(criticality),
                 };
                 await update(updated);
                 if (andConnect && onSaveAndConnect) {
@@ -99,6 +124,9 @@ export function SaveConnectionDialog({
                     name: name.trim(),
                     connection_string: connectionString.trim(),
                     database_name: null,
+                    environment: normalizeConnectionEnvironment(environment),
+                    owner: normalizeConnectionOwner(owner),
+                    criticality: normalizeConnectionCriticality(criticality),
                 });
                 if (andConnect && onSaveAndConnect) {
                     onSaveAndConnect(saved);
@@ -231,6 +259,58 @@ export function SaveConnectionDialog({
                             </div>
                         </div>
                     )}
+
+                    <div className="rounded-lg border border-border/30 bg-muted/10 p-3 space-y-3">
+                        <p className="text-xs font-medium text-muted-foreground uppercase tracking-wide">
+                            Environment Manager
+                        </p>
+                        <div className="grid grid-cols-2 gap-2">
+                            <div>
+                                <label className="text-xs text-muted-foreground block mb-1">Environment</label>
+                                <Select
+                                    value={environment}
+                                    onValueChange={(v) => setEnvironment(v as ConnectionEnvironment)}
+                                    disabled={saving}
+                                >
+                                    <SelectTrigger className="h-9 text-sm">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="dev">Development</SelectItem>
+                                        <SelectItem value="staging">Staging</SelectItem>
+                                        <SelectItem value="prod">Production</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                            <div>
+                                <label className="text-xs text-muted-foreground block mb-1">Criticality</label>
+                                <Select
+                                    value={criticality}
+                                    onValueChange={(v) => setCriticality(v as ConnectionCriticality)}
+                                    disabled={saving}
+                                >
+                                    <SelectTrigger className="h-9 text-sm">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="low">Low</SelectItem>
+                                        <SelectItem value="medium">Medium</SelectItem>
+                                        <SelectItem value="high">High</SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+                        </div>
+                        <div>
+                            <label className="text-xs text-muted-foreground block mb-1">Owner</label>
+                            <Input
+                                value={owner}
+                                onChange={(e) => setOwner(e.target.value)}
+                                placeholder="e.g. Data Platform Team"
+                                className="h-9 text-sm"
+                                disabled={saving}
+                            />
+                        </div>
+                    </div>
 
                     {error && (
                         <div className="flex items-start gap-2 rounded-lg bg-destructive/10 px-4 py-3 border border-destructive/20">

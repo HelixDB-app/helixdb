@@ -42,6 +42,13 @@ export interface TableInfo {
     table_comment: string | null;
 }
 
+export interface RecentTableOpen {
+    schema: string;
+    table: string;
+    table_type: string;
+    opened_at: number;
+}
+
 export interface QueryResult {
     columns: ResultColumn[];
     rows: CellValue[][];
@@ -74,6 +81,9 @@ export interface QueryHistoryFilter {
     offset?: number | null;
 }
 
+export type ConnectionEnvironment = "dev" | "staging" | "prod";
+export type ConnectionCriticality = "low" | "medium" | "high";
+
 /** One query row in history list */
 export interface QueryHistorySummary {
     id: number;
@@ -102,6 +112,8 @@ export interface QueryHistorySummary {
     slowest_ms: number;
     bookmark: boolean;
     note: string | null;
+    environment: ConnectionEnvironment | null;
+    guard_reason: string | null;
 }
 
 export interface QueryHistoryPeer {
@@ -391,6 +403,9 @@ export interface SavedConnection {
     name: string;
     connection_string: string;
     database_name?: string | null;
+    environment?: ConnectionEnvironment | null;
+    owner?: string | null;
+    criticality?: ConnectionCriticality | null;
 }
 
 /** Event trigger (database level, PG 9.3+) */

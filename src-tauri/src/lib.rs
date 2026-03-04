@@ -52,6 +52,8 @@ pub fn run() {
             commands::db_disconnect,
             commands::db_list_schemas,
             commands::db_list_tables,
+            commands::db_track_recent_table_open,
+            commands::db_list_recent_tables,
             commands::db_get_schema_topology,
             commands::db_get_columns,
             commands::db_get_documentation_context,

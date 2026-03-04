@@ -190,7 +190,7 @@ export function ProfilePanel({ open, onClose }: ProfilePanelProps) {
     }
 
     async function handleEditProfile() {
-        await authOpenBrowser("http://localhost:3001/profile");
+        await authOpenBrowser(`${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "http://localhost:3001"}/profile`);
     }
 
     const discordAccess = subscription?.discordAccess;
@@ -490,7 +490,7 @@ export function ProfilePanel({ open, onClose }: ProfilePanelProps) {
 
                     {/* Backend indicator */}
                     <p className="mt-3 text-center text-[10px] text-muted-foreground/30 select-none">
-                        Connected via localhost:3001
+                        Connected via {process.env.NEXT_PUBLIC_WEB_APP_URL}
                     </p>
                 </div>
                 </>}

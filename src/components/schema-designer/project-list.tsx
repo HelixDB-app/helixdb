@@ -29,6 +29,7 @@ import {
 } from "lucide-react";
 import { ImportSqlDialog } from "./import-sql-dialog";
 import { toast } from "sonner";
+import { getSchemaTemplateCatalog, instantiateFullSchemaTemplate } from "@/lib/schema-templates";
 
 const APP_TYPES = [
     { value: "ecommerce", label: "eCommerce", icon: "🛒" },
@@ -43,12 +44,15 @@ const APP_TYPES = [
     { value: "custom", label: "Custom", icon: "🔧" },
 ];
 
+const templateCatalog = getSchemaTemplateCatalog();
+
 export function ProjectList() {
     const { projects, createProject, deleteProject, setActiveProject } = useSchemaDesignerStore();
     const [showCreate, setShowCreate] = useState(false);
     const [newName, setNewName] = useState("");
     const [newAppType, setNewAppType] = useState("custom");
     const [newDescription, setNewDescription] = useState("");
+    const [newTemplateId, setNewTemplateId] = useState("none");
     const [isCreating, setIsCreating] = useState(false);
     const [deleteId, setDeleteId] = useState<string | null>(null);
     const [showImportSql, setShowImportSql] = useState(false);
@@ -57,18 +61,39 @@ export function ProjectList() {
         if (!newName.trim()) return;
         setIsCreating(true);
         try {
-            await createProject(newName.trim(), newAppType, newDescription.trim());
+            const starterTemplate = newTemplateId === "none"
+                ? null
+                : templateCatalog.full.find(template => template.id === newTemplateId) ?? null;
+            const starterTemplateResult = starterTemplate
+                ? instantiateFullSchemaTemplate(starterTemplate)
+                : null;
+
+            await createProject(
+                newName.trim(),
+                newAppType,
+                newDescription.trim(),
+                starterTemplateResult?.tables ?? []
+            );
             setShowCreate(false);
             setNewName("");
             setNewAppType("custom");
             setNewDescription("");
-            toast.success("Project created!");
+            setNewTemplateId("none");
+
+            if (starterTemplate) {
+                toast.success(`Project created from ${starterTemplate.name}`);
+                if (starterTemplateResult?.unresolvedForeignKeys) {
+                    toast.error(`${starterTemplateResult.unresolvedForeignKeys} foreign keys could not be mapped.`);
+                }
+            } else {
+                toast.success("Project created!");
+            }
         } catch {
             toast.error("Failed to create project");
         } finally {
             setIsCreating(false);
         }
-    }, [newName, newAppType, newDescription, createProject]);
+    }, [newName, newAppType, newDescription, newTemplateId, createProject]);
 
     const handleDelete = useCallback(async () => {
         if (!deleteId) return;
@@ -223,6 +248,27 @@ export function ProjectList() {
                                 placeholder="Brief description of your app…"
                                 className="bg-muted/30"
                             />
+                        </div>
+                        <div>
+                            <label className="text-xs font-medium text-muted-foreground mb-1.5 block">
+                                Starter Template (optional)
+                            </label>
+                            <Select value={newTemplateId} onValueChange={setNewTemplateId}>
+                                <SelectTrigger className="bg-muted/30">
+                                    <SelectValue placeholder="Empty schema" />
+                                </SelectTrigger>
+                                <SelectContent>
+                                    <SelectItem value="none">Empty schema</SelectItem>
+                                    {templateCatalog.full.map((template) => (
+                                        <SelectItem key={template.id} value={template.id}>
+                                            {template.name} • {template.tableCount} tables
+                                        </SelectItem>
+                                    ))}
+                                </SelectContent>
+                            </Select>
+                            <p className="mt-1 text-[10px] text-muted-foreground/70">
+                                Start with a predefined schema and customize it in the designer.
+                            </p>
                         </div>
                     </div>
                     <DialogFooter>

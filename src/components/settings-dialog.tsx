@@ -406,6 +406,7 @@ function QuerySection() {
     const {
         autoFormatOnExecute,
         confirmDangerousQueries,
+        strictProductionGuard,
         queryTimeoutSeconds,
         aiReviewEnabled,
         aiReviewAutoOnDml,
@@ -440,6 +441,15 @@ function QuerySection() {
                     <Switch
                         checked={confirmDangerousQueries}
                         onCheckedChange={(v) => updateSettings({ confirmDangerousQueries: v })}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Strict production guard"
+                    description="On prod connections, require typed confirmation and a reason before risky SQL (UPDATE/DELETE/ALTER/DROP/TRUNCATE)."
+                >
+                    <Switch
+                        checked={strictProductionGuard}
+                        onCheckedChange={(v) => updateSettings({ strictProductionGuard: v })}
                     />
                 </SettingRow>
                 <SettingRow

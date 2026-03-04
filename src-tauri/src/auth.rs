@@ -3,7 +3,7 @@ use tauri::AppHandle;
 
 const KEYRING_SERVICE: &str = "pgstudio";
 const KEYRING_USER: &str = "desktop_auth_token";
-const WEB_BASE_URL: &str = "http://localhost:3001";
+const WEB_BASE_URL: &str = "https://pgstudio-web.vercel.app";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -25,7 +25,8 @@ pub struct UserProfile {
 #[tauri::command]
 pub async fn auth_open_login(_app: AppHandle, state: String) -> Result<(), String> {
     let url = format!(
-        "http://localhost:3001/login?source=desktop&state={}",
+        "{}/login?source=desktop&state={}",
+        WEB_BASE_URL,
         state
     );
     opener::open_browser(&url).map_err(|e| format!("Failed to open browser: {e}"))?;

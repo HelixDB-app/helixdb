@@ -1,5 +1,5 @@
 import { create } from "zustand";
-import type { QueryResult } from "@/lib/types";
+import type { ConnectionEnvironment, QueryResult } from "@/lib/types";
 import { dbExecuteQuery } from "@/lib/tauri";
 
 export interface QueryTab {
@@ -29,6 +29,8 @@ export interface QueryHistoryEntry {
             info: number;
         };
     };
+    environment?: ConnectionEnvironment;
+    productionGuardReason?: string | null;
 }
 
 const HISTORY_KEY = "helix-query-history";
@@ -75,6 +77,8 @@ interface QueryState {
 
 export interface QueryExecuteOptions {
     aiReview?: QueryHistoryEntry["aiReview"];
+    environment?: ConnectionEnvironment;
+    productionGuardReason?: string;
 }
 
 let tabCounter = 0;
@@ -135,7 +139,10 @@ export const useQueryStore = create<QueryState>((set, get) => ({
         }));
 
         try {
-            const result = await dbExecuteQuery(connectionId, tab.sql);
+            const result = await dbExecuteQuery(connectionId, tab.sql, {
+                environment: options?.environment,
+                guardReason: options?.productionGuardReason,
+            });
 
             // Record history entry
             const entry: QueryHistoryEntry = {
@@ -147,6 +154,8 @@ export const useQueryStore = create<QueryState>((set, get) => ({
                 isError: result.is_error,
                 databaseName,
                 aiReview: options?.aiReview,
+                environment: options?.environment,
+                productionGuardReason: options?.productionGuardReason ?? null,
             };
             const newHistory = [entry, ...get().history].slice(0, MAX_HISTORY);
             saveHistory(newHistory);
@@ -174,6 +183,8 @@ export const useQueryStore = create<QueryState>((set, get) => ({
                 isError: true,
                 databaseName,
                 aiReview: options?.aiReview,
+                environment: options?.environment,
+                productionGuardReason: options?.productionGuardReason ?? null,
             };
             const newHistory = [entry, ...get().history].slice(0, MAX_HISTORY);
             saveHistory(newHistory);

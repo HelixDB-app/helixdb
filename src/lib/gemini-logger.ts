@@ -39,7 +39,7 @@ const FLUSH_INTERVAL_MS = 30_000; // 30 s
 
 const WEB_BASE_URL =
     (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_WEB_APP_URL) ??
-    "http://localhost:3001";
+    `${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "http://localhost:3001"}`;
 
 class GeminiLoggerSingleton {
     private buffer: GeminiLogEntry[] = [];

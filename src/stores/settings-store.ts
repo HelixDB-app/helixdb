@@ -33,6 +33,7 @@ export interface AppSettings {
     // Query
     autoFormatOnExecute: boolean;
     confirmDangerousQueries: boolean;
+    strictProductionGuard: boolean;
     queryTimeoutSeconds: number;
     aiReviewEnabled: boolean;
     aiReviewAutoOnDml: boolean;
@@ -75,6 +76,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     wrapCellContent: false,
     autoFormatOnExecute: false,
     confirmDangerousQueries: true,
+    strictProductionGuard: true,
     queryTimeoutSeconds: 30,
     aiReviewEnabled: true,
     aiReviewAutoOnDml: true,

@@ -1,4 +1,6 @@
+use std::collections::HashMap;
 use std::io::Write;
+use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::account_security_storage;
@@ -21,6 +23,7 @@ pub struct AppState {
     pub cache: MetadataCache,
     pub watch_manager: WatchManager,
     pub sandbox_manager: SandboxManager,
+    pub recent_tables: Mutex<HashMap<String, Vec<RecentTableOpen>>>,
 }
 
 impl AppState {
@@ -30,6 +33,47 @@ impl AppState {
             cache: MetadataCache::new(),
             watch_manager: WatchManager::new(),
             sandbox_manager: SandboxManager::new(),
+            recent_tables: Mutex::new(HashMap::new()),
+        }
+    }
+
+    pub fn list_recent_tables(&self, connection_id: &str, limit: usize) -> Vec<RecentTableOpen> {
+        let map = self
+            .recent_tables
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        map.get(connection_id)
+            .map(|items| items.iter().take(limit).cloned().collect())
+            .unwrap_or_default()
+    }
+
+    pub fn track_recent_table_open(
+        &self,
+        connection_id: &str,
+        schema: String,
+        table: String,
+        table_type: String,
+        opened_at: i64,
+    ) {
+        const MAX_RECENT_TABLES: usize = 20;
+
+        let mut map = self
+            .recent_tables
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let list = map.entry(connection_id.to_string()).or_default();
+        list.retain(|item| !(item.schema == schema && item.table == table));
+        list.insert(
+            0,
+            RecentTableOpen {
+                schema,
+                table,
+                table_type,
+                opened_at,
+            },
+        );
+        if list.len() > MAX_RECENT_TABLES {
+            list.truncate(MAX_RECENT_TABLES);
         }
     }
 }
@@ -114,6 +158,41 @@ pub async fn db_list_tables(
         .cache
         .set_tables(&connection_id, &schema, tables.clone());
     Ok(tables)
+}
+
+/// Track a table/view open action and return the refreshed recent list.
+#[tauri::command]
+pub async fn db_track_recent_table_open(
+    state: State<'_, AppState>,
+    connection_id: String,
+    schema: String,
+    table: String,
+    table_type: Option<String>,
+) -> Result<Vec<RecentTableOpen>, String> {
+    let normalized_type = match table_type.as_deref() {
+        Some("VIEW") => "VIEW".to_string(),
+        _ => "BASE TABLE".to_string(),
+    };
+
+    state.track_recent_table_open(
+        &connection_id,
+        schema,
+        table,
+        normalized_type,
+        chrono::Utc::now().timestamp_millis(),
+    );
+    Ok(state.list_recent_tables(&connection_id, 8))
+}
+
+/// Return recent table/view selections for a connection.
+#[tauri::command]
+pub async fn db_list_recent_tables(
+    state: State<'_, AppState>,
+    connection_id: String,
+    limit: Option<u32>,
+) -> Result<Vec<RecentTableOpen>, String> {
+    let max = limit.unwrap_or(8).clamp(1, 20) as usize;
+    Ok(state.list_recent_tables(&connection_id, max))
 }
 
 /// Get schema topology (nodes + FK edges) for ER diagram. Not cached.
@@ -336,10 +415,18 @@ pub async fn db_execute_query(
     app: AppHandle,
     connection_id: String,
     sql: String,
+    environment: Option<String>,
+    guard_reason: Option<String>,
 ) -> Result<QueryResult, String> {
     let pool = state.conn_manager.get_pool(&connection_id)?;
     let query_start = std::time::Instant::now();
     let executed_at = chrono::Utc::now().timestamp_millis();
+    let environment = environment
+        .map(|value| value.trim().to_ascii_lowercase())
+        .filter(|value| matches!(value.as_str(), "dev" | "staging" | "prod"));
+    let guard_reason = guard_reason
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
 
     let connection_label = infer_connection_label(
         state.conn_manager.get_connection_string(&connection_id),
@@ -363,6 +450,8 @@ pub async fn db_execute_query(
                 query_text: sql.clone(),
                 connection_id: connection_id.clone(),
                 connection_label,
+                environment: environment.clone(),
+                guard_reason: guard_reason.clone(),
                 executed_at,
                 planning_ms: None,
                 execution_ms: result.execution_time_ms,
@@ -394,6 +483,8 @@ pub async fn db_execute_query(
                 query_text: sql,
                 connection_id,
                 connection_label,
+                environment,
+                guard_reason,
                 executed_at,
                 planning_ms: None,
                 execution_ms: elapsed_ms,

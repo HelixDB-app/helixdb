@@ -50,6 +50,17 @@ pub struct TableInfo {
     pub table_comment: Option<String>,
 }
 
+/// Recently opened table/view in the UI (connection-scoped)
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RecentTableOpen {
+    pub schema: String,
+    pub table: String,
+    /// "BASE TABLE" or "VIEW"
+    pub table_type: String,
+    /// Unix epoch (milliseconds)
+    pub opened_at: i64,
+}
+
 /// Query result with rows, columns, timing, and pagination info
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct QueryResult {

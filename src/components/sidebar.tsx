@@ -6,6 +6,8 @@ import { useConnectionStore } from "@/stores/connection-store";
 import { useShallow } from "zustand/react/shallow";
 import { getSavedConnections } from "@/lib/tauri";
 import type { SavedConnection } from "@/lib/types";
+import { ConnectionEnvBadge } from "@/components/connection-env-badge";
+import { normalizeConnectionMetadata } from "@/lib/connection-metadata";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Input } from "@/components/ui/input";
@@ -860,6 +862,11 @@ export function Sidebar({
                                                     <span className={cn("w-0.5 h-3 rounded-full shrink-0", isActive ? "bg-primary" : "bg-transparent")} />
                                                     <CircleDot className="h-3 w-3 shrink-0 text-emerald-400/80" />
                                                     <span className="truncate flex-1">{saved.name}</span>
+                                                    <ConnectionEnvBadge
+                                                        environment={openConn.environment ?? saved.environment}
+                                                        compact
+                                                        className="shrink-0"
+                                                    />
                                                     {isActive && (
                                                         <span className="text-[9px] text-primary/70 font-medium shrink-0 px-1 py-0.5 rounded bg-primary/10">
                                                             Active
@@ -888,12 +895,20 @@ export function Sidebar({
                                     <button
                                         key={saved.id}
                                         type="button"
-                                        onClick={() => connect(saved.connection_string, saved.id, saved.name)}
+                                        onClick={() =>
+                                            connect(
+                                                saved.connection_string,
+                                                saved.id,
+                                                saved.name,
+                                                normalizeConnectionMetadata(saved)
+                                            )
+                                        }
                                         className="flex w-full items-center gap-1.5 pl-3 pr-2 py-[4px] text-[11px] text-left rounded-md text-muted-foreground/50 hover:text-foreground/75 hover:bg-sidebar-accent transition-all"
                                     >
                                         <span className="w-0.5 h-3 rounded-full bg-transparent shrink-0" />
                                         <Unplug className="h-3 w-3 shrink-0 text-muted-foreground/35" />
                                         <span className="truncate flex-1">{saved.name}</span>
+                                        <ConnectionEnvBadge environment={saved.environment} compact className="shrink-0" />
                                         <span className="text-[9px] text-muted-foreground/30 shrink-0">Connect</span>
                                     </button>
                                 );
@@ -916,6 +931,7 @@ export function Sidebar({
                                                 <span className={cn("w-0.5 h-3 rounded-full shrink-0", isActive ? "bg-primary" : "bg-transparent")} />
                                                 <CircleDot className="h-3 w-3 shrink-0 text-emerald-400/80" />
                                                 <span className="truncate flex-1">{conn.label}</span>
+                                                <ConnectionEnvBadge environment={conn.environment} compact className="shrink-0" />
                                                 {isActive && (
                                                     <span className="text-[9px] text-primary/70 font-medium shrink-0 px-1 py-0.5 rounded bg-primary/10">
                                                         Active

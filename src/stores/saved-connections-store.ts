@@ -1,6 +1,10 @@
 import { create } from "zustand";
 import type { SavedConnection } from "@/lib/types";
 import {
+    normalizeConnectionMetadata,
+    normalizeSavedConnection,
+} from "@/lib/connection-metadata";
+import {
     getSavedConnections,
     saveConnection as saveConnectionApi,
     deleteSavedConnection as deleteSavedConnectionApi,
@@ -33,7 +37,7 @@ export const useSavedConnectionsStore = create<SavedConnectionsState>((set, get)
         set({ isLoading: true, error: null });
         try {
             const list = await getSavedConnections();
-            set({ connections: list, isLoading: false });
+            set({ connections: list.map(normalizeSavedConnection), isLoading: false });
         } catch (err) {
             set({
                 connections: [],
@@ -44,16 +48,21 @@ export const useSavedConnectionsStore = create<SavedConnectionsState>((set, get)
     },
 
     add: async (conn) => {
+        const metadata = normalizeConnectionMetadata(conn);
         const full: SavedConnection = {
             ...conn,
             id: generateId(),
             database_name: conn.database_name ?? null,
+            environment: metadata.environment,
+            owner: metadata.owner,
+            criticality: metadata.criticality,
         };
         set({ error: null });
         try {
             const list = await saveConnectionApi(full);
-            set({ connections: list });
-            return list.find((c) => c.id === full.id) ?? full;
+            const normalized = list.map(normalizeSavedConnection);
+            set({ connections: normalized });
+            return normalized.find((c) => c.id === full.id) ?? normalizeSavedConnection(full);
         } catch (err) {
             set({ error: String(err) });
             throw err;
@@ -63,9 +72,16 @@ export const useSavedConnectionsStore = create<SavedConnectionsState>((set, get)
     update: async (conn) => {
         set({ error: null });
         try {
-            const list = await saveConnectionApi(conn);
-            set({ connections: list });
-            return list;
+            const metadata = normalizeConnectionMetadata(conn);
+            const list = await saveConnectionApi({
+                ...conn,
+                environment: metadata.environment,
+                owner: metadata.owner,
+                criticality: metadata.criticality,
+            });
+            const normalized = list.map(normalizeSavedConnection);
+            set({ connections: normalized });
+            return normalized;
         } catch (err) {
             set({ error: String(err) });
             throw err;
@@ -76,8 +92,9 @@ export const useSavedConnectionsStore = create<SavedConnectionsState>((set, get)
         set({ error: null });
         try {
             const list = await deleteSavedConnectionApi(id);
-            set({ connections: list });
-            return list;
+            const normalized = list.map(normalizeSavedConnection);
+            set({ connections: normalized });
+            return normalized;
         } catch (err) {
             set({ error: String(err) });
             throw err;
@@ -87,8 +104,9 @@ export const useSavedConnectionsStore = create<SavedConnectionsState>((set, get)
     updateDatabaseName: async (id, databaseName) => {
         try {
             const list = await updateDatabaseNameApi(id, databaseName);
-            set({ connections: list });
-            return list;
+            const normalized = list.map(normalizeSavedConnection);
+            set({ connections: normalized });
+            return normalized;
         } catch {
             return get().connections;
         }
