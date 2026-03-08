@@ -15,6 +15,13 @@ export interface FsNode {
     updatedAt: number;
 }
 
+export interface ConnectionWorkspaceSnapshot {
+    fingerprint: string;
+    activeFileId: string | null;
+    expandedIds: string[];
+    nodes: Record<string, FsNode>;
+}
+
 function genId(): string {
     return `fs-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
 }
@@ -62,6 +69,15 @@ interface IdeFsState {
     getAllFileEntries: (connectionId: string) => { path: string; content: string }[];
     getFileCount: (connectionId: string) => number;
     getConnectionSyncFingerprint: (connectionId: string) => string;
+    getConnectionWorkspaceSnapshot: (connectionId: string) => ConnectionWorkspaceSnapshot;
+    replaceConnectionWorkspace: (
+        connectionId: string,
+        snapshot: {
+            nodes: Record<string, FsNode>;
+            activeFileId: string | null;
+            expandedIds?: string[];
+        }
+    ) => void;
 }
 
 export const useIdeFsStore = create<IdeFsState>()(
@@ -378,6 +394,77 @@ export const useIdeFsStore = create<IdeFsState>()(
                     }
                 }
                 return `${signatures.length}:${(hash >>> 0).toString(16)}`;
+            },
+
+            getConnectionWorkspaceSnapshot: (connectionId) => {
+                const { nodes, expandedIds, activeFileByConnection } = get();
+                const scopedNodes: Record<string, FsNode> = {};
+                for (const [id, node] of Object.entries(nodes)) {
+                    if (node.connectionId === connectionId) {
+                        scopedNodes[id] = node;
+                    }
+                }
+
+                const scopedExpandedIds = Object.keys(expandedIds).filter((id) => {
+                    if (!expandedIds[id]) return false;
+                    return scopedNodes[id]?.type === "folder";
+                });
+
+                return {
+                    fingerprint: get().getConnectionSyncFingerprint(connectionId),
+                    activeFileId: activeFileByConnection[connectionId] ?? null,
+                    expandedIds: scopedExpandedIds,
+                    nodes: scopedNodes,
+                };
+            },
+
+            replaceConnectionWorkspace: (connectionId, snapshot) => {
+                const incomingNodes = Object.values(snapshot.nodes ?? {}).map((node) => ({
+                    ...node,
+                    connectionId,
+                }));
+                const incomingNodeIds = new Set(incomingNodes.map((node) => node.id));
+                const safeActiveFileId =
+                    snapshot.activeFileId && incomingNodeIds.has(snapshot.activeFileId)
+                        ? snapshot.activeFileId
+                        : null;
+
+                set((s) => {
+                    const nextNodes: Record<string, FsNode> = {};
+                    for (const [id, node] of Object.entries(s.nodes)) {
+                        if (node.connectionId !== connectionId) {
+                            nextNodes[id] = node;
+                        }
+                    }
+                    for (const node of incomingNodes) {
+                        nextNodes[node.id] = node;
+                    }
+
+                    const nextExpandedIds = { ...s.expandedIds };
+                    for (const [id, node] of Object.entries(s.nodes)) {
+                        if (node.connectionId === connectionId) {
+                            delete nextExpandedIds[id];
+                        }
+                    }
+                    for (const expandedId of snapshot.expandedIds ?? []) {
+                        if (
+                            incomingNodeIds.has(expandedId) &&
+                            nextNodes[expandedId]?.connectionId === connectionId &&
+                            nextNodes[expandedId]?.type === "folder"
+                        ) {
+                            nextExpandedIds[expandedId] = true;
+                        }
+                    }
+
+                    return {
+                        nodes: nextNodes,
+                        expandedIds: nextExpandedIds,
+                        activeFileByConnection: {
+                            ...s.activeFileByConnection,
+                            [connectionId]: safeActiveFileId,
+                        },
+                    };
+                });
             },
         }),
         {

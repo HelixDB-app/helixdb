@@ -33,6 +33,8 @@ export interface QuerySidebarProps {
     schemaContext?: { tables: string[]; columns: Record<string, string[]> };
     connectionId: string;
     databaseName: string;
+    canEditFiles?: boolean;
+    canDeleteFiles?: boolean;
 }
 
 export function QuerySidebar({
@@ -45,6 +47,8 @@ export function QuerySidebar({
     schemaContext,
     connectionId,
     databaseName,
+    canEditFiles = true,
+    canDeleteFiles = true,
 }: QuerySidebarProps) {
     return (
         <div className="flex flex-col h-full border-r border-border/25 bg-card/20 w-full">
@@ -64,6 +68,8 @@ export function QuerySidebar({
                     <IdeFileTree
                         connectionId={connectionId}
                         databaseName={databaseName}
+                        canEditFiles={canEditFiles}
+                        canDeleteFiles={canDeleteFiles}
                         onOpenFile={(content, nodeId, name, options) =>
                             onLoadSql(content, {
                                 fromFileId: nodeId,

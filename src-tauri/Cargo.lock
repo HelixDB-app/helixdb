@@ -3063,6 +3063,7 @@ checksum = "9b4f627cb1b25917193a259e49bdad08f671f8d9708acfd5fe0a8c1455d87220"
 name = "pgstudio"
 version = "1.2.0"
 dependencies = [
+ "block2",
  "chrono",
  "dashmap",
  "deadpool-postgres",
@@ -3073,6 +3074,8 @@ dependencies = [
  "keyring",
  "log",
  "native-tls",
+ "objc2",
+ "objc2-foundation",
  "opener",
  "postgres-native-tls",
  "reqwest 0.12.28",

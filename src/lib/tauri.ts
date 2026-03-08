@@ -1080,6 +1080,40 @@ export async function openPath(path: string): Promise<void> {
     return invoke<void>("open_path", { path });
 }
 
+export type MediaPermissionState =
+    | "authorized"
+    | "denied"
+    | "restricted"
+    | "not_determined"
+    | "unsupported";
+
+export interface MediaPermissionSnapshot {
+    camera: MediaPermissionState;
+    microphone: MediaPermissionState;
+    screen: MediaPermissionState;
+}
+
+/** Read current desktop OS-level media permissions for camera/microphone/screen. */
+export async function getMediaPermissionStatus(): Promise<MediaPermissionSnapshot> {
+    return invoke<MediaPermissionSnapshot>("get_media_permission_status");
+}
+
+/** Request desktop OS-level media permissions and return the updated snapshot. */
+export async function requestMediaPermissions(
+    scopes?: Array<"camera" | "microphone" | "screen">
+): Promise<MediaPermissionSnapshot> {
+    return invoke<MediaPermissionSnapshot>("request_media_permissions", {
+        scopes: scopes && scopes.length > 0 ? scopes : undefined,
+    });
+}
+
+/** Open macOS privacy settings shortcut for media permissions. */
+export async function openMediaPermissionSettings(
+    scope: "camera" | "microphone" | "screen" | "general" = "general"
+): Promise<void> {
+    return invoke<void>("open_media_permission_settings", { scope });
+}
+
 /** Append a line to the app debug log (for TestFlight / support). */
 export async function appLogWrite(message: string): Promise<void> {
     return invoke<void>("app_log_write", { message });

@@ -1,6 +1,7 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Mutex;
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::account_security_storage;
@@ -1753,6 +1754,226 @@ pub async fn open_path(path: String) -> Result<(), String> {
         path.to_path_buf()
     };
     opener::open(to_open).map_err(|e| format!("Failed to open path: {}", e))
+}
+
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MediaPermissionState {
+    Authorized,
+    Denied,
+    Restricted,
+    NotDetermined,
+    Unsupported,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MediaPermissionSnapshot {
+    pub camera: MediaPermissionState,
+    pub microphone: MediaPermissionState,
+    pub screen: MediaPermissionState,
+}
+
+#[cfg(target_os = "macos")]
+#[link(name = "AVFoundation", kind = "framework")]
+unsafe extern "C" {}
+
+#[cfg(target_os = "macos")]
+#[link(name = "CoreGraphics", kind = "framework")]
+unsafe extern "C" {
+    fn CGPreflightScreenCaptureAccess() -> bool;
+    fn CGRequestScreenCaptureAccess() -> bool;
+}
+
+#[cfg(target_os = "macos")]
+fn av_media_status(scope: &str) -> Result<MediaPermissionState, String> {
+    use objc2::{class, msg_send};
+    use objc2_foundation::ns_string;
+
+    let media_type = match scope {
+        "camera" => ns_string!("vide"),
+        "microphone" => ns_string!("soun"),
+        _ => return Err(format!("Unsupported media scope: {scope}")),
+    };
+
+    let status: isize = unsafe {
+        // SAFETY: Sending a documented class message to AVCaptureDevice.
+        msg_send![class!(AVCaptureDevice), authorizationStatusForMediaType: media_type]
+    };
+
+    Ok(match status {
+        0 => MediaPermissionState::NotDetermined,
+        1 => MediaPermissionState::Restricted,
+        2 => MediaPermissionState::Denied,
+        3 => MediaPermissionState::Authorized,
+        _ => MediaPermissionState::Unsupported,
+    })
+}
+
+#[cfg(target_os = "macos")]
+fn request_av_media_access(scope: &str) -> Result<MediaPermissionState, String> {
+    use block2::RcBlock;
+    use objc2::{class, msg_send};
+    use objc2::runtime::Bool;
+    use objc2_foundation::ns_string;
+    use std::sync::mpsc;
+    use std::time::Duration;
+
+    let current = av_media_status(scope)?;
+    if !matches!(current, MediaPermissionState::NotDetermined) {
+        return Ok(current);
+    }
+
+    let media_type = match scope {
+        "camera" => ns_string!("vide"),
+        "microphone" => ns_string!("soun"),
+        _ => return Err(format!("Unsupported media scope: {scope}")),
+    };
+
+    let (tx, rx) = mpsc::channel::<bool>();
+    let completion = RcBlock::new(move |granted: Bool| {
+        let _ = tx.send(granted.as_bool());
+    });
+
+    unsafe {
+        // SAFETY: Sending documented permission request class message with a valid ObjC block.
+        let _: () = msg_send![class!(AVCaptureDevice),
+            requestAccessForMediaType: media_type,
+            completionHandler: &*completion
+        ];
+    }
+
+    match rx.recv_timeout(Duration::from_secs(25)) {
+        Ok(true) => Ok(MediaPermissionState::Authorized),
+        Ok(false) => av_media_status(scope),
+        Err(_) => Ok(av_media_status(scope)?),
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn screen_capture_status() -> MediaPermissionState {
+    unsafe {
+        // SAFETY: Direct call to CoreGraphics screen capture permission probe API.
+        if CGPreflightScreenCaptureAccess() {
+            MediaPermissionState::Authorized
+        } else {
+            MediaPermissionState::NotDetermined
+        }
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn request_screen_capture_access() -> MediaPermissionState {
+    unsafe {
+        // SAFETY: Direct call to CoreGraphics screen capture permission request API.
+        if CGPreflightScreenCaptureAccess() || CGRequestScreenCaptureAccess() {
+            MediaPermissionState::Authorized
+        } else {
+            MediaPermissionState::Denied
+        }
+    }
+}
+
+/// Returns the desktop OS-level media permission status.
+#[tauri::command]
+pub async fn get_media_permission_status() -> Result<MediaPermissionSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        Ok(MediaPermissionSnapshot {
+            camera: av_media_status("camera")?,
+            microphone: av_media_status("microphone")?,
+            screen: screen_capture_status(),
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        Ok(MediaPermissionSnapshot {
+            camera: MediaPermissionState::Unsupported,
+            microphone: MediaPermissionState::Unsupported,
+            screen: MediaPermissionState::Unsupported,
+        })
+    }
+}
+
+/// Request desktop OS-level media permissions and return the updated status snapshot.
+///
+/// Supported scopes: "camera", "microphone", "screen". If omitted, all are requested.
+#[tauri::command]
+pub async fn request_media_permissions(scopes: Option<Vec<String>>) -> Result<MediaPermissionSnapshot, String> {
+    #[cfg(target_os = "macos")]
+    {
+        let mut camera = av_media_status("camera")?;
+        let mut microphone = av_media_status("microphone")?;
+        let mut screen = screen_capture_status();
+
+        let scope_list = scopes.unwrap_or_else(|| {
+            vec![
+                "camera".to_string(),
+                "microphone".to_string(),
+                "screen".to_string(),
+            ]
+        });
+
+        for raw_scope in scope_list {
+            let scope = raw_scope.trim().to_lowercase();
+            match scope.as_str() {
+                "camera" => {
+                    camera = request_av_media_access("camera")?;
+                }
+                "microphone" => {
+                    microphone = request_av_media_access("microphone")?;
+                }
+                "screen" => {
+                    screen = request_screen_capture_access();
+                }
+                _ => {}
+            }
+        }
+
+        Ok(MediaPermissionSnapshot {
+            camera,
+            microphone,
+            screen,
+        })
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = scopes;
+        Ok(MediaPermissionSnapshot {
+            camera: MediaPermissionState::Unsupported,
+            microphone: MediaPermissionState::Unsupported,
+            screen: MediaPermissionState::Unsupported,
+        })
+    }
+}
+
+/// Open desktop privacy settings for media permissions.
+/// Supported scopes: "camera", "microphone", "screen", "general".
+#[tauri::command]
+pub async fn open_media_permission_settings(scope: Option<String>) -> Result<(), String> {
+    #[cfg(target_os = "macos")]
+    {
+        let target = match scope.unwrap_or_else(|| "general".to_string()).as_str() {
+            "camera" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera",
+            "microphone" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
+            "screen" => "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+            _ => "x-apple.systempreferences:com.apple.preference.security?Privacy",
+        };
+
+        std::process::Command::new("open")
+            .arg(target)
+            .status()
+            .map_err(|e| format!("Failed to open system settings: {e}"))?;
+        Ok(())
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = scope;
+        Err("Media permission settings shortcut is currently supported only on macOS.".to_string())
+    }
 }
 
 /// Append a line to the app debug log (for TestFlight / support). Log file: App Support/com.pgstudio.helixdb/app-debug.log

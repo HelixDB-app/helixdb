@@ -9,6 +9,7 @@ import { useNotesStore } from "@/stores/notes-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useQueryFilesStore } from "@/stores/query-files-store";
 import { useIdeFsStore } from "@/stores/ide-fs-store";
+import { useCollaborationStore, getCollaborationPermissions } from "@/stores/collaboration-store";
 import { useShallow } from "zustand/react/shallow";
 import { formatCellValue } from "@/lib/types";
 import type { QueryResult } from "@/lib/types";
@@ -23,8 +24,10 @@ import { VirtualizedQueryResultTable } from "@/components/virtualized-query-resu
 import { QueryReviewPanel } from "@/components/query-review-panel";
 import { format as formatSQL } from "sql-formatter";
 import { MonacoSqlEditor } from "@/components/monaco-sql-editor";
+import { DocumentBlockEditor } from "@/components/document-block-editor";
 import { aiSuggestionEngine } from "@/lib/ai-suggestions";
 import { getSqlReviewIntent, runSqlSafetyReview, type SqlReviewReport } from "@/lib/sql-review";
+import { isDocFileName } from "@/lib/doc-editor";
 import {
     formatEnvironmentLabel,
     normalizeConnectionEnvironment,
@@ -43,6 +46,7 @@ import {
     type QueryLoadSqlOptions,
     type SidebarPanel,
 } from "@/components/query-sidebar";
+import { CollaborationPanel } from "@/components/collaboration/collaboration-panel";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -219,6 +223,13 @@ interface EditorGroup {
     activeTabId: string | null;
 }
 
+interface LiveResultMeta {
+    updatedByName: string;
+    updatedAt: number;
+    truncated: boolean;
+    previewRows: number;
+}
+
 type SplitDropPlacement = "left" | "center" | "right";
 
 function dedupeIds(ids: string[]): string[] {
@@ -228,6 +239,12 @@ function dedupeIds(ids: string[]): string[] {
 function getDraggedFileNodeId(dataTransfer: DataTransfer): string | null {
     const raw = dataTransfer.getData("application/x-helix-file-node");
     return raw || null;
+}
+
+function getCollaborationDocKey(tabId: string, tabFileMap: Record<string, string>): string {
+    const fileId = tabFileMap[tabId];
+    if (fileId) return `file:${fileId}`;
+    return "scratch:shared";
 }
 
 // ── Main component ───────────────────────────────────────────────────────────
@@ -278,6 +295,7 @@ export function QueryEditor() {
         removeTab,
         setActiveTab,
         updateSql,
+        setTabResult,
         executeQuery,
         history,
         clearHistory,
@@ -285,7 +303,46 @@ export function QueryEditor() {
         loadHistoryFromStorage,
     } = useQueryStore();
 
-    const { updateFile } = useQueryFilesStore();
+    const { updateFile, queryFiles } = useQueryFilesStore(
+        useShallow((state) => ({
+            updateFile: state.updateFile,
+            queryFiles: state.files,
+        }))
+    );
+    const ideNodes = useIdeFsStore((state) => state.nodes);
+    const {
+        status: collaborationStatus,
+        roomId: collaborationRoomId,
+        localAccessLevel,
+        localUserId: collaborationLocalUserId,
+        docs: collaborationDocs,
+        remoteCursorsByDoc,
+        setConnectionContext: setCollaborationConnectionContext,
+        setActiveDocKey,
+        publishCursor,
+        publishDocument,
+        queryResults: collaborationQueryResults,
+        publishQueryResult,
+    } = useCollaborationStore(
+        useShallow((state) => ({
+            status: state.status,
+            roomId: state.roomId,
+            localAccessLevel: state.localAccessLevel,
+            localUserId: state.localUserId,
+            docs: state.docs,
+            remoteCursorsByDoc: state.remoteCursorsByDoc,
+            setConnectionContext: state.setConnectionContext,
+            setActiveDocKey: state.setActiveDocKey,
+            publishCursor: state.publishCursor,
+            publishDocument: state.publishDocument,
+            queryResults: state.queryResults,
+            publishQueryResult: state.publishQueryResult,
+        }))
+    );
+    const collaborationPermissions = useMemo(
+        () => getCollaborationPermissions(localAccessLevel),
+        [localAccessLevel]
+    );
 
     // ── Sandbox ────────────────────────────────────────────────────────────
     const {
@@ -330,6 +387,9 @@ export function QueryEditor() {
     }, [sandboxError]);
 
     useEffect(() => { loadSandboxHistory(); }, [loadSandboxHistory]);
+    useEffect(() => {
+        setCollaborationConnectionContext(connectionId ?? null);
+    }, [connectionId, setCollaborationConnectionContext]);
 
     // ── Notes ──────────────────────────────────────────────────────────────
     const { saveNote: storeNoteSave } = useNotesStore();
@@ -342,6 +402,7 @@ export function QueryEditor() {
     const [saveNoteLoading, setSaveNoteLoading] = useState(false);
     const [editorFullScreen, setEditorFullScreen] = useState(false);
     const [runSqlFileOpen, setRunSqlFileOpen] = useState(false);
+    const [collaborationPanelOpen, setCollaborationPanelOpen] = useState(false);
     const runSqlFileInputRef = useRef<HTMLInputElement>(null);
 
     // Editor split groups (VS Code-style groups within the query editor area)
@@ -359,6 +420,11 @@ export function QueryEditor() {
     const [tabFileMap, setTabFileMap] = useState<Record<string, string>>({});
     // Ref always holds latest tabFileMap to avoid stale closures in Monaco onChange
     const tabFileMapRef = useRef(tabFileMap);
+    const suppressCollabPublishRef = useRef<Record<string, string>>({});
+    const appliedRemoteDocVersionRef = useRef<Record<string, number>>({});
+    const tabExecutionStateRef = useRef<Record<string, boolean>>({});
+    const appliedRemoteResultAtRef = useRef<Record<string, number>>({});
+    const [liveResultMetaByTab, setLiveResultMetaByTab] = useState<Record<string, LiveResultMeta>>({});
     useEffect(() => { tabFileMapRef.current = tabFileMap; }, [tabFileMap]);
 
     // ── Review state ───────────────────────────────────────────────────────
@@ -463,10 +529,257 @@ export function QueryEditor() {
         return ["Tables:", ...tableLines, "", "Functions:", ...(funcLines.length ? funcLines : ["  (none listed)"])].join("\n");
     }, [tables, columnCache, selectedSchema, schemaFunctions]);
 
-    const savedFileSqlMap = useMemo(() => {
-        const files = useQueryFilesStore.getState().files;
-        return Object.fromEntries(files.map((f) => [f.id, f.sql]));
-    }, []); // updated via store, intentionally simple here
+    const savedFileSqlMap = useMemo(
+        () => Object.fromEntries(queryFiles.map((file) => [file.id, file.sql])),
+        [queryFiles]
+    );
+
+    const fileNameById = useMemo(() => {
+        const fileNameMap: Record<string, string> = {};
+        for (const file of queryFiles) {
+            fileNameMap[file.id] = file.name;
+        }
+        for (const node of Object.values(ideNodes)) {
+            if (node.type === "file") {
+                fileNameMap[node.id] = node.name;
+            }
+        }
+        return fileNameMap;
+    }, [queryFiles, ideNodes]);
+
+    const getTabFileName = useCallback((tabId: string): string | null => {
+        const fileId = tabFileMapRef.current[tabId];
+        if (!fileId) return null;
+        return fileNameById[fileId] ?? null;
+    }, [fileNameById]);
+
+    const isDocTab = useCallback((tabId: string): boolean => {
+        return isDocFileName(getTabFileName(tabId));
+    }, [getTabFileName]);
+
+    const activeTabIsDoc = useMemo(
+        () => (activeTabId ? isDocTab(activeTabId) : false),
+        [activeTabId, isDocTab]
+    );
+    const isCollaborationReadOnly = collaborationStatus === "connected" && !collaborationPermissions.canEdit;
+
+    const activeDocKey = useMemo(() => {
+        if (!activeTabId) return null;
+        return getCollaborationDocKey(activeTabId, tabFileMap);
+    }, [activeTabId, tabFileMap]);
+
+    const getCollaboratorsForTab = useCallback(
+        (tabId: string) => {
+            const docKey = getCollaborationDocKey(tabId, tabFileMapRef.current);
+            return (remoteCursorsByDoc[docKey] ?? [])
+                .filter((participant) => participant.id !== collaborationLocalUserId)
+                .map((participant) => ({
+                    id: participant.id,
+                    name: participant.name,
+                    initials: participant.initials,
+                    colorIndex: participant.colorIndex,
+                    color: `collab-${participant.colorIndex}`,
+                    selection: participant.cursor?.selection ?? null,
+                    lineNumber: participant.cursor?.lineNumber,
+                    column: participant.cursor?.column,
+                }));
+        },
+        [remoteCursorsByDoc, collaborationLocalUserId]
+    );
+
+    useEffect(() => {
+        if (collaborationStatus !== "connected") return;
+        void setActiveDocKey(activeDocKey);
+    }, [collaborationStatus, activeDocKey, setActiveDocKey]);
+
+    useEffect(() => {
+        if (collaborationStatus === "connected") {
+            setCollaborationPanelOpen(true);
+        }
+    }, [collaborationStatus]);
+
+    useEffect(() => {
+        if (collaborationStatus === "connected") return;
+        appliedRemoteResultAtRef.current = {};
+        setLiveResultMetaByTab({});
+    }, [collaborationStatus]);
+
+    useEffect(() => {
+        if (collaborationStatus !== "connected" || !collaborationPermissions.canEdit) return;
+        if (!activeTabId || !activeDocKey) return;
+        const sql = tabsById.get(activeTabId)?.sql ?? "";
+        void publishDocument(activeDocKey, sql);
+    }, [
+        collaborationStatus,
+        collaborationPermissions.canEdit,
+        activeTabId,
+        activeDocKey,
+        tabsById,
+        publishDocument,
+    ]);
+
+    useEffect(() => {
+        if (collaborationStatus !== "connected" || !activeTabId || !activeDocKey) return;
+        const incoming = collaborationDocs[activeDocKey];
+        if (!incoming || incoming.updatedBy === collaborationLocalUserId) return;
+        const lastAppliedVersion = appliedRemoteDocVersionRef.current[activeDocKey] ?? 0;
+        if (incoming.version <= lastAppliedVersion) return;
+
+        const currentSql = tabsById.get(activeTabId)?.sql ?? "";
+        if (currentSql !== incoming.content) {
+            suppressCollabPublishRef.current[activeDocKey] = incoming.content;
+            updateSql(activeTabId, incoming.content);
+            const fileId = tabFileMapRef.current[activeTabId];
+            if (fileId?.startsWith("fs-")) {
+                useIdeFsStore.getState().updateContent(fileId, incoming.content);
+            } else if (fileId) {
+                updateFile(fileId, { sql: incoming.content });
+            }
+        }
+
+        appliedRemoteDocVersionRef.current[activeDocKey] = incoming.version;
+    }, [
+        collaborationStatus,
+        collaborationDocs,
+        collaborationLocalUserId,
+        activeDocKey,
+        activeTabId,
+        tabsById,
+        updateSql,
+        updateFile,
+    ]);
+
+    useEffect(() => {
+        const knownTabIds = new Set(tabs.map((tab) => tab.id));
+        const finishedTabIds: string[] = [];
+
+        for (const tab of tabs) {
+            const wasExecuting = tabExecutionStateRef.current[tab.id] ?? false;
+            const justFinished = wasExecuting && !tab.isExecuting && Boolean(tab.result);
+            if (isDocTab(tab.id)) {
+                tabExecutionStateRef.current[tab.id] = tab.isExecuting;
+                continue;
+            }
+            if (justFinished && tab.result) {
+                finishedTabIds.push(tab.id);
+                if (collaborationStatus === "connected" && collaborationPermissions.canEdit) {
+                    const docKey = getCollaborationDocKey(tab.id, tabFileMapRef.current);
+                    void publishQueryResult(docKey, tab.sql, tab.title, tab.result);
+                }
+            }
+            tabExecutionStateRef.current[tab.id] = tab.isExecuting;
+        }
+
+        for (const tabId of Object.keys(tabExecutionStateRef.current)) {
+            if (!knownTabIds.has(tabId)) {
+                delete tabExecutionStateRef.current[tabId];
+            }
+        }
+        for (const appliedKey of Object.keys(appliedRemoteResultAtRef.current)) {
+            const parts = appliedKey.split("::");
+            const tabId = parts[1];
+            if (tabId && !knownTabIds.has(tabId)) {
+                delete appliedRemoteResultAtRef.current[appliedKey];
+            }
+        }
+
+        if (finishedTabIds.length > 0) {
+            setLiveResultMetaByTab((prev) => {
+                let changed = false;
+                const next = { ...prev };
+                for (const tabId of finishedTabIds) {
+                    if (!next[tabId]) continue;
+                    delete next[tabId];
+                    changed = true;
+                }
+                return changed ? next : prev;
+            });
+        }
+    }, [tabs, collaborationStatus, collaborationPermissions.canEdit, isDocTab, publishQueryResult]);
+
+    useEffect(() => {
+        if (collaborationStatus !== "connected") return;
+
+        const updates: Array<{
+            tabId: string;
+            result: QueryResult;
+            executionTimeMs: number;
+            meta: LiveResultMeta;
+        }> = [];
+        const tabsToShowResults = new Set<string>();
+        let activeDocToast: string | null = null;
+
+        for (const [docKey, snapshot] of Object.entries(collaborationQueryResults)) {
+            if (snapshot.updatedBy === collaborationLocalUserId) continue;
+
+            const matchingTabs = tabs
+                .filter((tab) => getCollaborationDocKey(tab.id, tabFileMapRef.current) === docKey && !isDocTab(tab.id))
+                .map((tab) => tab.id);
+            if (matchingTabs.length === 0) continue;
+
+            let appliedForAnyTab = false;
+            for (const tabId of matchingTabs) {
+                const appliedKey = `${docKey}::${tabId}`;
+                const lastApplied = appliedRemoteResultAtRef.current[appliedKey] ?? 0;
+                if (snapshot.updatedAt <= lastApplied) continue;
+                updates.push({
+                    tabId,
+                    result: snapshot.result,
+                    executionTimeMs: snapshot.result.execution_time_ms,
+                    meta: {
+                        updatedByName: snapshot.updatedByName,
+                        updatedAt: snapshot.updatedAt,
+                        truncated: snapshot.truncated,
+                        previewRows: snapshot.previewRows,
+                    },
+                });
+                tabsToShowResults.add(tabId);
+                appliedRemoteResultAtRef.current[appliedKey] = snapshot.updatedAt;
+                appliedForAnyTab = true;
+            }
+
+            if (appliedForAnyTab && activeDocKey && activeDocKey === docKey) {
+                activeDocToast = `${snapshot.updatedByName} ran query • ${getRowCountLabel(snapshot.result)}`;
+            }
+        }
+
+        if (updates.length === 0) return;
+
+        for (const update of updates) {
+            setTabResult(update.tabId, update.result, update.executionTimeMs);
+        }
+
+        setResultView((prev) => {
+            let changed = false;
+            const next = { ...prev };
+            for (const tabId of tabsToShowResults) {
+                if (next[tabId] === "results") continue;
+                next[tabId] = "results";
+                changed = true;
+            }
+            return changed ? next : prev;
+        });
+
+        setLiveResultMetaByTab((prev) => {
+            const next = { ...prev };
+            for (const update of updates) {
+                next[update.tabId] = update.meta;
+            }
+            return next;
+        });
+
+        if (activeDocToast) {
+            toast.success(activeDocToast, { duration: 2200 });
+        }
+    }, [
+        collaborationStatus,
+        collaborationQueryResults,
+        collaborationLocalUserId,
+        activeDocKey,
+        isDocTab,
+        tabs,
+        setTabResult,
+    ]);
 
     // ── Editor split groups ───────────────────────────────────────────────
     useEffect(() => {
@@ -742,6 +1055,10 @@ export function QueryEditor() {
     const handleFormatSql = useCallback(
         (sql: string) => {
             if (!activeTabId) return;
+            if (isDocTab(activeTabId)) {
+                toast.info("Formatting is only available for SQL tabs.");
+                return;
+            }
             try {
                 const formatted = formatSQL(sql, { language: "postgresql", tabWidth: 4, keywordCase: "upper" });
                 updateSql(activeTabId, formatted);
@@ -750,13 +1067,17 @@ export function QueryEditor() {
                 toast.error("Could not format SQL", { duration: 1500 });
             }
         },
-        [activeTabId, updateSql]
+        [activeTabId, isDocTab, updateSql]
     );
 
     // ── Next action ────────────────────────────────────────────────────────
     const handleNextAction = useCallback(
         async (action: string) => {
             if (!activeTabId) return;
+            if (isDocTab(activeTabId)) {
+                toast.info("AI SQL suggestions are only available for SQL tabs.");
+                return;
+            }
             const currentSql = activeTab?.sql ?? "";
             toast.loading("Nova is applying suggestion…", { id: "nova-action" });
             try {
@@ -774,7 +1095,7 @@ export function QueryEditor() {
                 toast.error("Nova couldn't apply the suggestion", { id: "nova-action", duration: 2000 });
             }
         },
-        [activeTabId, activeTab?.sql, schemaContext, updateSql]
+        [activeTabId, activeTab?.sql, isDocTab, schemaContext, updateSql]
     );
 
     // ── Load history ───────────────────────────────────────────────────────
@@ -819,6 +1140,10 @@ export function QueryEditor() {
     const executeCurrentSql = useCallback(
         (mode: "direct" | "sandbox", reviewAudit?: QueryHistoryEntry["aiReview"], guardReason?: string) => {
             if (!connectionId || !activeTabId) return;
+            if (isDocTab(activeTabId)) {
+                toast.info("Query execution is not available for .doc files.");
+                return;
+            }
             const sql = activeTab?.sql.trim() ?? "";
             if (!sql) return;
 
@@ -841,11 +1166,12 @@ export function QueryEditor() {
                 productionGuardReason: guardReason?.trim() || undefined,
             });
         },
-        [connectionId, activeTabId, activeTab?.sql, strictProductionGuard, activeEnvironment, databaseName, executeQuery, runInSandbox]
+        [connectionId, activeTabId, activeTab?.sql, isDocTab, strictProductionGuard, activeEnvironment, databaseName, executeQuery, runInSandbox]
     );
 
     const runQueryReview = useCallback(
         async (trigger: "manual" | "auto"): Promise<SqlReviewReport | null> => {
+            if (activeTabId && isDocTab(activeTabId)) return null;
             if (!activeTab?.sql.trim()) return null;
             const sql = activeTab.sql.trim();
             setReviewLoading(true);
@@ -871,16 +1197,20 @@ export function QueryEditor() {
                 setReviewLoading(false);
             }
         },
-        [activeTab?.sql, aiReviewUseGemini, geminiApiKey, aiReviewModel, aiReviewComplexLineThreshold, tableColumnsForReview, tableRowCounts, schemaContextForAi]
+        [activeTab?.sql, activeTabId, isDocTab, aiReviewUseGemini, geminiApiKey, aiReviewModel, aiReviewComplexLineThreshold, tableColumnsForReview, tableRowCounts, schemaContextForAi]
     );
 
     const handleManualReview = useCallback(async () => {
+        if (activeTabId && isDocTab(activeTabId)) {
+            toast.info("AI SQL review is not available for .doc files.");
+            return;
+        }
         if (!aiReviewEnabled) {
             toast.info("AI Review Mode is disabled. Enable it in Settings > Query.");
             return;
         }
         await runQueryReview("manual");
-    }, [aiReviewEnabled, runQueryReview]);
+    }, [activeTabId, aiReviewEnabled, isDocTab, runQueryReview]);
 
     const handleRunAfterReview = useCallback(() => {
         if (!reviewPendingApproval || !activeTab?.sql) return;
@@ -925,6 +1255,10 @@ export function QueryEditor() {
 
     const handleExecute = useCallback(async () => {
         if (!connectionId || !activeTabId) return;
+        if (isDocTab(activeTabId)) {
+            toast.info("Query execution is not available for .doc files.");
+            return;
+        }
         const sql = activeTab?.sql.trim() ?? "";
         if (!sql) return;
         const mode: "direct" | "sandbox" = isSandboxMode ? "sandbox" : "direct";
@@ -941,7 +1275,7 @@ export function QueryEditor() {
         if (!report) return;
         setReviewPendingApproval({ sql, mode, trigger: "auto" });
         toast.info("AI review complete. Confirm in the review panel to execute.", { duration: 2600 });
-    }, [connectionId, activeTabId, activeTab?.sql, isSandboxMode, aiReviewEnabled, aiReviewAutoOnDml, reviewPendingApproval, reviewReport, reviewIsStale, buildReviewAudit, executeCurrentSql, runQueryReview]);
+    }, [connectionId, activeTabId, activeTab?.sql, isDocTab, isSandboxMode, aiReviewEnabled, aiReviewAutoOnDml, reviewPendingApproval, reviewReport, reviewIsStale, buildReviewAudit, executeCurrentSql, runQueryReview]);
 
     // ── Keyboard shortcuts ─────────────────────────────────────────────────
     useEffect(() => {
@@ -964,6 +1298,10 @@ export function QueryEditor() {
     // ── Explain ────────────────────────────────────────────────────────────
     const handleExplain = useCallback(async (tabId?: string, sql?: string) => {
         const tid = tabId ?? activeTabId;
+        if (tid && isDocTab(tid)) {
+            toast.info("Explain is only available for SQL tabs.");
+            return;
+        }
         const query = sql ?? activeTab?.sql.trim();
         if (!connectionId || !tid || !query) return;
         setPlanLoading((prev) => ({ ...prev, [tid]: true }));
@@ -977,7 +1315,7 @@ export function QueryEditor() {
         } finally {
             setPlanLoading((prev) => ({ ...prev, [tid]: false }));
         }
-    }, [connectionId, activeTabId, activeTab?.sql]);
+    }, [connectionId, activeTabId, activeTab?.sql, isDocTab]);
 
     const handleApplyFix = useCallback(async (fixSql: string) => {
         if (!connectionId || !activeTabId) return;
@@ -1004,8 +1342,18 @@ export function QueryEditor() {
                     });
                 }, 50);
             } else {
-                updateSql(activeTabId, sql);
-                setTimeout(() => handleExecute(), 50);
+                if (isDocTab(activeTabId)) {
+                    const nextTabId = addTab("Re-run", sql);
+                    openTabInGroup(targetGroupId, nextTabId, true);
+                    setTimeout(() => {
+                        executeQuery(connectionId, nextTabId, databaseName || undefined, {
+                            environment: activeEnvironment,
+                        });
+                    }, 50);
+                } else {
+                    updateSql(activeTabId, sql);
+                    setTimeout(() => handleExecute(), 50);
+                }
             }
         },
         [
@@ -1018,6 +1366,7 @@ export function QueryEditor() {
             databaseName,
             executeQuery,
             handleExecute,
+            isDocTab,
             openTabInGroup,
             updateSql,
         ]
@@ -1156,14 +1505,101 @@ export function QueryEditor() {
         (tabId: string, sql: string) => {
             updateSql(tabId, sql);
             const fileId = tabFileMapRef.current[tabId];
-            if (!fileId) return;
-            if (fileId.startsWith("fs-")) {
-                useIdeFsStore.getState().updateContent(fileId, sql);
-            } else {
-                updateFile(fileId, { sql });
+            if (fileId) {
+                if (fileId.startsWith("fs-")) {
+                    useIdeFsStore.getState().updateContent(fileId, sql);
+                } else {
+                    updateFile(fileId, { sql });
+                }
             }
+
+            if (collaborationStatus !== "connected" || !collaborationPermissions.canEdit) return;
+            const docKey = getCollaborationDocKey(tabId, tabFileMapRef.current);
+            if (suppressCollabPublishRef.current[docKey] === sql) {
+                delete suppressCollabPublishRef.current[docKey];
+                return;
+            }
+            void publishDocument(docKey, sql);
         },
-        [updateSql, updateFile]
+        [updateSql, updateFile, collaborationStatus, collaborationPermissions.canEdit, publishDocument]
+    );
+
+    const handleCursorActivity = useCallback(
+        (tabId: string, payload: { lineNumber: number; column: number; selection?: { startLineNumber: number; startColumn: number; endLineNumber: number; endColumn: number } | null }) => {
+            if (collaborationStatus !== "connected") return;
+            const docKey = getCollaborationDocKey(tabId, tabFileMapRef.current);
+            void publishCursor(docKey, {
+                lineNumber: payload.lineNumber,
+                column: payload.column,
+                selection: payload.selection ?? null,
+            });
+        },
+        [collaborationStatus, publishCursor]
+    );
+
+    const renderTabEditor = useCallback(
+        (
+            tab: QueryTab,
+            options: {
+                keyPrefix: string;
+                editorHeight: number;
+                className: string;
+                reviewIssues: SqlReviewReport["issues"];
+            }
+        ) => {
+            if (isDocTab(tab.id)) {
+                const docCollaborators = getCollaboratorsForTab(tab.id).map((participant) => ({
+                    id: participant.id,
+                    name: participant.name,
+                    initials: participant.initials,
+                    colorIndex: participant.colorIndex,
+                }));
+                return (
+                    <DocumentBlockEditor
+                        key={`${options.keyPrefix}-${tab.id}`}
+                        value={tab.sql}
+                        onChange={(value) => handleSqlChange(tab.id, value)}
+                        collaborators={docCollaborators}
+                        readOnly={isCollaborationReadOnly}
+                        className={options.className}
+                    />
+                );
+            }
+
+            return (
+                <MonacoSqlEditor
+                    key={`${options.keyPrefix}-${tab.id}`}
+                    value={tab.sql}
+                    onChange={(value) => handleSqlChange(tab.id, value)}
+                    onCursorActivity={(cursor) => handleCursorActivity(tab.id, cursor)}
+                    onExecute={handleExecute}
+                    onReview={handleManualReview}
+                    onFormatSql={handleFormatSql}
+                    onFetchColumns={handleFetchColumns}
+                    onNextAction={handleNextAction}
+                    reviewIssues={options.reviewIssues}
+                    schemaContext={schemaContext}
+                    collaborators={getCollaboratorsForTab(tab.id)}
+                    disabled={tab.isExecuting || isCollaborationReadOnly}
+                    className={options.className}
+                    hideNextActionSuggestions
+                    editorHeight={options.editorHeight}
+                />
+            );
+        },
+        [
+            getCollaboratorsForTab,
+            handleCursorActivity,
+            handleExecute,
+            handleFetchColumns,
+            handleFormatSql,
+            handleManualReview,
+            handleNextAction,
+            handleSqlChange,
+            isCollaborationReadOnly,
+            isDocTab,
+            schemaContext,
+        ]
     );
 
     // ── Export ─────────────────────────────────────────────────────────────
@@ -1181,18 +1617,22 @@ export function QueryEditor() {
         }
     };
 
-    const hasResult = activeTab?.result && !activeTab.result.is_error && activeTab.result.columns.length > 0;
+    const hasResult = !activeTabIsDoc && activeTab?.result && !activeTab.result.is_error && activeTab.result.columns.length > 0;
 
     // ── File run ───────────────────────────────────────────────────────────
     const handleRunSqlFile = useCallback(
         (content: string) => {
             if (!activeTabId) return;
+            if (isDocTab(activeTabId)) {
+                toast.info("Run file is disabled while a .doc tab is active.");
+                return;
+            }
             updateSql(activeTabId, content);
             setRunSqlFileOpen(false);
             toast.success("SQL loaded — running…", { duration: 1500 });
             setTimeout(() => handleExecute(), 50);
         },
-        [activeTabId, updateSql, handleExecute]
+        [activeTabId, isDocTab, updateSql, handleExecute]
     );
 
     const handleRunSqlFileSelect = useCallback(
@@ -1417,12 +1857,38 @@ export function QueryEditor() {
                         schemaContext={schemaContext}
                         connectionId={connectionId ?? "default"}
                         databaseName={databaseName || "workspace"}
+                        canEditFiles={collaborationStatus !== "connected" || collaborationPermissions.canEdit}
+                        canDeleteFiles={collaborationStatus !== "connected" || collaborationPermissions.canDelete}
                     />
                 </div>
             )}
 
             {/* Main editor column — hidden when git panel is open */}
             <div className={cn("flex flex-col flex-1 min-w-0 overflow-hidden", sidebarPanel === "git" && "hidden")}>
+                {(collaborationStatus === "connected" || collaborationRoomId) && (
+                    <div className="flex items-center gap-2 border-b border-cyan-500/20 bg-cyan-500/8 px-3 py-1.5 shrink-0">
+                        <span className="inline-block h-2 w-2 rounded-full bg-cyan-400 animate-pulse" />
+                        <span className="text-xs font-medium text-cyan-300">
+                            Live collaboration {collaborationRoomId ? `• ${collaborationRoomId}` : ""}
+                        </span>
+                        <Badge variant="outline" className="h-5 border-cyan-500/25 bg-cyan-500/10 text-[10px] text-cyan-200">
+                            {localAccessLevel ?? "view"}
+                        </Badge>
+                        {isCollaborationReadOnly && (
+                            <span className="text-[10px] text-cyan-100/80">Read-only mode</span>
+                        )}
+                        <div className="ml-auto">
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-6 border-cyan-500/30 bg-cyan-500/10 px-2 text-[10px] text-cyan-100 hover:bg-cyan-500/20"
+                                onClick={() => setCollaborationPanelOpen((value) => !value)}
+                            >
+                                {collaborationPanelOpen ? "Hide collaboration" : "Show collaboration"}
+                            </Button>
+                        </div>
+                    </div>
+                )}
                 {/* Sandbox banner */}
                 {isSandboxMode && (
                     <div className="flex items-center gap-2 px-4 py-1 bg-emerald-500/5 border-b border-emerald-500/15 shrink-0">
@@ -1472,40 +1938,36 @@ export function QueryEditor() {
                         {editorFullScreen && (
                             <div className="fixed inset-0 z-50 bg-background flex flex-col">
                                 <header className="flex items-center justify-between px-4 py-2 border-b border-border/30 bg-card/50 shrink-0">
-                                    <span className="text-sm font-medium text-muted-foreground">Query editor</span>
+                                    <span className="text-sm font-medium text-muted-foreground">
+                                        {activeTabIsDoc ? "Document editor" : "Query editor"}
+                                    </span>
                                     <div className="flex items-center gap-2">
-                                        <Button size="sm" variant="outline" className="h-8 gap-1.5" onClick={handleManualReview}
-                                            disabled={!activeTab.sql.trim() || activeTab.isExecuting || reviewLoading || !aiReviewEnabled}>
-                                            {reviewLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Shield className="h-3.5 w-3.5" />}
-                                            Review
-                                        </Button>
-                                        <Button size="sm" variant="outline" className="h-8 gap-1.5" onClick={handleExecute}
-                                            disabled={activeTab.isExecuting || reviewLoading || isSandboxBusy || isSandboxReviewing || !activeTab.sql.trim()}>
-                                            {activeTab.isExecuting || isSandboxBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
-                                            Run
-                                        </Button>
+                                        {!activeTabIsDoc && (
+                                            <>
+                                                <Button size="sm" variant="outline" className="h-8 gap-1.5" onClick={handleManualReview}
+                                                    disabled={!activeTab.sql.trim() || activeTab.isExecuting || reviewLoading || !aiReviewEnabled}>
+                                                    {reviewLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Shield className="h-3.5 w-3.5" />}
+                                                    Review
+                                                </Button>
+                                                <Button size="sm" variant="outline" className="h-8 gap-1.5" onClick={handleExecute}
+                                                    disabled={activeTab.isExecuting || reviewLoading || isSandboxBusy || isSandboxReviewing || !activeTab.sql.trim()}>
+                                                    {activeTab.isExecuting || isSandboxBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                                                    Run
+                                                </Button>
+                                            </>
+                                        )}
                                         <Button size="sm" variant="ghost" className="h-8 gap-1.5" onClick={() => setEditorFullScreen(false)}>
                                             <Minimize2 className="h-3.5 w-3.5" />
                                             Exit full screen
                                         </Button>
                                     </div>
                                 </header>
-                                <MonacoSqlEditor
-                                    key={activeTab.id}
-                                    value={activeTab.sql}
-                                    onChange={(v) => handleSqlChange(activeTab.id, v)}
-                                    onExecute={handleExecute}
-                                    onReview={handleManualReview}
-                                    onFormatSql={handleFormatSql}
-                                    onFetchColumns={handleFetchColumns}
-                                    onNextAction={handleNextAction}
-                                    reviewIssues={reviewReport?.issues ?? []}
-                                    schemaContext={schemaContext}
-                                    disabled={activeTab.isExecuting}
-                                    className="rounded-none border-0 flex-1"
-                                    editorHeight={480}
-                                    hideNextActionSuggestions
-                                />
+                                {renderTabEditor(activeTab, {
+                                    keyPrefix: "fullscreen",
+                                    editorHeight: 480,
+                                    className: "rounded-none border-0 flex-1",
+                                    reviewIssues: reviewReport?.issues ?? [],
+                                })}
                             </div>
                         )}
 
@@ -1516,7 +1978,8 @@ export function QueryEditor() {
                                     isExecuting={activeTab.isExecuting}
                                     isReviewLoading={reviewLoading}
                                     isExplaining={isExplaining}
-                                    hasSql={Boolean(activeTab.sql.trim())}
+                                    hasSql={!activeTabIsDoc && Boolean(activeTab.sql.trim())}
+                                    allowRunFile={!activeTabIsDoc}
                                     isSandboxMode={isSandboxMode}
                                     isSandboxBusy={isSandboxBusy}
                                     isSandboxReviewing={isSandboxReviewing}
@@ -1613,26 +2076,14 @@ export function QueryEditor() {
                                                                 />
 
                                                                 {groupActiveTab ? (
-                                                                    <MonacoSqlEditor
-                                                                        key={`${group.id}-${groupActiveTab.id}`}
-                                                                        value={groupActiveTab.sql}
-                                                                        onChange={(value) => handleSqlChange(groupActiveTab.id, value)}
-                                                                        onExecute={handleExecute}
-                                                                        onReview={handleManualReview}
-                                                                        onFormatSql={handleFormatSql}
-                                                                        onFetchColumns={handleFetchColumns}
-                                                                        onNextAction={handleNextAction}
-                                                                        reviewIssues={
-                                                                            activeTabId === groupActiveTab.id
-                                                                                ? (reviewReport?.issues ?? [])
-                                                                                : []
-                                                                        }
-                                                                        schemaContext={schemaContext}
-                                                                        disabled={groupActiveTab.isExecuting}
-                                                                        className="rounded-none border-0 flex-1 min-h-[200px]"
-                                                                        hideNextActionSuggestions
-                                                                        editorHeight={480}
-                                                                    />
+                                                                    renderTabEditor(groupActiveTab, {
+                                                                        keyPrefix: group.id,
+                                                                        editorHeight: 480,
+                                                                        className: "rounded-none border-0 flex-1 min-h-[200px]",
+                                                                        reviewIssues: activeTabId === groupActiveTab.id
+                                                                            ? (reviewReport?.issues ?? [])
+                                                                            : [],
+                                                                    })
                                                                 ) : (
                                                                     <div className="flex flex-1 items-center justify-center border-t border-border/10 bg-muted/10 text-muted-foreground">
                                                                         <div className="text-center">
@@ -1722,26 +2173,14 @@ export function QueryEditor() {
                                                     />
 
                                                     {groupActiveTab ? (
-                                                        <MonacoSqlEditor
-                                                            key={`${group?.id ?? "group"}-${groupActiveTab.id}`}
-                                                            value={groupActiveTab.sql}
-                                                            onChange={(value) => handleSqlChange(groupActiveTab.id, value)}
-                                                            onExecute={handleExecute}
-                                                            onReview={handleManualReview}
-                                                            onFormatSql={handleFormatSql}
-                                                            onFetchColumns={handleFetchColumns}
-                                                            onNextAction={handleNextAction}
-                                                            reviewIssues={
-                                                                activeTabId === groupActiveTab.id
-                                                                    ? (reviewReport?.issues ?? [])
-                                                                    : []
-                                                            }
-                                                            schemaContext={schemaContext}
-                                                            disabled={groupActiveTab.isExecuting}
-                                                            className="rounded-none border-0 flex-1 min-h-[200px]"
-                                                            hideNextActionSuggestions
-                                                            editorHeight={580}
-                                                        />
+                                                        renderTabEditor(groupActiveTab, {
+                                                            keyPrefix: group?.id ?? "group",
+                                                            editorHeight: 580,
+                                                            className: "rounded-none border-0 flex-1 min-h-[200px]",
+                                                            reviewIssues: activeTabId === groupActiveTab.id
+                                                                ? (reviewReport?.issues ?? [])
+                                                                : [],
+                                                        })
                                                     ) : (
                                                         <div className="flex flex-1 items-center justify-center border-t border-border/10 bg-muted/10 text-muted-foreground">
                                                             <div className="text-center">
@@ -1778,6 +2217,7 @@ export function QueryEditor() {
                             <ResizablePanel id="qe-results" defaultSize="40%" minSize="15%" maxSize="50%" className="flex flex-col min-h-0 overflow-hidden">
                                 <ResultsArea
                                     activeTab={activeTab}
+                                    isDocumentTab={activeTabIsDoc}
                                     isSandboxMode={isSandboxMode}
                                     isSandboxReviewing={isSandboxReviewing}
                                     isSandboxBusy={isSandboxBusy}
@@ -1812,6 +2252,7 @@ export function QueryEditor() {
                                     strictProductionGuard={strictProductionGuard}
                                     isSwitchingDb={isSwitchingDb}
                                     connectionId={connectionId}
+                                    liveResultMeta={activeTabId ? (liveResultMetaByTab[activeTabId] ?? null) : null}
                                 />
                             </ResizablePanel>
                         </ResizablePanelGroup>
@@ -1854,7 +2295,27 @@ export function QueryEditor() {
                         <TooltipContent side="left">Notes (⌘⇧N)</TooltipContent>
                     </Tooltip>
                 )}
+
+                {!collaborationPanelOpen && (
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <button
+                                className="fixed bottom-20 right-4 z-30 h-8 rounded-full border border-cyan-500/35 bg-cyan-500/15 px-3 text-[10px] font-semibold text-cyan-100 shadow-lg backdrop-blur-sm transition-colors hover:bg-cyan-500/25"
+                                onClick={() => setCollaborationPanelOpen(true)}
+                            >
+                                Collaboration
+                            </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="left">Open collaboration panel</TooltipContent>
+                    </Tooltip>
+                )}
             </div>
+
+            {collaborationPanelOpen && (
+                <div className="w-[340px] shrink-0 border-l border-border/25">
+                    <CollaborationPanel connectionId={connectionId} />
+                </div>
+            )}
         </div>
     );
 }
@@ -1863,6 +2324,7 @@ export function QueryEditor() {
 
 interface ResultsAreaProps {
     activeTab: NonNullable<ReturnType<typeof useQueryStore.getState>["tabs"][number]> & { result: QueryResult | null; isExecuting: boolean };
+    isDocumentTab: boolean;
     isSandboxMode: boolean;
     isSandboxReviewing: boolean;
     isSandboxBusy: boolean;
@@ -1896,10 +2358,12 @@ interface ResultsAreaProps {
     strictProductionGuard: boolean;
     isSwitchingDb: boolean;
     connectionId: string | null;
+    liveResultMeta: LiveResultMeta | null;
 }
 
 function ResultsArea({
     activeTab,
+    isDocumentTab,
     isSandboxMode,
     isSandboxReviewing,
     isSandboxBusy,
@@ -1933,7 +2397,21 @@ function ResultsArea({
     strictProductionGuard,
     isSwitchingDb,
     connectionId,
+    liveResultMeta,
 }: ResultsAreaProps) {
+    if (isDocumentTab) {
+        return (
+            <div className="flex h-full items-center justify-center border-t border-border/20 bg-muted/5 text-muted-foreground">
+                <div className="max-w-sm px-6 text-center">
+                    <p className="text-sm font-medium text-foreground/80">Document mode</p>
+                    <p className="mt-1 text-xs text-muted-foreground/70">
+                        This tab uses Editor.js blocks and is auto-saved as JSON. SQL run results appear only for .sql tabs.
+                    </p>
+                </div>
+            </div>
+        );
+    }
+
     return (
         <div className="flex flex-col h-full overflow-hidden">
             {/* Sandbox diff */}
@@ -2035,6 +2513,23 @@ function ResultsArea({
                     />
                 ) : (
                     <div className="flex h-full min-h-0 flex-col">
+                        {liveResultMeta && (
+                            <div className="flex items-center justify-between gap-2 px-3 py-1.5 border-b border-cyan-500/20 bg-cyan-500/10 shrink-0">
+                                <p className="text-[11px] text-cyan-100/90">
+                                    Live result shared by <span className="font-medium text-cyan-100">{liveResultMeta.updatedByName}</span>{" "}
+                                    at {new Date(liveResultMeta.updatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
+                                </p>
+                                {liveResultMeta.truncated && (
+                                    <Badge
+                                        variant="outline"
+                                        className="border-cyan-400/30 bg-cyan-500/10 text-[10px] text-cyan-100"
+                                    >
+                                        Preview {liveResultMeta.previewRows.toLocaleString()} rows
+                                    </Badge>
+                                )}
+                            </div>
+                        )}
+
                         {/* Slow query banner */}
                         {activeTab.result.execution_time_ms > 500 && (
                             <div className="flex items-center justify-between gap-3 px-4 py-1.5 bg-amber-500/5 border-b border-amber-500/15 shrink-0">

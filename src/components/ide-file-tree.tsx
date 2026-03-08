@@ -51,6 +51,15 @@ const MdIcon = React.memo(function MdIcon({ className }: IconProps) {
         </svg>
     );
 });
+const DocIcon = React.memo(function DocIcon({ className }: IconProps) {
+    return (
+        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+            <rect x="2.2" y="1.8" width="11.6" height="12.4" rx="1.6" fill="#38bdf8" opacity="0.15" />
+            <path d="M5 5h6M5 7.8h6M5 10.6h4.2" stroke="#38bdf8" strokeWidth="1.15" strokeLinecap="round" />
+            <path d="M10.5 1.8v2.8h3.3" stroke="#38bdf8" strokeWidth="1.05" strokeLinecap="round" strokeLinejoin="round" opacity="0.65" />
+        </svg>
+    );
+});
 const JsonIcon = React.memo(function JsonIcon({ className }: IconProps) {
     return (
         <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
@@ -132,6 +141,7 @@ const FolderIcon = React.memo(function FolderIcon({ isOpen, className }: { isOpe
 const FILE_ICON_MAP: Record<string, React.ComponentType<IconProps>> = {
     sql: SqlIcon,
     md: MdIcon,
+    doc: DocIcon,
     json: JsonIcon,
     tsbuildinfo: JsonIcon,
     ts: TsIcon,
@@ -174,6 +184,8 @@ function ContextMenu({
     onDelete,
     onDuplicate,
     onOpen,
+    canEditFiles,
+    canDeleteFiles,
 }: {
     state: ContextMenuState;
     onClose: () => void;
@@ -183,6 +195,8 @@ function ContextMenu({
     onDelete: (id: string) => void;
     onDuplicate: (id: string) => void;
     onOpen: (node: FsNode, target?: FileOpenTarget) => void;
+    canEditFiles: boolean;
+    canDeleteFiles: boolean;
 }) {
     const { nodes } = useIdeFsStore();
     const node = state.nodeId ? nodes[state.nodeId] : null;
@@ -202,21 +216,25 @@ function ContextMenu({
         };
     }, [onClose]);
 
-    const items: ContextMenuItem[] = [
-        {
+    const items: ContextMenuItem[] = [];
+
+    if (canEditFiles) {
+        items.push({
             label: "New File",
             icon: <FilePlus className="h-3.5 w-3.5" />,
             onClick: () => { onNewFile(parentId); onClose(); },
-        },
-        {
+        });
+        items.push({
             label: "New Folder",
             icon: <FolderPlus className="h-3.5 w-3.5" />,
             onClick: () => { onNewFolder(parentId); onClose(); },
-        },
-    ];
+        });
+    }
 
     if (node) {
-        items.push({ label: "", icon: null, onClick: () => {}, separator: true });
+        if (items.length > 0) {
+            items.push({ label: "", icon: null, onClick: () => {}, separator: true });
+        }
         if (node.type === "file") {
             items.push({
                 label: "Open",
@@ -229,23 +247,27 @@ function ContextMenu({
                 onClick: () => { onOpen(node, "split-right"); onClose(); },
             });
         }
-        items.push({
-            label: "Rename",
-            icon: <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none"><path d="M2 12.5h4M4 2l8 8-3 1-1-3L4 2zM10 4l2 2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" /></svg>,
-            onClick: () => { onRename(node.id); onClose(); },
-        });
-        items.push({
-            label: "Duplicate",
-            icon: <Copy className="h-3.5 w-3.5" />,
-            onClick: () => { onDuplicate(node.id); onClose(); },
-        });
-        items.push({ label: "", icon: null, onClick: () => {}, separator: true });
-        items.push({
-            label: "Delete",
-            icon: <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none"><path d="M3 4h10M6 4V2.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5V4M5 4v8a1 1 0 001 1h4a1 1 0 001-1V4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" /></svg>,
-            onClick: () => { onDelete(node.id); onClose(); },
-            danger: true,
-        });
+        if (canEditFiles) {
+            items.push({
+                label: "Rename",
+                icon: <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none"><path d="M2 12.5h4M4 2l8 8-3 1-1-3L4 2zM10 4l2 2" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" /></svg>,
+                onClick: () => { onRename(node.id); onClose(); },
+            });
+            items.push({
+                label: "Duplicate",
+                icon: <Copy className="h-3.5 w-3.5" />,
+                onClick: () => { onDuplicate(node.id); onClose(); },
+            });
+        }
+        if (canDeleteFiles) {
+            items.push({ label: "", icon: null, onClick: () => {}, separator: true });
+            items.push({
+                label: "Delete",
+                icon: <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none"><path d="M3 4h10M6 4V2.5a.5.5 0 01.5-.5h3a.5.5 0 01.5.5V4M5 4v8a1 1 0 001 1h4a1 1 0 001-1V4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" /></svg>,
+                onClick: () => { onDelete(node.id); onClose(); },
+                danger: true,
+            });
+        }
     }
 
     if (typeof document === "undefined") return null;
@@ -533,10 +555,18 @@ function TreeNode({
 export interface IdeFileTreeProps {
     connectionId: string;
     databaseName: string;
+    canEditFiles?: boolean;
+    canDeleteFiles?: boolean;
     onOpenFile: (content: string, nodeId: string, name: string, options?: { openTarget?: FileOpenTarget }) => void;
 }
 
-export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileTreeProps) {
+export function IdeFileTree({
+    connectionId,
+    databaseName,
+    canEditFiles = true,
+    canDeleteFiles = true,
+    onOpenFile,
+}: IdeFileTreeProps) {
     const {
         nodes, expandedIds,
         getRootNodes, createNode, deleteNode, renameNode,
@@ -597,12 +627,14 @@ export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileT
 
     // ── New node ───────────────────────────────────────────────────────────────
     const startNewNode = useCallback((parentId: string | null, type: NodeType) => {
+        if (!canEditFiles) return;
         if (parentId) setExpanded(parentId, true);
         setNewNodeState({ parentId, type });
         setContextMenu(null);
-    }, [setExpanded]);
+    }, [canEditFiles, setExpanded]);
 
     const commitNewNode = useCallback((name: string) => {
+        if (!canEditFiles) return;
         if (!newNodeState) return;
         const node = createNode(connectionId, name, newNodeState.type, newNodeState.parentId);
         setNewNodeState(null);
@@ -611,7 +643,7 @@ export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileT
             setActiveFile(connectionId, node.id);
             onOpenFile(node.content, node.id, node.name, { openTarget: "active" });
         }
-    }, [newNodeState, connectionId, createNode, setActiveFile, onOpenFile]);
+    }, [canEditFiles, newNodeState, connectionId, createNode, setActiveFile, onOpenFile]);
 
     // ── Select + activate ──────────────────────────────────────────────────────
     const handleSelect = useCallback((nodeId: string) => {
@@ -625,21 +657,24 @@ export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileT
 
     // ── Rename ─────────────────────────────────────────────────────────────────
     const handleRenameCommit = useCallback((id: string, name: string) => {
+        if (!canEditFiles) return;
         renameNode(id, name);
         setRenamingId(null);
-    }, [renameNode]);
+    }, [canEditFiles, renameNode]);
 
     // ── Delete ─────────────────────────────────────────────────────────────────
     const handleDelete = useCallback((id: string) => {
+        if (!canDeleteFiles) return;
         const node = nodes[id];
         if (!node) return;
         deleteNode(id);
         if (selectedNodeId === id) setSelectedNodeId(null);
         toast.success(`Deleted "${node.name}"`, { duration: 1200 });
-    }, [nodes, deleteNode, selectedNodeId]);
+    }, [canDeleteFiles, nodes, deleteNode, selectedNodeId]);
 
     // ── Drag & drop ────────────────────────────────────────────────────────────
     const handleDragStart = useCallback((e: React.DragEvent, nodeId: string) => {
+        if (!canEditFiles) return;
         setDragNodeId(nodeId);
         const node = nodes[nodeId];
         if (node?.type === "file") {
@@ -648,14 +683,16 @@ export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileT
         } else {
             e.dataTransfer.effectAllowed = "move";
         }
-    }, [nodes]);
+    }, [canEditFiles, nodes]);
 
     const handleDragOver = useCallback((e: React.DragEvent, nodeId: string) => {
+        if (!canEditFiles) return;
         e.preventDefault();
         setDragOverId(nodeId);
-    }, []);
+    }, [canEditFiles]);
 
     const handleDrop = useCallback((e: React.DragEvent, targetId: string | null) => {
+        if (!canEditFiles) return;
         e.preventDefault();
         const sourceId = dragNodeId;
         setDragNodeId(null);
@@ -664,22 +701,22 @@ export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileT
         const target = targetId ? nodes[targetId] : null;
         const newParentId = target?.type === "folder" ? targetId : target?.parentId ?? null;
         moveNode(sourceId, newParentId);
-    }, [dragNodeId, nodes, moveNode]);
+    }, [canEditFiles, dragNodeId, nodes, moveNode]);
 
     // F2 to rename selected, Delete to delete selected
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
             const target = e.target as HTMLElement;
             if (target.tagName === "INPUT" || target.tagName === "TEXTAREA") return;
-            if (e.key === "F2" && selectedNodeId) setRenamingId(selectedNodeId);
-            if (e.key === "Delete" && selectedNodeId && !renamingId) {
+            if (canEditFiles && e.key === "F2" && selectedNodeId) setRenamingId(selectedNodeId);
+            if (canDeleteFiles && e.key === "Delete" && selectedNodeId && !renamingId) {
                 e.preventDefault();
                 handleDelete(selectedNodeId);
             }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [selectedNodeId, renamingId, handleDelete]);
+    }, [selectedNodeId, renamingId, handleDelete, canEditFiles, canDeleteFiles]);
 
     const fileCount = useMemo(
         () => Object.values(nodes).filter((n) => n.connectionId === connectionId && n.type === "file").length,
@@ -713,7 +750,13 @@ export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileT
                     <TooltipTrigger asChild>
                         <button
                             onClick={() => startNewNode(getNewNodeParent(), "file")}
-                            className="h-5 w-5 flex items-center justify-center rounded-[3px] text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors"
+                            disabled={!canEditFiles}
+                            className={cn(
+                                "h-5 w-5 flex items-center justify-center rounded-[3px] transition-colors",
+                                canEditFiles
+                                    ? "text-muted-foreground/40 hover:text-foreground hover:bg-muted/40"
+                                    : "text-muted-foreground/20 cursor-not-allowed"
+                            )}
                         >
                             <FilePlus className="h-3 w-3" />
                         </button>
@@ -724,7 +767,13 @@ export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileT
                     <TooltipTrigger asChild>
                         <button
                             onClick={() => startNewNode(getNewNodeParent(), "folder")}
-                            className="h-5 w-5 flex items-center justify-center rounded-[3px] text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors"
+                            disabled={!canEditFiles}
+                            className={cn(
+                                "h-5 w-5 flex items-center justify-center rounded-[3px] transition-colors",
+                                canEditFiles
+                                    ? "text-muted-foreground/40 hover:text-foreground hover:bg-muted/40"
+                                    : "text-muted-foreground/20 cursor-not-allowed"
+                            )}
                         >
                             <FolderPlus className="h-3 w-3" />
                         </button>
@@ -746,7 +795,13 @@ export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileT
                     <TooltipTrigger asChild>
                         <button
                             onClick={() => setShowImporter(true)}
-                            className="h-5 w-5 flex items-center justify-center rounded-[3px] text-muted-foreground/40 hover:text-primary hover:bg-primary/10 transition-colors"
+                            disabled={!canEditFiles}
+                            className={cn(
+                                "h-5 w-5 flex items-center justify-center rounded-[3px] transition-colors",
+                                canEditFiles
+                                    ? "text-muted-foreground/40 hover:text-primary hover:bg-primary/10"
+                                    : "text-muted-foreground/20 cursor-not-allowed"
+                            )}
                         >
                             <Download className="h-3 w-3" />
                         </button>
@@ -790,6 +845,7 @@ export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileT
                     }}
                     onDragOver={(e) => e.preventDefault()}
                     onDrop={(e) => {
+                        if (!canEditFiles) return;
                         e.preventDefault();
                         const sourceId = dragNodeId;
                         setDragNodeId(null);
@@ -814,11 +870,13 @@ export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileT
                             <div className="flex gap-1.5">
                                 <Button size="sm" variant="outline"
                                     className="h-6 text-[10px] gap-1 border-border/20 hover:bg-accent/40"
+                                    disabled={!canEditFiles}
                                     onClick={() => startNewNode(null, "file")}>
                                     <FilePlus className="h-3 w-3" /> New file
                                 </Button>
                                 <Button size="sm" variant="outline"
                                     className="h-6 text-[10px] gap-1 border-border/20 hover:bg-accent/40"
+                                    disabled={!canEditFiles}
                                     onClick={() => startNewNode(null, "folder")}>
                                     <FolderPlus className="h-3 w-3" /> New folder
                                 </Button>
@@ -865,8 +923,14 @@ export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileT
                     onNewFolder={(parentId) => startNewNode(parentId, "folder")}
                     onRename={(id) => setRenamingId(id)}
                     onDelete={handleDelete}
-                    onDuplicate={(id) => { duplicateNode(id); toast.success("Duplicated", { duration: 900 }); }}
+                    onDuplicate={(id) => {
+                        if (!canEditFiles) return;
+                        duplicateNode(id);
+                        toast.success("Duplicated", { duration: 900 });
+                    }}
                     onOpen={handleActivate}
+                    canEditFiles={canEditFiles}
+                    canDeleteFiles={canDeleteFiles}
                 />
             )}
 

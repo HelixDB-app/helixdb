@@ -63,6 +63,7 @@ interface QueryState {
     removeTab: (tabId: string) => void;
     setActiveTab: (tabId: string) => void;
     updateSql: (tabId: string, sql: string) => void;
+    setTabResult: (tabId: string, result: QueryResult | null, executionTimeMs?: number | null) => void;
     executeQuery: (
         connectionId: string,
         tabId: string,
@@ -126,6 +127,22 @@ export const useQueryStore = create<QueryState>((set, get) => ({
     updateSql: (tabId, sql) => {
         set((state) => ({
             tabs: state.tabs.map((t) => (t.id === tabId ? { ...t, sql } : t)),
+        }));
+    },
+
+    setTabResult: (tabId, result, executionTimeMs) => {
+        set((state) => ({
+            tabs: state.tabs.map((t) =>
+                t.id === tabId
+                    ? {
+                        ...t,
+                        result,
+                        isExecuting: false,
+                        executionTime:
+                            executionTimeMs ?? result?.execution_time_ms ?? null,
+                    }
+                    : t
+            ),
         }));
     },
 

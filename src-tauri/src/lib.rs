@@ -57,6 +57,11 @@ pub fn run() {
                                     if let Err(e) = handle.emit("pgstudio-git-callback", &url) {
                                         log::error!("[deep-link] failed to emit git event: {e}");
                                     }
+                                } else if url.starts_with("pgstudio://collab/join") {
+                                    log::info!("[deep-link] emitting pgstudio-collab-join");
+                                    if let Err(e) = handle.emit("pgstudio-collab-join", &url) {
+                                        log::error!("[deep-link] failed to emit collaboration event: {e}");
+                                    }
                                 } else {
                                     log::debug!("[deep-link] ignored url: {url}");
                                 }
@@ -198,6 +203,9 @@ pub fn run() {
             commands::query_history_save_note,
             commands::query_history_export_csv,
             commands::open_path,
+            commands::get_media_permission_status,
+            commands::request_media_permissions,
+            commands::open_media_permission_settings,
             commands::app_log_write,
             commands::app_log_path,
             commands::open_new_window,

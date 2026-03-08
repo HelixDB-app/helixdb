@@ -22,6 +22,7 @@ export interface QueryToolbarProps {
     isReviewLoading: boolean;
     isExplaining: boolean;
     hasSql: boolean;
+    allowRunFile?: boolean;
     isSandboxMode: boolean;
     isSandboxBusy: boolean;
     isSandboxReviewing: boolean;
@@ -42,6 +43,7 @@ export function QueryToolbar({
     isReviewLoading,
     isExplaining,
     hasSql,
+    allowRunFile = true,
     isSandboxMode,
     isSandboxBusy,
     isSandboxReviewing,
@@ -136,7 +138,7 @@ export function QueryToolbar({
                             size="sm"
                             className="h-7 gap-1.5 text-xs px-2 text-muted-foreground hover:text-sky-400"
                             onClick={onRunFile}
-                            disabled={isExecuting}
+                            disabled={isExecuting || !allowRunFile}
                         >
                             <FileText className="h-3.5 w-3.5" />
                             Run file

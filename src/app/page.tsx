@@ -8,10 +8,12 @@ import { useConnectionStore } from "@/stores/connection-store";
 import { useShortcutsStore } from "@/stores/shortcuts-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useTrialStore } from "@/stores/trial-store";
+import { useCollaborationStore } from "@/stores/collaboration-store";
 import { authFetchProfile } from "@/lib/tauri";
 import { eventMatchesCombo, formatShortcut } from "@/lib/shortcut-keys";
 import { APP_NAME } from "@/lib/app-config";
 import { invoke } from "@tauri-apps/api/core";
+import { listen } from "@tauri-apps/api/event";
 import dynamic from "next/dynamic";
 import { LandingConnections } from "@/components/landing-connections";
 import { WelcomeScreen } from "@/components/welcome-screen";
@@ -84,6 +86,7 @@ export default function Home() {
     } = useConnectionStore();
     const getCombo = useShortcutsStore((s) => s.getCombo);
     const { user, isAuthenticated, setUser, setLoading: setAuthLoading } = useAuthStore();
+    const handleCollabDeepLink = useCollaborationStore((s) => s.handleDeepLinkUrl);
     const { result: trialResult, loadState: trialLoadState, isTrialActive } = useTrialStore();
     const trialExpired = !isAuthenticated
         && trialLoadState === "ready"
@@ -134,6 +137,23 @@ export default function Home() {
         localStorage.setItem("helix_welcomed", "1");
         setShowWelcome(false);
     };
+
+    useEffect(() => {
+        let unlisten: (() => void) | null = null;
+        void (async () => {
+            try {
+                unlisten = await listen<string>("pgstudio-collab-join", (event) => {
+                    handleCollabDeepLink(event.payload);
+                    setActiveView("query");
+                });
+            } catch {
+                // Ignore listener setup failures outside desktop runtime.
+            }
+        })();
+        return () => {
+            unlisten?.();
+        };
+    }, [handleCollabDeepLink]);
 
     // Global keyboard shortcuts (configurable via Settings → Shortcuts)
     useEffect(() => {

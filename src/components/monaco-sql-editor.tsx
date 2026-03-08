@@ -9,6 +9,7 @@ import { aiSuggestionEngine } from "@/lib/ai-suggestions";
 import type { SchemaContext } from "@/lib/ai-suggestions";
 import { useSettingsStore } from "@/stores/settings-store";
 import type { SqlReviewIssue } from "@/lib/sql-review";
+import type { CollaborationSelection } from "@/lib/collaboration/types";
 import { Sparkles, Zap } from "lucide-react";
 
 const EDITOR_HEIGHT = 200;
@@ -50,7 +51,32 @@ export interface MonacoSqlEditorProps {
     editorHeight?: number;
     /** Hide the Nova AI next-action suggestions bar above the results area */
     hideNextActionSuggestions?: boolean;
+    collaborators?: Array<{
+        id: string;
+        name: string;
+        colorIndex: number;
+        color: string;
+        initials: string;
+        selection?: CollaborationSelection | null;
+        lineNumber?: number;
+        column?: number;
+    }>;
+    onCursorActivity?: (payload: {
+        lineNumber: number;
+        column: number;
+        selection?: CollaborationSelection | null;
+    }) => void;
 }
+
+interface MutableCollaboratorWidget extends editor.IContentWidget {
+    domNode: HTMLDivElement;
+    setPosition: (position: MonacoPosition) => void;
+}
+
+type MonacoPosition = {
+    lineNumber: number;
+    column: number;
+};
 
 export function MonacoSqlEditor({
     value,
@@ -66,6 +92,8 @@ export function MonacoSqlEditor({
     className,
     editorHeight = EDITOR_HEIGHT,
     hideNextActionSuggestions = false,
+    collaborators = [],
+    onCursorActivity,
 }: MonacoSqlEditorProps) {
     const { resolvedTheme } = useTheme();
     const {
@@ -92,8 +120,11 @@ export function MonacoSqlEditor({
     const onFetchColumnsRef = useRef<typeof onFetchColumns>(onFetchColumns);
     const onFormatSqlRef = useRef<typeof onFormatSql>(onFormatSql);
     const onNextActionRef = useRef<typeof onNextAction>(onNextAction);
+    const onCursorActivityRef = useRef<typeof onCursorActivity>(onCursorActivity);
     const onChangeRef = useRef(onChange);
     const disposablesRef = useRef<IDisposable[]>([]);
+    const collaboratorDecorationsRef = useRef<string[]>([]);
+    const collaboratorWidgetsRef = useRef<Record<string, MutableCollaboratorWidget>>({});
     const lastDropdownRequestRef = useRef<number>(0);
     const lastInlineRequestRef = useRef<number>(0);
     const nextActionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -139,6 +170,7 @@ export function MonacoSqlEditor({
     useEffect(() => { onFetchColumnsRef.current = onFetchColumns; }, [onFetchColumns]);
     useEffect(() => { onFormatSqlRef.current = onFormatSql; }, [onFormatSql]);
     useEffect(() => { onNextActionRef.current = onNextAction; }, [onNextAction]);
+    useEffect(() => { onCursorActivityRef.current = onCursorActivity; }, [onCursorActivity]);
     useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
     useEffect(() => {
         aiConfigRef.current = {
@@ -168,6 +200,14 @@ export function MonacoSqlEditor({
             disposablesRef.current.forEach((d) => d.dispose());
             disposablesRef.current = [];
             dropdownAbortRef.current?.abort();
+            const editorInstance = editorRef.current;
+            if (editorInstance) {
+                for (const widget of Object.values(collaboratorWidgetsRef.current)) {
+                    editorInstance.removeContentWidget(widget);
+                }
+                collaboratorWidgetsRef.current = {};
+                collaboratorDecorationsRef.current = editorInstance.deltaDecorations(collaboratorDecorationsRef.current, []);
+            }
         };
     }, []);
 
@@ -203,6 +243,125 @@ export function MonacoSqlEditor({
             monacoInstance.editor.setModelMarkers(model, "ai-review", []);
         };
     }, [reviewIssues, value]);
+
+    // Live collaborator selections, cursors, and labels.
+    useEffect(() => {
+        const editorInstance = editorRef.current;
+        const monacoInstance = monacoRef.current;
+        const model = editorInstance?.getModel();
+        if (!editorInstance || !monacoInstance || !model) return;
+
+        const clampPosition = (lineNumber?: number, column?: number): MonacoPosition => {
+            const safeLine = Math.max(1, Math.min(lineNumber ?? 1, model.getLineCount()));
+            const maxColumn = model.getLineMaxColumn(safeLine);
+            const safeColumn = Math.max(1, Math.min(column ?? 1, maxColumn));
+            return { lineNumber: safeLine, column: safeColumn };
+        };
+
+        const nextDecorations: editor.IModelDeltaDecoration[] = [];
+        const activeWidgetIds = new Set<string>();
+
+        for (const collaborator of collaborators) {
+            const colorClass = `collab-color-${collaborator.colorIndex % 12}`;
+            const pos = clampPosition(collaborator.lineNumber, collaborator.column);
+
+            if (collaborator.selection) {
+                const start = clampPosition(
+                    collaborator.selection.startLineNumber,
+                    collaborator.selection.startColumn
+                );
+                const end = clampPosition(
+                    collaborator.selection.endLineNumber,
+                    collaborator.selection.endColumn
+                );
+                nextDecorations.push({
+                    range: new monacoInstance.Range(
+                        start.lineNumber,
+                        start.column,
+                        end.lineNumber,
+                        end.column
+                    ),
+                    options: {
+                        className: `collab-selection ${colorClass}`,
+                        stickiness: monacoInstance.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+                    },
+                });
+            }
+
+            nextDecorations.push({
+                range: new monacoInstance.Range(
+                    pos.lineNumber,
+                    pos.column,
+                    pos.lineNumber,
+                    pos.column
+                ),
+                options: {
+                    className: `collab-cursor ${colorClass}`,
+                    stickiness: monacoInstance.editor.TrackedRangeStickiness.NeverGrowsWhenTypingAtEdges,
+                },
+            });
+
+            const widgetId = `collab-widget-${collaborator.id}`;
+            activeWidgetIds.add(widgetId);
+            let widget = collaboratorWidgetsRef.current[widgetId];
+            if (!widget) {
+                const domNode = document.createElement("div");
+                domNode.className = "collab-cursor-label";
+                const chip = document.createElement("span");
+                chip.className = "collab-cursor-chip";
+                const initialsNode = document.createElement("span");
+                initialsNode.className = "collab-cursor-chip-initials";
+                const nameNode = document.createElement("span");
+                nameNode.className = "collab-cursor-chip-name";
+                chip.append(initialsNode, nameNode);
+                domNode.append(chip);
+                let position: MonacoPosition = pos;
+                widget = {
+                    domNode,
+                    getId: () => widgetId,
+                    getDomNode: () => domNode,
+                    getPosition: () => ({
+                        position,
+                        preference: [
+                            monacoInstance.editor.ContentWidgetPositionPreference.ABOVE,
+                            monacoInstance.editor.ContentWidgetPositionPreference.BELOW,
+                        ],
+                    }),
+                    setPosition: (nextPosition: MonacoPosition) => {
+                        position = nextPosition;
+                    },
+                };
+                collaboratorWidgetsRef.current[widgetId] = widget;
+                editorInstance.addContentWidget(widget);
+            }
+            const chip = widget.domNode.firstElementChild as HTMLSpanElement | null;
+            const initialsNode = chip?.firstElementChild as HTMLSpanElement | null;
+            const nameNode = chip?.lastElementChild as HTMLSpanElement | null;
+            if (chip) {
+                chip.className = `collab-cursor-chip ${colorClass}`;
+            }
+            if (initialsNode) {
+                initialsNode.textContent = collaborator.initials;
+            }
+            if (nameNode) {
+                nameNode.textContent = collaborator.name;
+            }
+            widget.setPosition(pos);
+            editorInstance.layoutContentWidget(widget);
+        }
+
+        for (const [widgetId, widget] of Object.entries(collaboratorWidgetsRef.current)) {
+            if (!activeWidgetIds.has(widgetId)) {
+                editorInstance.removeContentWidget(widget);
+                delete collaboratorWidgetsRef.current[widgetId];
+            }
+        }
+
+        collaboratorDecorationsRef.current = editorInstance.deltaDecorations(
+            collaboratorDecorationsRef.current,
+            nextDecorations
+        );
+    }, [collaborators, value]);
 
     // ── Next-action suggestions (debounced 1.8s, only for substantial queries) ─
     useEffect(() => {
@@ -687,6 +846,33 @@ export function MonacoSqlEditor({
                     dispose: () => domNode.removeEventListener("paste", onDomPaste),
                 });
             }
+
+            const emitCursorActivity = () => {
+                const position = editorInstance.getPosition();
+                if (!position) return;
+                const selection = editorInstance.getSelection();
+                onCursorActivityRef.current?.({
+                    lineNumber: position.lineNumber,
+                    column: position.column,
+                    selection: selection
+                        ? {
+                            startLineNumber: selection.startLineNumber,
+                            startColumn: selection.startColumn,
+                            endLineNumber: selection.endLineNumber,
+                            endColumn: selection.endColumn,
+                        }
+                        : null,
+                });
+            };
+
+            const positionDisposable = editorInstance.onDidChangeCursorPosition(() => {
+                emitCursorActivity();
+            });
+            const selectionDisposable = editorInstance.onDidChangeCursorSelection(() => {
+                emitCursorActivity();
+            });
+            disposablesRef.current.push(positionDisposable, selectionDisposable);
+            emitCursorActivity();
 
             editorInstance.focus();
         },

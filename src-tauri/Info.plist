@@ -4,5 +4,11 @@
 <dict>
   <key>ITSAppUsesNonExemptEncryption</key>
   <false/>
+  <key>NSCameraUsageDescription</key>
+  <string>pgStudio uses your camera for live collaboration video in team sessions.</string>
+  <key>NSMicrophoneUsageDescription</key>
+  <string>pgStudio uses your microphone for live collaboration voice in team sessions.</string>
+  <key>NSScreenCaptureDescription</key>
+  <string>pgStudio uses screen sharing so you can present your SQL workspace during collaboration sessions.</string>
 </dict>
 </plist>

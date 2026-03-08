@@ -58,6 +58,11 @@ dotenvy = "0.15"
 sha2 = "0.10"
 hex = "0.4"
 
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6"
+objc2 = "0.6"
+objc2-foundation = "0.3"
+
 [profile.release]
 lto = true
 codegen-units = 1
