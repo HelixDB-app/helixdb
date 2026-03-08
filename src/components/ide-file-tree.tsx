@@ -1,6 +1,6 @@
 "use client";
 
-import {
+import React, {
     useCallback,
     useEffect,
     useMemo,
@@ -28,133 +28,128 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { SchemaImporter } from "@/components/schema-importer";
 
-// ── Rich file-type icon system ────────────────────────────────────────────────
-// SVG mini-icons inspired by VS Code / Cursor file icon themes
+// ── File-type icon system (Cursor-style, memoized, fast lookup) ─────────────────
+const ICON_CLS = "h-4 w-4 shrink-0";
 
-function SqlIcon({ className }: { className?: string }) {
+type IconProps = { className?: string };
+const SqlIcon = React.memo(function SqlIcon({ className }: IconProps) {
     return (
-        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <rect x="1" y="3" width="14" height="10" rx="1.5" fill="#38bdf8" opacity="0.15" />
-            <ellipse cx="8" cy="5.5" rx="5" ry="1.8" fill="#38bdf8" opacity="0.8" />
-            <path d="M3 5.5v5c0 1 2.24 1.8 5 1.8s5-.8 5-1.8v-5" stroke="#38bdf8" strokeWidth="1.1" strokeLinecap="round" />
-            <path d="M3 8c0 1 2.24 1.8 5 1.8s5-.8 5-1.8" stroke="#38bdf8" strokeWidth="1.1" strokeLinecap="round" />
+        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+            <rect x="1" y="3.5" width="14" height="9" rx="1.2" fill="#0ea5e9" opacity="0.2" />
+            <ellipse cx="8" cy="5.8" rx="5.2" ry="1.6" fill="#0ea5e9" />
+            <path d="M3 5.8v5.2c0 .95 2.2 1.7 5 1.7s5-.75 5-1.7V5.8" stroke="#0ea5e9" strokeWidth="1" strokeLinecap="round" fill="none" />
+            <path d="M3 7.8c0 .95 2.2 1.7 5 1.7s5-.75 5-1.7" stroke="#0ea5e9" strokeWidth="1" strokeLinecap="round" fill="none" opacity="0.85" />
         </svg>
     );
-}
-
-function MdIcon({ className }: { className?: string }) {
+});
+const MdIcon = React.memo(function MdIcon({ className }: IconProps) {
     return (
-        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
             <rect x="2" y="2" width="12" height="12" rx="1.5" fill="#94a3b8" opacity="0.12" />
             <path d="M4 11V5l2.5 3L9 5v6" stroke="#94a3b8" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
             <path d="M11 5v6M11 11l-1.5-1.5M11 11l1.5-1.5" stroke="#94a3b8" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
     );
-}
-
-function JsonIcon({ className }: { className?: string }) {
+});
+const JsonIcon = React.memo(function JsonIcon({ className }: IconProps) {
     return (
-        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M4.5 3C3.5 3 3 3.5 3 4.5v1C3 6.3 2.5 6.8 2 7c.5.2 1 .7 1 1.5v1c0 1 .5 1.5 1.5 1.5" stroke="#fb923c" strokeWidth="1.2" strokeLinecap="round" />
-            <path d="M11.5 3c1 0 1.5.5 1.5 1.5v1c0 .8.5 1.3 1 1.5-.5.2-1 .7-1 1.5v1c0 1-.5 1.5-1.5 1.5" stroke="#fb923c" strokeWidth="1.2" strokeLinecap="round" />
-            <circle cx="8" cy="7" r=".9" fill="#fb923c" />
+        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+            <path d="M4.5 3C3.5 3 3 3.5 3 4.5v1C3 6.3 2.5 6.8 2 7c.5.2 1 .7 1 1.5v1c0 1 .5 1.5 1.5 1.5" stroke="#eab308" strokeWidth="1.2" strokeLinecap="round" />
+            <path d="M11.5 3c1 0 1.5.5 1.5 1.5v1c0 .8.5 1.3 1 1.5-.5.2-1 .7-1 1.5v1c0 1-.5 1.5-1.5 1.5" stroke="#eab308" strokeWidth="1.2" strokeLinecap="round" />
+            <circle cx="8" cy="7" r=".9" fill="#eab308" />
         </svg>
     );
-}
-
-function TsIcon({ className }: { className?: string }) {
+});
+const TsIcon = React.memo(function TsIcon({ className }: IconProps) {
     return (
-        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
             <rect x="2" y="2" width="12" height="12" rx="2" fill="#3b82f6" opacity="0.9" />
             <path d="M4.5 6.5H8M6.25 6.5V11" stroke="white" strokeWidth="1.2" strokeLinecap="round" />
             <path d="M9.5 9c0-.6.4-1 1-.1.3.5.5.8 1 .8s.8-.3.8-.7c0-.5-.4-.7-1.2-1C10.2 7.6 9.5 7 9.5 6.2S10.1 5 11 5s1.4.4 1.5 1" stroke="white" strokeWidth="1.1" strokeLinecap="round" />
         </svg>
     );
-}
-
-function JsIcon({ className }: { className?: string }) {
+});
+const JsIcon = React.memo(function JsIcon({ className }: IconProps) {
     return (
-        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
             <rect x="2" y="2" width="12" height="12" rx="2" fill="#eab308" opacity="0.9" />
             <path d="M5 5v4.5c0 1-.5 1.5-1.5 1.5" stroke="white" strokeWidth="1.2" strokeLinecap="round" />
             <path d="M8.5 9c0-.6.4-1 1-.1.3.5.5.8 1 .8s.8-.3.8-.7c0-.5-.4-.7-1.2-1C9.2 7.6 8.5 7 8.5 6.2S9.1 5 10 5s1.4.4 1.5 1" stroke="white" strokeWidth="1.1" strokeLinecap="round" />
         </svg>
     );
-}
-
-function EnvIcon({ className }: { className?: string }) {
+});
+const EnvIcon = React.memo(function EnvIcon({ className }: IconProps) {
     return (
-        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
             <circle cx="8" cy="8" r="5.5" stroke="#f59e0b" strokeWidth="1.2" />
             <circle cx="8" cy="8" r="2" fill="#f59e0b" opacity="0.8" />
             <path d="M8 2.5v1.3M8 12.2v1.3M2.5 8h1.3M12.2 8h1.3" stroke="#f59e0b" strokeWidth="1.1" strokeLinecap="round" />
         </svg>
     );
-}
-
-function ShIcon({ className }: { className?: string }) {
+});
+const ShIcon = React.memo(function ShIcon({ className }: IconProps) {
     return (
-        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
             <rect x="2" y="2" width="12" height="12" rx="2" fill="#22c55e" opacity="0.15" />
             <path d="M4.5 6l2.5 2-2.5 2" stroke="#22c55e" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
             <path d="M8.5 10h3" stroke="#22c55e" strokeWidth="1.3" strokeLinecap="round" />
         </svg>
     );
-}
-
-function CsvIcon({ className }: { className?: string }) {
+});
+const CsvIcon = React.memo(function CsvIcon({ className }: IconProps) {
     return (
-        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
             <rect x="2" y="2" width="12" height="12" rx="1.5" fill="#10b981" opacity="0.12" />
             <path d="M4 5h8M4 8h8M4 11h8" stroke="#10b981" strokeWidth="1.1" strokeLinecap="round" />
             <path d="M6.5 3.5v9M9.5 3.5v9" stroke="#10b981" strokeWidth="1.1" strokeLinecap="round" opacity="0.6" />
         </svg>
     );
-}
-
-function DefaultFileIcon({ className }: { className?: string }) {
+});
+const DefaultFileIcon = React.memo(function DefaultFileIcon({ className }: IconProps) {
     return (
-        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
             <path d="M4 2h6l3 3v9a1 1 0 01-1 1H4a1 1 0 01-1-1V3a1 1 0 011-1z" fill="currentColor" opacity="0.08" stroke="currentColor" strokeWidth="1" strokeLinecap="round" />
             <path d="M10 2v3h3" stroke="currentColor" strokeWidth="1" strokeLinecap="round" strokeLinejoin="round" opacity="0.5" />
         </svg>
     );
-}
+});
 
-function FolderIcon({ isOpen, className }: { isOpen: boolean; className?: string }) {
-    if (isOpen) {
-        return (
-            <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-                <path d="M1.5 5.5A1 1 0 012.5 4.5h4l1 1.5h6a1 1 0 011 1v5a1 1 0 01-1 1H2.5a1 1 0 01-1-1V5.5z" fill="#fbbf24" opacity="0.3" />
-                <path d="M1.5 7h13l-1.5 5H3L1.5 7z" fill="#fbbf24" opacity="0.85" />
-            </svg>
-        );
-    }
+const FolderIcon = React.memo(function FolderIcon({ isOpen, className }: { isOpen: boolean; className?: string }) {
     return (
-        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg">
-            <path d="M1.5 5.5A1 1 0 012.5 4.5h4l1 1.5h6a1 1 0 011 1v5a1 1 0 01-1 1H2.5a1 1 0 01-1-1V5.5z" fill="#fbbf24" opacity="0.6" stroke="#fbbf24" strokeWidth="0.5" />
+        <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
+            <path
+                d="M1.5 5.2a1 1 0 011-1h4.2l1.2 1.8h6.1a1 1 0 011 1v5a1 1 0 01-1 1H2.5a1 1 0 01-1-1V5.2z"
+                fill="#eab308"
+                fillOpacity={isOpen ? 0.5 : 0.85}
+                stroke="#ca8a04"
+                strokeWidth={0.6}
+                strokeOpacity={isOpen ? 0.4 : 0.6}
+            />
         </svg>
     );
-}
+});
 
-function FileTypeIcon({ name, type, isOpen }: { name: string; type: NodeType; isOpen?: boolean }) {
-    const sz = "h-4 w-4 shrink-0";
-    if (type === "folder") return <FolderIcon isOpen={!!isOpen} className={sz} />;
+const FILE_ICON_MAP: Record<string, React.ComponentType<IconProps>> = {
+    sql: SqlIcon,
+    md: MdIcon,
+    json: JsonIcon,
+    tsbuildinfo: JsonIcon,
+    ts: TsIcon,
+    tsx: TsIcon,
+    js: JsIcon,
+    jsx: JsIcon,
+    env: EnvIcon,
+    sh: ShIcon,
+    csv: CsvIcon,
+};
+
+const FileTypeIcon = React.memo(function FileTypeIcon({ name, type, isOpen }: { name: string; type: NodeType; isOpen?: boolean }) {
+    if (type === "folder") return <FolderIcon isOpen={!!isOpen} className={ICON_CLS} />;
     const ext = getExtension(name);
-    switch (ext) {
-        case "sql": return <SqlIcon className={sz} />;
-        case "md": return <MdIcon className={sz} />;
-        case "json": return <JsonIcon className={sz} />;
-        case "ts":
-        case "tsx": return <TsIcon className={sz} />;
-        case "js":
-        case "jsx": return <JsIcon className={sz} />;
-        case "env": return <EnvIcon className={sz} />;
-        case "sh": return <ShIcon className={sz} />;
-        case "csv": return <CsvIcon className={sz} />;
-        default: return <DefaultFileIcon className={`${sz} text-muted-foreground/40`} />;
-    }
-}
+    const Icon = (ext && FILE_ICON_MAP[ext]) || DefaultFileIcon;
+    // eslint-disable-next-line react-hooks/static-components
+    return <Icon className={ext ? ICON_CLS : `${ICON_CLS} text-muted-foreground/40`} />;
+});
 
 // ── Context menu ──────────────────────────────────────────────────────────────
 
@@ -167,6 +162,8 @@ interface ContextMenuItem {
     danger?: boolean;
     separator?: boolean;
 }
+
+export type FileOpenTarget = "active" | "split-right";
 
 function ContextMenu({
     state,
@@ -185,7 +182,7 @@ function ContextMenu({
     onRename: (id: string) => void;
     onDelete: (id: string) => void;
     onDuplicate: (id: string) => void;
-    onOpen: (node: FsNode) => void;
+    onOpen: (node: FsNode, target?: FileOpenTarget) => void;
 }) {
     const { nodes } = useIdeFsStore();
     const node = state.nodeId ? nodes[state.nodeId] : null;
@@ -224,7 +221,12 @@ function ContextMenu({
             items.push({
                 label: "Open",
                 icon: <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M9 4l4 4-4 4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" /></svg>,
-                onClick: () => { onOpen(node); onClose(); },
+                onClick: () => { onOpen(node, "active"); onClose(); },
+            });
+            items.push({
+                label: "Open to Side",
+                icon: <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none"><path d="M2.75 3.25h10.5a1 1 0 0 1 1 1v7.5a1 1 0 0 1-1 1H2.75a1 1 0 0 1-1-1v-7.5a1 1 0 0 1 1-1z" stroke="currentColor" strokeWidth="1.15" /><path d="M8 3.25v9.5" stroke="currentColor" strokeWidth="1.15" /><path d="M10 8h2.75" stroke="currentColor" strokeWidth="1.15" strokeLinecap="round" /></svg>,
+                onClick: () => { onOpen(node, "split-right"); onClose(); },
             });
         }
         items.push({
@@ -531,7 +533,7 @@ function TreeNode({
 export interface IdeFileTreeProps {
     connectionId: string;
     databaseName: string;
-    onOpenFile: (content: string, nodeId: string, name: string) => void;
+    onOpenFile: (content: string, nodeId: string, name: string, options?: { openTarget?: FileOpenTarget }) => void;
 }
 
 export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileTreeProps) {
@@ -607,7 +609,7 @@ export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileT
         setSelectedNodeId(node.id);
         if (newNodeState.type === "file") {
             setActiveFile(connectionId, node.id);
-            onOpenFile(node.content, node.id, node.name);
+            onOpenFile(node.content, node.id, node.name, { openTarget: "active" });
         }
     }, [newNodeState, connectionId, createNode, setActiveFile, onOpenFile]);
 
@@ -616,9 +618,9 @@ export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileT
         setSelectedNodeId(nodeId);
     }, []);
 
-    const handleActivate = useCallback((node: FsNode) => {
+    const handleActivate = useCallback((node: FsNode, target: FileOpenTarget = "active") => {
         setActiveFile(connectionId, node.id);
-        onOpenFile(node.content, node.id, node.name);
+        onOpenFile(node.content, node.id, node.name, { openTarget: target });
     }, [connectionId, setActiveFile, onOpenFile]);
 
     // ── Rename ─────────────────────────────────────────────────────────────────
@@ -639,8 +641,14 @@ export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileT
     // ── Drag & drop ────────────────────────────────────────────────────────────
     const handleDragStart = useCallback((e: React.DragEvent, nodeId: string) => {
         setDragNodeId(nodeId);
-        e.dataTransfer.effectAllowed = "move";
-    }, []);
+        const node = nodes[nodeId];
+        if (node?.type === "file") {
+            e.dataTransfer.effectAllowed = "copyMove";
+            e.dataTransfer.setData("application/x-helix-file-node", node.id);
+        } else {
+            e.dataTransfer.effectAllowed = "move";
+        }
+    }, [nodes]);
 
     const handleDragOver = useCallback((e: React.DragEvent, nodeId: string) => {
         e.preventDefault();
@@ -679,7 +687,7 @@ export function IdeFileTree({ connectionId, databaseName, onOpenFile }: IdeFileT
     );
 
     return (
-        <div className="flex flex-col h-full bg-[#1e1e2e]/30">
+        <div className="flex flex-col h-full">
             {/* Toolbar */}
             <div className="flex items-center gap-0.5 px-2 h-8 border-b border-border/10 shrink-0">
                 <span className="text-[10px] text-muted-foreground/30 font-mono flex-1 select-none">

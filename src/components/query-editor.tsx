@@ -1,8 +1,8 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useQueryStore } from "@/stores/query-store";
-import type { QueryHistoryEntry } from "@/stores/query-store";
+import type { QueryHistoryEntry, QueryTab } from "@/stores/query-store";
 import { useSandboxStore } from "@/stores/sandbox-store";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useNotesStore } from "@/stores/notes-store";
@@ -35,10 +35,14 @@ import {
     type SqlRiskClassification,
 } from "@/lib/sql-risk-guard";
 import { QueryErrorPanel } from "@/components/query-error-panel";
-import { QueryHistorySidebar } from "@/components/query-history-sidebar";
 import { QueryTabBar } from "@/components/query-tab-bar";
 import { QueryToolbar } from "@/components/query-toolbar";
-import { QuerySidebar, QueryActivityBar, type SidebarPanel } from "@/components/query-sidebar";
+import {
+    QuerySidebar,
+    QueryActivityBar,
+    type QueryLoadSqlOptions,
+    type SidebarPanel,
+} from "@/components/query-sidebar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -50,7 +54,7 @@ import {
 } from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
-import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
+import { ScrollArea } from "@/components/ui/scroll-area";
 import {
     Tooltip,
     TooltipContent,
@@ -85,7 +89,6 @@ import {
     GitBranch,
     LayoutDashboard,
     Loader2,
-    Maximize2,
     Minimize2,
     Play,
     Shield,
@@ -210,6 +213,23 @@ interface PendingProductionGuardExecution {
     classification: SqlRiskClassification;
 }
 
+interface EditorGroup {
+    id: string;
+    tabIds: string[];
+    activeTabId: string | null;
+}
+
+type SplitDropPlacement = "left" | "center" | "right";
+
+function dedupeIds(ids: string[]): string[] {
+    return Array.from(new Set(ids));
+}
+
+function getDraggedFileNodeId(dataTransfer: DataTransfer): string | null {
+    const raw = dataTransfer.getData("application/x-helix-file-node");
+    return raw || null;
+}
+
 // ── Main component ───────────────────────────────────────────────────────────
 
 export function QueryEditor() {
@@ -324,6 +344,17 @@ export function QueryEditor() {
     const [runSqlFileOpen, setRunSqlFileOpen] = useState(false);
     const runSqlFileInputRef = useRef<HTMLInputElement>(null);
 
+    // Editor split groups (VS Code-style groups within the query editor area)
+    const editorGroupCounterRef = useRef(1);
+    const [editorGroups, setEditorGroups] = useState<EditorGroup[]>([
+        { id: "group-1", tabIds: [], activeTabId: null },
+    ]);
+    const [activeEditorGroupId, setActiveEditorGroupId] = useState("group-1");
+    const [fileDropTarget, setFileDropTarget] = useState<{
+        groupId: string;
+        placement: SplitDropPlacement;
+    } | null>(null);
+
     // Tab → file mapping for unsaved indicator
     const [tabFileMap, setTabFileMap] = useState<Record<string, string>>({});
     // Ref always holds latest tabFileMap to avoid stale closures in Monaco onChange
@@ -367,6 +398,11 @@ export function QueryEditor() {
 
     // ── Derived ────────────────────────────────────────────────────────────
     const activeTab = tabs.find((t) => t.id === activeTabId);
+    const tabsById = useMemo(() => new Map(tabs.map((tab) => [tab.id, tab])), [tabs]);
+    const activeEditorGroup = useMemo(
+        () => editorGroups.find((group) => group.id === activeEditorGroupId) ?? editorGroups[0] ?? null,
+        [editorGroups, activeEditorGroupId]
+    );
     const activeConnectionEntry = useMemo(
         () => connections.find((entry) => entry.connectionId === activeConnectionId) ?? null,
         [connections, activeConnectionId]
@@ -431,6 +467,238 @@ export function QueryEditor() {
         const files = useQueryFilesStore.getState().files;
         return Object.fromEntries(files.map((f) => [f.id, f.sql]));
     }, []); // updated via store, intentionally simple here
+
+    // ── Editor split groups ───────────────────────────────────────────────
+    useEffect(() => {
+        setEditorGroups((prev) => {
+            const validTabIds = new Set(tabs.map((tab) => tab.id));
+            let changed = false;
+
+            let nextGroups = prev.map((group) => {
+                const nextTabIds = group.tabIds.filter((id) => validTabIds.has(id));
+                const nextActiveTabId =
+                    group.activeTabId && nextTabIds.includes(group.activeTabId)
+                        ? group.activeTabId
+                        : (nextTabIds[nextTabIds.length - 1] ?? null);
+
+                if (
+                    nextTabIds.length !== group.tabIds.length ||
+                    nextActiveTabId !== group.activeTabId
+                ) {
+                    changed = true;
+                    return { ...group, tabIds: nextTabIds, activeTabId: nextActiveTabId };
+                }
+                return group;
+            });
+
+            if (nextGroups.length === 0) {
+                nextGroups = [{ id: "group-1", tabIds: [], activeTabId: null }];
+                changed = true;
+            }
+
+            const assigned = new Set(nextGroups.flatMap((group) => group.tabIds));
+            const unassigned = tabs.map((tab) => tab.id).filter((id) => !assigned.has(id));
+            if (unassigned.length > 0) {
+                const targetIndex = Math.max(
+                    0,
+                    nextGroups.findIndex((group) => group.id === activeEditorGroupId)
+                );
+                const group = nextGroups[targetIndex] ?? nextGroups[0];
+                if (group) {
+                    const merged = dedupeIds([...group.tabIds, ...unassigned]);
+                    if (
+                        merged.length !== group.tabIds.length ||
+                        !merged.every((id, idx) => id === group.tabIds[idx])
+                    ) {
+                        changed = true;
+                    }
+                    nextGroups = nextGroups.map((candidate, idx) =>
+                        idx === targetIndex
+                            ? {
+                                ...candidate,
+                                tabIds: merged,
+                                activeTabId: candidate.activeTabId ?? merged[0] ?? null,
+                            }
+                            : candidate
+                    );
+                }
+            }
+
+            return changed ? nextGroups : prev;
+        });
+    }, [tabs, activeEditorGroupId]);
+
+    useEffect(() => {
+        if (editorGroups.some((group) => group.id === activeEditorGroupId)) return;
+        if (editorGroups[0]) setActiveEditorGroupId(editorGroups[0].id);
+    }, [editorGroups, activeEditorGroupId]);
+
+    useEffect(() => {
+        const focusedGroup = activeEditorGroup ?? null;
+        const fallbackGroup = editorGroups.find((group) => group.tabIds.length > 0) ?? null;
+        const nextActive =
+            focusedGroup?.activeTabId ??
+            focusedGroup?.tabIds[0] ??
+            fallbackGroup?.activeTabId ??
+            fallbackGroup?.tabIds[0] ??
+            null;
+        if (nextActive && nextActive !== activeTabId) setActiveTab(nextActive);
+        if (
+            focusedGroup &&
+            focusedGroup.tabIds.length === 0 &&
+            fallbackGroup &&
+            fallbackGroup.id !== focusedGroup.id
+        ) {
+            setActiveEditorGroupId(fallbackGroup.id);
+        }
+    }, [activeEditorGroup, activeTabId, editorGroups, setActiveTab]);
+
+    const focusEditorGroup = useCallback((groupId: string, tabId?: string | null) => {
+        setActiveEditorGroupId(groupId);
+        setEditorGroups((prev) =>
+            prev.map((group) =>
+                group.id === groupId && tabId && group.activeTabId !== tabId
+                    ? { ...group, activeTabId: tabId }
+                    : group
+            )
+        );
+        const group = editorGroups.find((candidate) => candidate.id === groupId);
+        const nextTabId = tabId ?? group?.activeTabId ?? group?.tabIds[0] ?? null;
+        if (nextTabId) setActiveTab(nextTabId);
+    }, [editorGroups, setActiveTab]);
+
+    const openTabInGroup = useCallback((groupId: string, tabId: string, activate = true) => {
+        setEditorGroups((prev) =>
+            prev.map((group) =>
+                group.id === groupId
+                    ? {
+                        ...group,
+                        tabIds: group.tabIds.includes(tabId) ? group.tabIds : [...group.tabIds, tabId],
+                        activeTabId: activate ? tabId : (group.activeTabId ?? tabId),
+                    }
+                    : group
+            )
+        );
+        if (activate) {
+            setActiveEditorGroupId(groupId);
+            setActiveTab(tabId);
+        }
+    }, [setActiveTab]);
+
+    const openTabInNewSplit = useCallback((
+        anchorGroupId: string,
+        tabId: string,
+        placement: "left" | "right" = "right"
+    ) => {
+        const nextGroupId = `group-${++editorGroupCounterRef.current}`;
+        setEditorGroups((prev) => {
+            const anchorIndex = prev.findIndex((group) => group.id === anchorGroupId);
+            const nextGroup: EditorGroup = { id: nextGroupId, tabIds: [tabId], activeTabId: tabId };
+            if (anchorIndex === -1) return [...prev, nextGroup];
+            const insertAt = placement === "left" ? anchorIndex : anchorIndex + 1;
+            return [
+                ...prev.slice(0, insertAt),
+                nextGroup,
+                ...prev.slice(insertAt),
+            ];
+        });
+        setActiveEditorGroupId(nextGroupId);
+        setActiveTab(tabId);
+        return nextGroupId;
+    }, [setActiveTab]);
+
+    const closeEditorGroup = useCallback((groupId: string) => {
+        let fallbackGroupId: string | null = null;
+        let fallbackTabId: string | null = null;
+
+        setEditorGroups((prev) => {
+            if (prev.length <= 1) return prev;
+            const groupIndex = prev.findIndex((group) => group.id === groupId);
+            if (groupIndex === -1) return prev;
+
+            const groupToClose = prev[groupIndex];
+            const remaining = prev.filter((group) => group.id !== groupId);
+            const mergeTargetIndex = groupIndex > 0 ? groupIndex - 1 : 0;
+            const mergeTarget = remaining[mergeTargetIndex];
+            if (!mergeTarget) return remaining;
+
+            const mergedTabIds = dedupeIds([...mergeTarget.tabIds, ...groupToClose.tabIds]);
+            const mergedActiveTabId =
+                mergeTarget.activeTabId ?? groupToClose.activeTabId ?? mergedTabIds[0] ?? null;
+
+            fallbackGroupId = mergeTarget.id;
+            fallbackTabId = mergedActiveTabId;
+
+            return remaining.map((group, idx) =>
+                idx === mergeTargetIndex
+                    ? { ...group, tabIds: mergedTabIds, activeTabId: mergedActiveTabId }
+                    : group
+            );
+        });
+
+        if (activeEditorGroupId === groupId && fallbackGroupId) {
+            setActiveEditorGroupId(fallbackGroupId);
+            if (fallbackTabId) setActiveTab(fallbackTabId);
+        }
+    }, [activeEditorGroupId, setActiveTab]);
+
+    const handleSelectGroupTab = useCallback((groupId: string, tabId: string) => {
+        setEditorGroups((prev) =>
+            prev.map((group) =>
+                group.id === groupId ? { ...group, activeTabId: tabId } : group
+            )
+        );
+        setActiveEditorGroupId(groupId);
+        setActiveTab(tabId);
+    }, [setActiveTab]);
+
+    const handleCloseGroupTab = useCallback((groupId: string, tabId: string) => {
+        let removeFromStore = false;
+        let nextGroupActiveTab: string | null = null;
+
+        setEditorGroups((prev) => {
+            const tabGroupCount = prev.reduce(
+                (count, group) => count + (group.tabIds.includes(tabId) ? 1 : 0),
+                0
+            );
+            removeFromStore = tabGroupCount <= 1;
+
+            return prev.map((group) => {
+                if (group.id !== groupId) return group;
+                const remainingTabIds = group.tabIds.filter((id) => id !== tabId);
+                const nextActive =
+                    group.activeTabId === tabId
+                        ? (remainingTabIds[remainingTabIds.length - 1] ?? null)
+                        : group.activeTabId;
+                nextGroupActiveTab = nextActive;
+                return { ...group, tabIds: remainingTabIds, activeTabId: nextActive };
+            });
+        });
+
+        if (removeFromStore) {
+            removeTab(tabId);
+            setTabFileMap((prev) => {
+                if (!prev[tabId]) return prev;
+                const next = { ...prev };
+                delete next[tabId];
+                return next;
+            });
+            return;
+        }
+
+        if (
+            activeEditorGroupId === groupId &&
+            activeTabId === tabId &&
+            nextGroupActiveTab
+        ) {
+            setActiveTab(nextGroupActiveTab);
+        }
+    }, [activeEditorGroupId, activeTabId, removeTab, setActiveTab]);
+
+    const handleNewTabInGroup = useCallback((groupId: string) => {
+        const nextTabId = addTab();
+        openTabInGroup(groupId, nextTabId, true);
+    }, [addTab, openTabInGroup]);
 
     // ── Column fetching ────────────────────────────────────────────────────
     const handleFetchColumns = useCallback(
@@ -723,49 +991,163 @@ export function QueryEditor() {
     }, [connectionId, activeTabId, activeTab?.sql, activeEnvironment, handleExplain]);
 
     // ── History actions ────────────────────────────────────────────────────
-    const handleLoadFromHistory = useCallback(
-        (sql: string) => {
-            if (!activeTabId) addTab("History", sql);
-            else updateSql(activeTabId, sql);
-        },
-        [activeTabId, addTab, updateSql]
-    );
-
     const handleRerunFromHistory = useCallback(
         (sql: string) => {
             if (!connectionId) return;
+            const targetGroupId = activeEditorGroup?.id ?? activeEditorGroupId;
             if (!activeTabId) {
-                addTab("Re-run", sql);
+                const nextTabId = addTab("Re-run", sql);
+                openTabInGroup(targetGroupId, nextTabId, true);
                 setTimeout(() => {
-                    const { activeTabId: newTabId } = useQueryStore.getState();
-                    if (newTabId) executeQuery(connectionId, newTabId, databaseName || undefined, { environment: activeEnvironment });
+                    executeQuery(connectionId, nextTabId, databaseName || undefined, {
+                        environment: activeEnvironment,
+                    });
                 }, 50);
             } else {
                 updateSql(activeTabId, sql);
                 setTimeout(() => handleExecute(), 50);
             }
         },
-        [connectionId, activeTabId, addTab, updateSql, executeQuery, databaseName, activeEnvironment, handleExecute]
+        [
+            activeEditorGroup?.id,
+            activeEditorGroupId,
+            activeEnvironment,
+            activeTabId,
+            addTab,
+            connectionId,
+            databaseName,
+            executeQuery,
+            handleExecute,
+            openTabInGroup,
+            updateSql,
+        ]
     );
 
     // ── Load SQL from sidebar file ─────────────────────────────────────────
     const handleLoadSql = useCallback(
-        (sql: string, fromFileId?: string) => {
-            if (!activeTabId) {
-                addTab(undefined, sql);
-                // After addTab, track the mapping
-                if (fromFileId) {
-                    setTimeout(() => {
-                        const { activeTabId: newId } = useQueryStore.getState();
-                        if (newId) setTabFileMap((prev) => ({ ...prev, [newId]: fromFileId }));
-                    }, 0);
+        (sql: string, options?: QueryLoadSqlOptions) => {
+            const openTarget = options?.openTarget ?? "active";
+            const sourceGroupId =
+                options?.sourceGroupId && editorGroups.some((group) => group.id === options.sourceGroupId)
+                    ? options.sourceGroupId
+                    : (activeEditorGroup?.id ?? activeEditorGroupId);
+
+            const openTabByTarget = (tabId: string) => {
+                if (openTarget === "split-left") {
+                    openTabInNewSplit(sourceGroupId, tabId, "left");
+                    return;
                 }
-            } else {
-                updateSql(activeTabId, sql);
-                if (fromFileId) setTabFileMap((prev) => ({ ...prev, [activeTabId]: fromFileId }));
+                if (openTarget === "split-right" || openTarget === "new-split") {
+                    openTabInNewSplit(sourceGroupId, tabId, "right");
+                    return;
+                }
+                openTabInGroup(sourceGroupId, tabId, true);
+            };
+
+            if (options?.fromFileId) {
+                const existingFileTabId =
+                    Object.entries(tabFileMapRef.current).find(
+                        ([tabId, fileId]) => fileId === options.fromFileId && tabsById.has(tabId)
+                    )?.[0] ?? null;
+
+                let targetTabId = existingFileTabId;
+                if (!targetTabId) {
+                    targetTabId = addTab(options.fileName, sql);
+                    setTabFileMap((prev) => ({ ...prev, [targetTabId!]: options.fromFileId! }));
+                } else {
+                    updateSql(targetTabId, sql);
+                }
+
+                openTabByTarget(targetTabId);
+                return;
             }
+
+            if (openTarget !== "active") {
+                const splitTabId = addTab(options?.fileName, sql);
+                openTabByTarget(splitTabId);
+                return;
+            }
+
+            const group = editorGroups.find((candidate) => candidate.id === sourceGroupId);
+            const targetTabId = group?.activeTabId ?? group?.tabIds[0] ?? null;
+            if (targetTabId) {
+                updateSql(targetTabId, sql);
+                openTabInGroup(sourceGroupId, targetTabId, true);
+                return;
+            }
+
+            const nextTabId = addTab(options?.fileName, sql);
+            openTabInGroup(sourceGroupId, nextTabId, true);
         },
-        [activeTabId, addTab, updateSql]
+        [
+            activeEditorGroupId,
+            activeEditorGroup?.id,
+            addTab,
+            editorGroups,
+            openTabInGroup,
+            openTabInNewSplit,
+            tabsById,
+            updateSql,
+        ]
+    );
+
+    const handleEditorPaneDragOver = useCallback(
+        (e: React.DragEvent<HTMLDivElement>, groupId: string) => {
+            const fileNodeId = getDraggedFileNodeId(e.dataTransfer);
+            if (!fileNodeId) return;
+            e.preventDefault();
+            e.dataTransfer.dropEffect = "copy";
+            const rect = e.currentTarget.getBoundingClientRect();
+            const ratio = (e.clientX - rect.left) / Math.max(rect.width, 1);
+            const placement: SplitDropPlacement =
+                ratio < 0.25 ? "left" : ratio > 0.75 ? "right" : "center";
+            setFileDropTarget((prev) =>
+                prev && prev.groupId === groupId && prev.placement === placement
+                    ? prev
+                    : { groupId, placement }
+            );
+        },
+        []
+    );
+
+    const handleEditorPaneDragLeave = useCallback(
+        (e: React.DragEvent<HTMLDivElement>, groupId: string) => {
+            const to = e.relatedTarget as Node | null;
+            if (to && e.currentTarget.contains(to)) return;
+            setFileDropTarget((prev) => (prev?.groupId === groupId ? null : prev));
+        },
+        []
+    );
+
+    const handleEditorPaneDrop = useCallback(
+        (e: React.DragEvent<HTMLDivElement>, groupId: string) => {
+            const fileNodeId = getDraggedFileNodeId(e.dataTransfer);
+            setFileDropTarget(null);
+            if (!fileNodeId) return;
+            e.preventDefault();
+
+            const node = useIdeFsStore.getState().nodes[fileNodeId];
+            if (!node || node.type !== "file") return;
+
+            const placement = fileDropTarget?.groupId === groupId
+                ? fileDropTarget.placement
+                : "center";
+            const openTarget: QueryLoadSqlOptions["openTarget"] =
+                placement === "left"
+                    ? "split-left"
+                    : placement === "right"
+                        ? "split-right"
+                        : "active";
+
+            handleLoadSql(node.content, {
+                fromFileId: node.id,
+                fileName: node.name,
+                openTarget,
+                sourceGroupId: groupId,
+            });
+            if (connectionId) useIdeFsStore.getState().setActiveFile(connectionId, node.id);
+        },
+        [connectionId, fileDropTarget, handleLoadSql]
     );
 
     // ── File save (when SQL changes, sync to file) ─────────────────────────
@@ -853,8 +1235,6 @@ export function QueryEditor() {
         setSidebarPanel((prev) => prev === panel ? null : panel);
     }, []);
 
-    // ── DB/Schema popover state ────────────────────────────────────────────
-    const [dbPopoverOpen, setDbPopoverOpen] = useState(false);
     const isSwitchingDb = useConnectionStore((s) => s.isSwitchingDatabase);
 
     return (
@@ -1043,17 +1423,6 @@ export function QueryEditor() {
 
             {/* Main editor column — hidden when git panel is open */}
             <div className={cn("flex flex-col flex-1 min-w-0 overflow-hidden", sidebarPanel === "git" && "hidden")}>
-                {/* Tab bar */}
-                <QueryTabBar
-                    tabs={tabs}
-                    activeTabId={activeTabId}
-                    onSelectTab={setActiveTab}
-                    onCloseTab={removeTab}
-                    onNewTab={addTab}
-                    tabFileMap={tabFileMap}
-                    savedFileSqlMap={savedFileSqlMap}
-                />
-
                 {/* Sandbox banner */}
                 {isSandboxMode && (
                     <div className="flex items-center gap-2 px-4 py-1 bg-emerald-500/5 border-b border-emerald-500/15 shrink-0">
@@ -1122,6 +1491,7 @@ export function QueryEditor() {
                                     </div>
                                 </header>
                                 <MonacoSqlEditor
+                                    key={activeTab.id}
                                     value={activeTab.sql}
                                     onChange={(v) => handleSqlChange(activeTab.id, v)}
                                     onExecute={handleExecute}
@@ -1133,15 +1503,15 @@ export function QueryEditor() {
                                     schemaContext={schemaContext}
                                     disabled={activeTab.isExecuting}
                                     className="rounded-none border-0 flex-1"
-                                    editorHeight={380}
+                                    editorHeight={480}
                                     hideNextActionSuggestions
                                 />
                             </div>
                         )}
 
-                        <ResizablePanelGroup id="qe-vgroup" orientation="vertical" className="flex-1 min-h-0">
+                        <ResizablePanelGroup id="qe-vgroup" orientation="vertical" className="flex-1 min-h-[280px] w-full">
                             {/* Editor panel */}
-                            <ResizablePanel id="qe-editor" defaultSize={40} minSize={20} maxSize={75} className="flex flex-col min-h-0">
+                            <ResizablePanel id="qe-editor" defaultSize="60%" minSize="50%" maxSize="85%" className="flex flex-col min-h-0">
                                 <QueryToolbar
                                     isExecuting={activeTab.isExecuting}
                                     isReviewLoading={reviewLoading}
@@ -1164,29 +1534,248 @@ export function QueryEditor() {
                                         else { enableSandbox(); toast.success("Sandbox mode enabled — queries run inside a transaction", { duration: 2500 }); }
                                     }}
                                 />
-                                <MonacoSqlEditor
-                                    value={activeTab.sql}
-                                    onChange={(v) => handleSqlChange(activeTab.id, v)}
-                                    onExecute={handleExecute}
-                                    onReview={handleManualReview}
-                                    onFormatSql={handleFormatSql}
-                                    onFetchColumns={handleFetchColumns}
-                                    onNextAction={handleNextAction}
-                                    reviewIssues={reviewReport?.issues ?? []}
-                                    schemaContext={schemaContext}
-                                    disabled={activeTab.isExecuting}
-                                    className="rounded-none border-0 flex-1"
-                                    hideNextActionSuggestions
-                                />
+                                <div className="flex-1 min-h-[200px] overflow-hidden">
+                                    {editorGroups.length > 1 ? (
+                                        <ResizablePanelGroup id="qe-editor-hgroup" orientation="horizontal" className="h-full min-h-0">
+                                            {editorGroups.map((group, index) => {
+                                                const groupTabs = group.tabIds
+                                                    .map((tabId) => tabsById.get(tabId))
+                                                    .filter((tab): tab is QueryTab => Boolean(tab));
+                                                const groupActiveTab =
+                                                    (group.activeTabId ? tabsById.get(group.activeTabId) : null) ?? groupTabs[0] ?? null;
+                                                const isFocusedGroup = group.id === activeEditorGroupId;
+                                                const dropPlacement =
+                                                    fileDropTarget?.groupId === group.id ? fileDropTarget.placement : null;
+                                                return (
+                                                    <Fragment key={group.id}>
+                                                        <ResizablePanel
+                                                            id={`qe-editor-panel-${group.id}`}
+                                                            defaultSize={`${100 / Math.max(editorGroups.length, 1)}%`}
+                                                            minSize="18%"
+                                                            className="min-w-0"
+                                                        >
+                                                            <div
+                                                                className={cn(
+                                                                    "relative flex h-full min-h-0 flex-col overflow-hidden border-r border-border/20",
+                                                                    isFocusedGroup && "ring-1 ring-inset ring-primary/35"
+                                                                )}
+                                                                onMouseDownCapture={() => focusEditorGroup(group.id, groupActiveTab?.id ?? null)}
+                                                                onDragOver={(e) => handleEditorPaneDragOver(e, group.id)}
+                                                                onDragLeave={(e) => handleEditorPaneDragLeave(e, group.id)}
+                                                                onDrop={(e) => handleEditorPaneDrop(e, group.id)}
+                                                            >
+                                                                <QueryTabBar
+                                                                    tabs={groupTabs}
+                                                                    activeTabId={groupActiveTab?.id ?? null}
+                                                                    onSelectTab={(tabId) => handleSelectGroupTab(group.id, tabId)}
+                                                                    onCloseTab={(tabId) => handleCloseGroupTab(group.id, tabId)}
+                                                                    onNewTab={() => handleNewTabInGroup(group.id)}
+                                                                    tabFileMap={tabFileMap}
+                                                                    savedFileSqlMap={savedFileSqlMap}
+                                                                    extraActions={
+                                                                        <div className="flex items-center border-l border-border/20">
+                                                                            {groupActiveTab && (
+                                                                                <Tooltip>
+                                                                                    <TooltipTrigger asChild>
+                                                                                        <button
+                                                                                            type="button"
+                                                                                            onClick={() => openTabInNewSplit(group.id, groupActiveTab.id, "right")}
+                                                                                            className="h-9 px-2.5 text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                                                                                            aria-label="Split right"
+                                                                                        >
+                                                                                            <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" aria-hidden>
+                                                                                                <rect x="2" y="3" width="12" height="10" rx="1.2" stroke="currentColor" strokeWidth="1.2" />
+                                                                                                <path d="M8 3v10" stroke="currentColor" strokeWidth="1.2" />
+                                                                                                <path d="M10.5 8H13" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                                                                                            </svg>
+                                                                                        </button>
+                                                                                    </TooltipTrigger>
+                                                                                    <TooltipContent>Split right</TooltipContent>
+                                                                                </Tooltip>
+                                                                            )}
+                                                                            {editorGroups.length > 1 && (
+                                                                                <Tooltip>
+                                                                                    <TooltipTrigger asChild>
+                                                                                        <button
+                                                                                            type="button"
+                                                                                            onClick={() => closeEditorGroup(group.id)}
+                                                                                            className="h-9 px-2.5 text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors"
+                                                                                            aria-label="Close split"
+                                                                                        >
+                                                                                            <X className="h-3.5 w-3.5" />
+                                                                                        </button>
+                                                                                    </TooltipTrigger>
+                                                                                    <TooltipContent>Close split</TooltipContent>
+                                                                                </Tooltip>
+                                                                            )}
+                                                                        </div>
+                                                                    }
+                                                                />
+
+                                                                {groupActiveTab ? (
+                                                                    <MonacoSqlEditor
+                                                                        key={`${group.id}-${groupActiveTab.id}`}
+                                                                        value={groupActiveTab.sql}
+                                                                        onChange={(value) => handleSqlChange(groupActiveTab.id, value)}
+                                                                        onExecute={handleExecute}
+                                                                        onReview={handleManualReview}
+                                                                        onFormatSql={handleFormatSql}
+                                                                        onFetchColumns={handleFetchColumns}
+                                                                        onNextAction={handleNextAction}
+                                                                        reviewIssues={
+                                                                            activeTabId === groupActiveTab.id
+                                                                                ? (reviewReport?.issues ?? [])
+                                                                                : []
+                                                                        }
+                                                                        schemaContext={schemaContext}
+                                                                        disabled={groupActiveTab.isExecuting}
+                                                                        className="rounded-none border-0 flex-1 min-h-[200px]"
+                                                                        hideNextActionSuggestions
+                                                                        editorHeight={480}
+                                                                    />
+                                                                ) : (
+                                                                    <div className="flex flex-1 items-center justify-center border-t border-border/10 bg-muted/10 text-muted-foreground">
+                                                                        <div className="text-center">
+                                                                            <p className="text-xs font-medium text-foreground/75">Empty split</p>
+                                                                            <p className="mt-1 text-[11px] text-muted-foreground/70">
+                                                                                Drop a file here or create a tab.
+                                                                            </p>
+                                                                        </div>
+                                                                    </div>
+                                                                )}
+
+                                                                {dropPlacement && (
+                                                                    <div className="pointer-events-none absolute inset-1.5 z-20">
+                                                                        <div
+                                                                            className={cn(
+                                                                                "h-full rounded-md border-2 border-dashed transition-all",
+                                                                                dropPlacement === "center" && "border-primary/70 bg-primary/10",
+                                                                                dropPlacement === "left" && "border-primary/60 bg-gradient-to-r from-primary/20 via-primary/5 to-transparent",
+                                                                                dropPlacement === "right" && "border-primary/60 bg-gradient-to-l from-primary/20 via-primary/5 to-transparent"
+                                                                            )}
+                                                                        />
+                                                                    </div>
+                                                                )}
+                                                            </div>
+                                                        </ResizablePanel>
+                                                        {index < editorGroups.length - 1 && (
+                                                            <ResizableHandle
+                                                                withHandle
+                                                                className="shrink-0 w-2 bg-border/20 hover:bg-border/45 data-[resize-handle-active]:bg-primary/45 transition-colors"
+                                                            />
+                                                        )}
+                                                    </Fragment>
+                                                );
+                                            })}
+                                        </ResizablePanelGroup>
+                                    ) : (
+                                        (() => {
+                                            const group = editorGroups[0];
+                                            const groupTabs = (group?.tabIds ?? [])
+                                                .map((tabId) => tabsById.get(tabId))
+                                                .filter((tab): tab is QueryTab => Boolean(tab));
+                                            const groupActiveTab =
+                                                group && group.activeTabId
+                                                    ? (tabsById.get(group.activeTabId) ?? groupTabs[0] ?? null)
+                                                    : (groupTabs[0] ?? null);
+                                            const dropPlacement =
+                                                fileDropTarget?.groupId === group?.id ? fileDropTarget.placement : null;
+                                            return (
+                                                <div
+                                                    className="relative flex h-full min-h-0 flex-col overflow-hidden border-r border-border/20"
+                                                    onMouseDownCapture={() => group && focusEditorGroup(group.id, groupActiveTab?.id ?? null)}
+                                                    onDragOver={(e) => group && handleEditorPaneDragOver(e, group.id)}
+                                                    onDragLeave={(e) => group && handleEditorPaneDragLeave(e, group.id)}
+                                                    onDrop={(e) => group && handleEditorPaneDrop(e, group.id)}
+                                                >
+                                                    <QueryTabBar
+                                                        tabs={groupTabs}
+                                                        activeTabId={groupActiveTab?.id ?? null}
+                                                        onSelectTab={(tabId) => group && handleSelectGroupTab(group.id, tabId)}
+                                                        onCloseTab={(tabId) => group && handleCloseGroupTab(group.id, tabId)}
+                                                        onNewTab={() => group && handleNewTabInGroup(group.id)}
+                                                        tabFileMap={tabFileMap}
+                                                        savedFileSqlMap={savedFileSqlMap}
+                                                        extraActions={
+                                                            <div className="flex items-center border-l border-border/20">
+                                                                {groupActiveTab && group && (
+                                                                    <Tooltip>
+                                                                        <TooltipTrigger asChild>
+                                                                            <button
+                                                                                type="button"
+                                                                                onClick={() => openTabInNewSplit(group.id, groupActiveTab.id, "right")}
+                                                                                className="h-9 px-2.5 text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                                                                                aria-label="Split right"
+                                                                            >
+                                                                                <svg className="h-3.5 w-3.5" viewBox="0 0 16 16" fill="none" aria-hidden>
+                                                                                    <rect x="2" y="3" width="12" height="10" rx="1.2" stroke="currentColor" strokeWidth="1.2" />
+                                                                                    <path d="M8 3v10" stroke="currentColor" strokeWidth="1.2" />
+                                                                                    <path d="M10.5 8H13" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" />
+                                                                                </svg>
+                                                                            </button>
+                                                                        </TooltipTrigger>
+                                                                        <TooltipContent>Split right</TooltipContent>
+                                                                    </Tooltip>
+                                                                )}
+                                                            </div>
+                                                        }
+                                                    />
+
+                                                    {groupActiveTab ? (
+                                                        <MonacoSqlEditor
+                                                            key={`${group?.id ?? "group"}-${groupActiveTab.id}`}
+                                                            value={groupActiveTab.sql}
+                                                            onChange={(value) => handleSqlChange(groupActiveTab.id, value)}
+                                                            onExecute={handleExecute}
+                                                            onReview={handleManualReview}
+                                                            onFormatSql={handleFormatSql}
+                                                            onFetchColumns={handleFetchColumns}
+                                                            onNextAction={handleNextAction}
+                                                            reviewIssues={
+                                                                activeTabId === groupActiveTab.id
+                                                                    ? (reviewReport?.issues ?? [])
+                                                                    : []
+                                                            }
+                                                            schemaContext={schemaContext}
+                                                            disabled={groupActiveTab.isExecuting}
+                                                            className="rounded-none border-0 flex-1 min-h-[200px]"
+                                                            hideNextActionSuggestions
+                                                            editorHeight={580}
+                                                        />
+                                                    ) : (
+                                                        <div className="flex flex-1 items-center justify-center border-t border-border/10 bg-muted/10 text-muted-foreground">
+                                                            <div className="text-center">
+                                                                <p className="text-xs font-medium text-foreground/75">No tab in this split</p>
+                                                                <p className="mt-1 text-[11px] text-muted-foreground/70">
+                                                                    Open a file from Explorer to begin.
+                                                                </p>
+                                                            </div>
+                                                        </div>
+                                                    )}
+
+                                                    {dropPlacement && (
+                                                        <div className="pointer-events-none absolute inset-1.5 z-20">
+                                                            <div
+                                                                className={cn(
+                                                                    "h-full rounded-md border-2 border-dashed transition-all",
+                                                                    dropPlacement === "center" && "border-primary/70 bg-primary/10",
+                                                                    dropPlacement === "left" && "border-primary/60 bg-gradient-to-r from-primary/20 via-primary/5 to-transparent",
+                                                                    dropPlacement === "right" && "border-primary/60 bg-gradient-to-l from-primary/20 via-primary/5 to-transparent"
+                                                                )}
+                                                            />
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })()
+                                    )}
+                                </div>
                             </ResizablePanel>
 
-                            <ResizableHandle
-                                withHandle
-                                className="shrink-0 min-h-2 py-1 bg-border/20 hover:bg-border/50 data-[resize-handle-active]:bg-emerald-500/40 transition-colors"
-                            />
+                            <ResizableHandle withHandle className="shrink-0 min-h-2 bg-border/20 hover:bg-border/50 data-[resize-handle-active]:bg-emerald-500/40 transition-colors cursor-row-resize" />
 
                             {/* Results panel */}
-                            <ResizablePanel id="qe-results" defaultSize={60} minSize={25} maxSize={80} className="flex flex-col min-h-0 overflow-hidden">
+                            <ResizablePanel id="qe-results" defaultSize="40%" minSize="15%" maxSize="50%" className="flex flex-col min-h-0 overflow-hidden">
                                 <ResultsArea
                                     activeTab={activeTab}
                                     isSandboxMode={isSandboxMode}
@@ -1233,7 +1822,12 @@ export function QueryEditor() {
                             <div className="rounded-2xl border border-border/30 bg-muted/20 p-8 flex flex-col items-center gap-3">
                                 <Terminal className="h-12 w-12 opacity-20" />
                                 <p className="text-sm font-medium text-foreground/80">No query tab open</p>
-                                <Button size="sm" variant="outline" onClick={() => addTab()} className="gap-1.5">
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    onClick={() => handleNewTabInGroup(activeEditorGroup?.id ?? activeEditorGroupId)}
+                                    className="gap-1.5"
+                                >
                                     Open new tab
                                 </Button>
                             </div>
@@ -1377,7 +1971,7 @@ function ResultsArea({
                 <div className="flex-1 flex h-full flex-col items-center justify-center text-muted-foreground">
                     <ShieldCheck className="h-12 w-12 mb-3 opacity-15 text-emerald-400" />
                     <p className="text-sm font-medium">Sandbox mode active</p>
-                    <p className="text-xs mt-1 opacity-60">Write SQL above and press ⌘+Enter. Changes won't be committed until you approve.</p>
+                    <p className="text-xs mt-1 opacity-60">Write SQL above and press ⌘+Enter. Changes won&apos;t be committed until you approve.</p>
                 </div>
             )}
 

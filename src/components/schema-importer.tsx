@@ -35,6 +35,59 @@ import { toast } from "sonner";
 
 type ImportPhase = "idle" | "loading-schemas" | "selecting" | "importing" | "done" | "error";
 
+/** Turn raw backend errors into a user-friendly title and description (shadcn-style). */
+function formatImportError(raw: string): { title: string; description: string; technical?: string } {
+    const normalized = raw.trim();
+    const stripDbPrefix = (s: string) => s.replace(/^db error:?\s*/i, "").trim();
+    const technical = normalized.length > 200 ? normalized : undefined;
+
+    if (/functions?\s+query\s+error/i.test(normalized)) {
+        const schemaMatch = normalized.match(/for\s+['"]?(\w+)['"]?/i);
+        const schema = schemaMatch ? schemaMatch[1] : "the schema";
+        return {
+            title: "Couldn’t load database functions",
+            description: `We couldn’t read functions for schema "${schema}". This often means the database user doesn’t have permission to read the pg_proc catalog, or the connection was interrupted.`,
+            technical: stripDbPrefix(normalized),
+        };
+    }
+    if (/tables?\s+query\s+error/i.test(normalized)) {
+        const schemaMatch = normalized.match(/for\s+['"]?(\w+)['"]?/i);
+        const schema = schemaMatch ? schemaMatch[1] : "the schema";
+        return {
+            title: "Couldn’t load tables",
+            description: `We couldn’t read tables for schema "${schema}". Check that the database is reachable and your user has permission to read the information_schema or pg_catalog.`,
+            technical: stripDbPrefix(normalized),
+        };
+    }
+    if (/connection|timeout|refused|ECONNREFUSED/i.test(normalized)) {
+        return {
+            title: "Connection problem",
+            description: "We couldn’t reach the database. Check that it’s running, the host and port are correct, and nothing is blocking the connection (e.g. firewall).",
+            technical: stripDbPrefix(normalized),
+        };
+    }
+    if (/permission|denied|access/i.test(normalized)) {
+        return {
+            title: "Permission denied",
+            description: "The database user doesn’t have the required permissions to read schema metadata. Grant SELECT on the relevant system catalogs or use a user with broader access.",
+            technical: stripDbPrefix(normalized),
+        };
+    }
+    if (/authentication|password|auth/i.test(normalized)) {
+        return {
+            title: "Authentication failed",
+            description: "The database rejected the credentials. Check the username and password and try again.",
+            technical: stripDbPrefix(normalized),
+        };
+    }
+
+    return {
+        title: "Import failed",
+        description: "Something went wrong while reading the database schema. Try again or check the connection and permissions.",
+        technical: stripDbPrefix(normalized),
+    };
+}
+
 interface SchemaOption {
     name: string;
     tableCount: number;
@@ -199,7 +252,7 @@ function SchemaRow({ schema, onToggle }: { schema: SchemaOption; onToggle: (name
         <div
             className={cn(
                 "flex items-center gap-2.5 px-3 py-2 rounded-md cursor-pointer transition-colors group",
-                schema.selected ? "bg-primary/10 text-foreground" : "hover:bg-accent/40 text-foreground/70"
+                schema.selected ? "bg-white/10 text-white" : "hover:bg-white/10 text-white/70"
             )}
             onClick={() => onToggle(schema.name)}
         >
@@ -209,11 +262,11 @@ function SchemaRow({ schema, onToggle }: { schema: SchemaOption; onToggle: (name
                 className="shrink-0 h-3.5 w-3.5"
                 onClick={(e) => e.stopPropagation()}
             />
-            <Database className={cn("h-3.5 w-3.5 shrink-0", schema.selected ? "text-primary/70" : "text-muted-foreground/40")} />
+            <Database className={cn("h-3.5 w-3.5 shrink-0", schema.selected ? "text-white/80" : "text-white/40")} />
             <span className="text-[12.5px] flex-1 font-mono">{schema.name}</span>
             <Badge
                 variant="outline"
-                className="text-[9px] h-4 px-1.5 text-muted-foreground/40 border-border/25 font-mono"
+                className="text-[9px] h-4 px-1.5 text-white/40 border-white/20 font-mono"
             >
                 {schema.tableCount}t
             </Badge>
@@ -241,18 +294,18 @@ function ResultSummary({ result }: { result: DbImportResult }) {
 
     return (
         <div className="space-y-3">
-            {/* Stat pills */}
+            {/* Stat pills — black dialog: white text */}
             {stats.length > 0 && (
                 <div className="grid grid-cols-2 gap-1.5">
                     {stats.map((stat) => (
                         <div
                             key={stat.label}
-                            className="flex items-center gap-2 rounded-lg border border-border/15 bg-card/30 px-3 py-2"
+                            className="flex items-center gap-2 rounded-lg border border-white/15 bg-white/5 px-3 py-2"
                         >
                             <span className={cn("shrink-0", stat.color)}>{stat.icon}</span>
                             <div>
-                                <p className="text-base font-semibold leading-none tabular-nums">{stat.value}</p>
-                                <p className="text-[10px] text-muted-foreground/50 mt-0.5">{stat.label}</p>
+                                <p className="text-base font-semibold leading-none tabular-nums text-white">{stat.value}</p>
+                                <p className="text-[10px] text-white/50 mt-0.5">{stat.label}</p>
                             </div>
                         </div>
                     ))}
@@ -264,16 +317,16 @@ function ResultSummary({ result }: { result: DbImportResult }) {
                 {result.schemas.map((s) => {
                     const nonPkIdx = s.indexes.filter((i) => !i.is_primary).length;
                     return (
-                        <div key={s.schema} className="rounded-lg border border-border/15 overflow-hidden">
+                        <div key={s.schema} className="rounded-lg border border-white/15 overflow-hidden">
                             <button
-                                className="w-full flex items-center gap-2 px-3 py-2 hover:bg-accent/30 transition-colors"
+                                className="w-full flex items-center gap-2 px-3 py-2 hover:bg-white/10 transition-colors text-left"
                                 onClick={() => toggle(s.schema)}
                             >
                                 {expanded.has(s.schema)
-                                    ? <ChevronDown className="h-3 w-3 text-muted-foreground/40 shrink-0" />
-                                    : <ChevronRight className="h-3 w-3 text-muted-foreground/40 shrink-0" />}
-                                <Database className="h-3.5 w-3.5 text-muted-foreground/40 shrink-0" />
-                                <span className="font-mono text-[12px] text-foreground/80 flex-1 text-left">{s.schema}</span>
+                                    ? <ChevronDown className="h-3 w-3 text-white/40 shrink-0" />
+                                    : <ChevronRight className="h-3 w-3 text-white/40 shrink-0" />}
+                                <Database className="h-3.5 w-3.5 text-white/40 shrink-0" />
+                                <span className="font-mono text-[12px] text-white/80 flex-1">{s.schema}</span>
                                 <div className="flex gap-1 shrink-0">
                                     {s.tables.length > 0 && <Badge variant="outline" className="text-[9px] h-4 px-1 text-sky-400 border-sky-400/20">{s.tables.length}T</Badge>}
                                     {s.views.length > 0 && <Badge variant="outline" className="text-[9px] h-4 px-1 text-violet-400 border-violet-400/20">{s.views.length}V</Badge>}
@@ -283,7 +336,7 @@ function ResultSummary({ result }: { result: DbImportResult }) {
                             </button>
 
                             {expanded.has(s.schema) && s.tables.length > 0 && (
-                                <div className="px-3 pb-2 pt-1 bg-background/30 space-y-px">
+                                <div className="px-3 pb-2 pt-1 bg-white/5 space-y-px">
                                     {s.tables.map((t) => {
                                         const rows = typeof t.estimated_rows === "number" && t.estimated_rows > 0
                                             ? t.estimated_rows.toLocaleString()
@@ -296,8 +349,8 @@ function ResultSummary({ result }: { result: DbImportResult }) {
                                                     <path d="M3 5.5v5c0 1 2.24 1.8 5 1.8s5-.8 5-1.8v-5" stroke="#38bdf8" strokeWidth="1.1" strokeLinecap="round" />
                                                     <path d="M3 8c0 1 2.24 1.8 5 1.8s5-.8 5-1.8" stroke="#38bdf8" strokeWidth="1.1" strokeLinecap="round" />
                                                 </svg>
-                                                <span className="font-mono text-[11px] text-foreground/70 flex-1 truncate">{t.name}</span>
-                                                {rows && <span className="text-[9px] text-muted-foreground/30 shrink-0">~{rows}</span>}
+                                                <span className="font-mono text-[11px] text-white/70 flex-1 truncate">{t.name}</span>
+                                                {rows && <span className="text-[9px] text-white/30 shrink-0">~{rows}</span>}
                                             </div>
                                         );
                                     })}
@@ -319,12 +372,12 @@ function CircularProgress({ value, max }: { value: number; max: number }) {
     const progress = max > 0 ? Math.min(value / max, 1) : 0;
     return (
         <svg width="64" height="64" viewBox="0 0 56 56" className="-rotate-90">
-            <circle cx="28" cy="28" r={r} fill="none" stroke="currentColor" strokeWidth="3" className="text-border/20" />
+            <circle cx="28" cy="28" r={r} fill="none" stroke="currentColor" strokeWidth="3" className="text-white/20" />
             <circle
                 cx="28" cy="28" r={r} fill="none" stroke="currentColor" strokeWidth="3"
                 strokeDasharray={circ}
                 strokeDashoffset={circ * (1 - progress)}
-                className="text-primary transition-[stroke-dashoffset] duration-500 ease-out"
+                className="text-white/70 transition-[stroke-dashoffset] duration-500 ease-out"
                 strokeLinecap="round"
             />
         </svg>
@@ -451,19 +504,21 @@ export function SchemaImporter({ open, onClose, connectionId, databaseName }: Sc
         onClose();
     };
 
+    const errorFormatted = error ? formatImportError(error) : null;
+
     return (
         <Dialog open={open} onOpenChange={(v) => { if (!v) handleClose(); }}>
-            <DialogContent className="max-w-[480px] p-0 gap-0 overflow-hidden border-border/25 bg-[#1a1a2e]/95 backdrop-blur-sm shadow-2xl">
-                {/* Header */}
-                <DialogHeader className="px-5 py-4 border-b border-border/15 flex-row items-center gap-3 space-y-0">
-                    <div className="h-8 w-8 rounded-lg bg-primary/15 flex items-center justify-center shrink-0">
-                        <Download className="h-4 w-4 text-primary" />
+            <DialogContent className="max-w-[480px] p-0 gap-0 overflow-hidden border border-white/10 bg-black text-white shadow-2xl">
+                {/* Header — shadcn-style: bg black, text white */}
+                <DialogHeader className="px-5 py-4 border-b border-white/10 flex-row items-center gap-3 space-y-0">
+                    <div className="h-8 w-8 rounded-lg bg-white/10 flex items-center justify-center shrink-0">
+                        <Download className="h-4 w-4 text-white" />
                     </div>
                     <div className="flex-1 min-w-0">
-                        <DialogTitle className="text-[13px] font-semibold text-foreground">Import Database Schema</DialogTitle>
-                        <p className="text-[10.5px] text-muted-foreground/50 mt-0.5 font-mono truncate">{databaseName}</p>
+                        <DialogTitle className="text-[13px] font-semibold text-white">Import Database Schema</DialogTitle>
+                        <p className="text-[10.5px] text-white/50 mt-0.5 font-mono truncate">{databaseName}</p>
                     </div>
-                    <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-muted-foreground/40 hover:text-foreground" onClick={handleClose}>
+                    <Button variant="ghost" size="icon" className="h-6 w-6 shrink-0 text-white/50 hover:text-white hover:bg-white/10" onClick={handleClose}>
                         <X className="h-3.5 w-3.5" />
                     </Button>
                 </DialogHeader>
@@ -474,8 +529,8 @@ export function SchemaImporter({ open, onClose, connectionId, databaseName }: Sc
                     {/* Loading */}
                     {phase === "loading-schemas" && (
                         <div className="flex flex-col items-center justify-center py-14 gap-3 text-center">
-                            <Loader2 className="h-6 w-6 animate-spin text-primary/50" />
-                            <p className="text-[12px] text-muted-foreground/50">Fetching schemas…</p>
+                            <Loader2 className="h-6 w-6 animate-spin text-white/50" />
+                            <p className="text-[12px] text-white/50">Fetching schemas…</p>
                         </div>
                     )}
 
@@ -483,14 +538,14 @@ export function SchemaImporter({ open, onClose, connectionId, databaseName }: Sc
                     {phase === "selecting" && (
                         <>
                             <div className="px-5 pt-4 pb-2 shrink-0 space-y-3">
-                                <p className="text-[11.5px] text-muted-foreground/60 leading-relaxed">
+                                <p className="text-[11.5px] text-white/60 leading-relaxed">
                                     Select schemas to import. Each schema becomes a folder with
-                                    <span className="text-foreground/70"> tables</span>,
-                                    <span className="text-foreground/70"> views</span>,
-                                    <span className="text-foreground/70"> functions</span>, indexes, and more.
+                                    <span className="text-white/80"> tables</span>,
+                                    <span className="text-white/80"> views</span>,
+                                    <span className="text-white/80"> functions</span>, indexes, and more.
                                 </p>
                                 <button
-                                    className="flex items-center gap-2 text-[11px] text-muted-foreground/50 hover:text-foreground/80 transition-colors"
+                                    className="flex items-center gap-2 text-[11px] text-white/50 hover:text-white/80 transition-colors"
                                     onClick={toggleAll}
                                 >
                                     <Checkbox
@@ -509,7 +564,7 @@ export function SchemaImporter({ open, onClose, connectionId, databaseName }: Sc
                                         <SchemaRow key={s.name} schema={s} onToggle={toggleSchema} />
                                     ))}
                                     {schemas.length === 0 && (
-                                        <div className="text-center py-8 text-[12px] text-muted-foreground/35">
+                                        <div className="text-center py-8 text-[12px] text-white/35">
                                             No schemas found
                                         </div>
                                     )}
@@ -523,17 +578,17 @@ export function SchemaImporter({ open, onClose, connectionId, databaseName }: Sc
                         <div className="flex flex-col items-center justify-center py-12 gap-5 px-8 text-center">
                             <div className="relative h-16 w-16 flex items-center justify-center">
                                 <CircularProgress value={progress.current} max={progress.total} />
-                                <Database className="absolute h-5 w-5 text-primary/60" />
+                                <Database className="absolute h-5 w-5 text-white/60" />
                             </div>
                             <div className="space-y-1.5 w-full">
-                                <p className="text-[12.5px] font-medium text-foreground/90">{progress.message}</p>
-                                <p className="text-[10.5px] text-muted-foreground/40 font-mono">
+                                <p className="text-[12.5px] font-medium text-white/90">{progress.message}</p>
+                                <p className="text-[10.5px] text-white/40 font-mono">
                                     {progress.current} / {progress.total} schemas
                                 </p>
                             </div>
-                            <div className="w-full bg-border/15 rounded-full h-1 overflow-hidden">
+                            <div className="w-full bg-white/15 rounded-full h-1 overflow-hidden">
                                 <div
-                                    className="h-full bg-primary rounded-full transition-[width] duration-500 ease-out"
+                                    className="h-full bg-white/60 rounded-full transition-[width] duration-500 ease-out"
                                     style={{ width: `${(progress.current / Math.max(progress.total, 1)) * 100}%` }}
                                 />
                             </div>
@@ -544,12 +599,12 @@ export function SchemaImporter({ open, onClose, connectionId, databaseName }: Sc
                     {phase === "done" && importResult && (
                         <div className="flex flex-col gap-3 px-5 py-4">
                             <div className="flex items-center gap-2.5">
-                                <div className="h-7 w-7 rounded-full bg-emerald-500/15 flex items-center justify-center shrink-0">
-                                    <CheckCircle2 className="h-4 w-4 text-emerald-500" />
+                                <div className="h-7 w-7 rounded-full bg-emerald-500/20 flex items-center justify-center shrink-0">
+                                    <CheckCircle2 className="h-4 w-4 text-emerald-400" />
                                 </div>
                                 <div>
-                                    <p className="text-[12.5px] font-semibold text-foreground">Import complete</p>
-                                    <p className="text-[10.5px] text-muted-foreground/50">
+                                    <p className="text-[12.5px] font-semibold text-white">Import complete</p>
+                                    <p className="text-[10.5px] text-white/50">
                                         Files are now in the Explorer sidebar
                                     </p>
                                 </div>
@@ -560,31 +615,50 @@ export function SchemaImporter({ open, onClose, connectionId, databaseName }: Sc
                         </div>
                     )}
 
-                    {/* Error */}
-                    {phase === "error" && (
+                    {/* Error — user-friendly message + black bg / white text */}
+                    {phase === "error" && errorFormatted && (
                         <div className="flex flex-col items-center justify-center py-10 gap-4 px-6 text-center">
-                            <div className="h-10 w-10 rounded-full bg-destructive/10 flex items-center justify-center">
-                                <AlertCircle className="h-5 w-5 text-destructive" />
+                            <div className="h-10 w-10 rounded-full bg-red-500/20 flex items-center justify-center border border-red-500/30">
+                                <AlertCircle className="h-5 w-5 text-red-400" />
                             </div>
-                            <div className="space-y-1">
-                                <p className="text-[12.5px] font-medium text-foreground">Import failed</p>
-                                <p className="text-[10.5px] text-muted-foreground/55 font-mono break-all max-w-sm">{error}</p>
+                            <div className="space-y-2 max-w-sm">
+                                <p className="text-[13px] font-semibold text-white">{errorFormatted.title}</p>
+                                <p className="text-[12px] text-white/70 leading-relaxed">{errorFormatted.description}</p>
+                                {errorFormatted.technical && (
+                                    <details className="mt-2 text-left">
+                                        <summary className="text-[11px] text-white/50 cursor-pointer hover:text-white/70">
+                                            Technical details
+                                        </summary>
+                                        <pre className="mt-1.5 p-2.5 rounded-md bg-white/5 border border-white/10 text-[10px] text-white/60 font-mono break-all overflow-x-auto">
+                                            {errorFormatted.technical}
+                                        </pre>
+                                    </details>
+                                )}
                             </div>
-                            <Button
-                                size="sm"
-                                variant="outline"
-                                className="gap-1.5 h-7 text-xs border-border/30"
-                                onClick={() => { setPhase("loading-schemas"); loadSchemas(); }}
-                            >
-                                <RefreshCw className="h-3 w-3" /> Retry
-                            </Button>
+                            <div className="flex gap-2">
+                                <Button
+                                    size="sm"
+                                    className="gap-1.5 h-8 text-xs bg-white text-black hover:bg-white/90 border-0"
+                                    onClick={() => { setPhase("loading-schemas"); loadSchemas(); }}
+                                >
+                                    <RefreshCw className="h-3 w-3" /> Retry
+                                </Button>
+                                <Button
+                                    size="sm"
+                                    variant="outline"
+                                    className="gap-1.5 h-8 text-xs border-white/20 text-white hover:bg-white/10"
+                                    onClick={handleClose}
+                                >
+                                    Cancel
+                                </Button>
+                            </div>
                         </div>
                     )}
                 </div>
 
-                {/* Footer */}
-                <div className="px-5 py-3 border-t border-border/15 flex items-center justify-between shrink-0 bg-background/10">
-                    <span className="text-[10px] text-muted-foreground/30 font-mono">
+                {/* Footer — shadcn-style black/white */}
+                <div className="px-5 py-3 border-t border-white/10 flex items-center justify-between shrink-0 bg-white/5">
+                    <span className="text-[10px] text-white/40 font-mono">
                         {phase === "selecting" && `${selectedCount} of ${schemas.length} selected`}
                         {phase === "done" && importResult && (
                             `${importResult.total_tables}T · ${importResult.total_views}V · ${importResult.total_functions}F`
@@ -595,7 +669,7 @@ export function SchemaImporter({ open, onClose, connectionId, databaseName }: Sc
                             <Button
                                 size="sm"
                                 variant="ghost"
-                                className="h-7 text-xs text-muted-foreground/60"
+                                className="h-7 text-xs text-white/60 hover:text-white hover:bg-white/10"
                                 onClick={handleClose}
                             >
                                 {phase === "done" ? "Close" : "Cancel"}
@@ -604,7 +678,7 @@ export function SchemaImporter({ open, onClose, connectionId, databaseName }: Sc
                         {phase === "selecting" && (
                             <Button
                                 size="sm"
-                                className="h-7 text-xs gap-1.5"
+                                className="h-7 text-xs gap-1.5 bg-white text-black hover:bg-white/90 border-0"
                                 onClick={handleImport}
                                 disabled={selectedCount === 0}
                             >
@@ -613,7 +687,7 @@ export function SchemaImporter({ open, onClose, connectionId, databaseName }: Sc
                             </Button>
                         )}
                         {phase === "done" && (
-                            <Button size="sm" className="h-7 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-500" onClick={handleClose}>
+                            <Button size="sm" className="h-7 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-500 text-white border-0" onClick={handleClose}>
                                 <CheckCircle2 className="h-3.5 w-3.5" />
                                 Done
                             </Button>

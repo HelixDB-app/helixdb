@@ -12,6 +12,7 @@ export interface QueryTabBarProps {
     onSelectTab: (id: string) => void;
     onCloseTab: (id: string) => void;
     onNewTab: () => void;
+    extraActions?: React.ReactNode;
     /** Optional: map from tabId -> fileId to show unsaved dot */
     tabFileMap?: Record<string, string>;
     savedFileSqlMap?: Record<string, string>;
@@ -23,6 +24,7 @@ export function QueryTabBar({
     onSelectTab,
     onCloseTab,
     onNewTab,
+    extraActions,
     tabFileMap = {},
     savedFileSqlMap = {},
 }: QueryTabBarProps) {
@@ -92,7 +94,8 @@ export function QueryTabBar({
             <Tooltip>
                 <TooltipTrigger asChild>
                     <button
-                        onClick={onNewTab}
+                        type="button"
+                        onClick={() => onNewTab()}
                         className="h-9 px-3 flex items-center text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors shrink-0 border-l border-border/20"
                         aria-label="New tab"
                     >
@@ -101,6 +104,8 @@ export function QueryTabBar({
                 </TooltipTrigger>
                 <TooltipContent>New query tab</TooltipContent>
             </Tooltip>
+
+            {extraActions}
         </div>
     );
 }

@@ -205,7 +205,7 @@ export function FunctionEditInline({
             </div>
 
             {/* Editor */}
-            <div className="flex-1 min-h-[240px] rounded-b-md overflow-hidden border border-t-0 border-border/30">
+            <div className="flex-1 min-h-[340px] rounded-b-md overflow-hidden border border-t-0 border-border/30">
                 <MonacoSqlEditor
                     value={definition}
                     onChange={setDefinition}
@@ -214,7 +214,7 @@ export function FunctionEditInline({
                     onFetchColumns={handleFetchColumns}
                     schemaContext={schemaContext}
                     disabled={running}
-                    editorHeight={320}
+                    editorHeight={420}
                     className="h-full border-0"
                 />
             </div>

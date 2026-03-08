@@ -14,11 +14,19 @@ import { QueryTemplates } from "@/components/query-templates";
 import { IdeFileTree } from "@/components/ide-file-tree";
 
 export type SidebarPanel = "files" | "templates" | "history" | "git";
+export type QueryOpenTarget = "active" | "split-left" | "split-right" | "new-split";
+
+export interface QueryLoadSqlOptions {
+    fromFileId?: string;
+    fileName?: string;
+    openTarget?: QueryOpenTarget;
+    sourceGroupId?: string;
+}
 
 export interface QuerySidebarProps {
     activePanel: SidebarPanel;
     history: QueryHistoryEntry[];
-    onLoadSql: (sql: string, fromFileId?: string) => void;
+    onLoadSql: (sql: string, options?: QueryLoadSqlOptions) => void;
     onRerunSql: (sql: string) => void;
     onClearHistory: () => void;
     onDeleteHistoryEntry: (id: string) => void;
@@ -56,7 +64,13 @@ export function QuerySidebar({
                     <IdeFileTree
                         connectionId={connectionId}
                         databaseName={databaseName}
-                        onOpenFile={(content, nodeId, name) => onLoadSql(content, nodeId)}
+                        onOpenFile={(content, nodeId, name, options) =>
+                            onLoadSql(content, {
+                                fromFileId: nodeId,
+                                fileName: name,
+                                openTarget: options?.openTarget ?? "active",
+                            })
+                        }
                     />
                 )}
                 {activePanel === "templates" && (
@@ -120,4 +134,3 @@ export function QueryActivityBar({ activePanel, onToggle }: QueryActivityBarProp
         </div>
     );
 }
-

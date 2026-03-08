@@ -92,6 +92,7 @@ export function MonacoSqlEditor({
     const onFetchColumnsRef = useRef<typeof onFetchColumns>(onFetchColumns);
     const onFormatSqlRef = useRef<typeof onFormatSql>(onFormatSql);
     const onNextActionRef = useRef<typeof onNextAction>(onNextAction);
+    const onChangeRef = useRef(onChange);
     const disposablesRef = useRef<IDisposable[]>([]);
     const lastDropdownRequestRef = useRef<number>(0);
     const lastInlineRequestRef = useRef<number>(0);
@@ -138,6 +139,7 @@ export function MonacoSqlEditor({
     useEffect(() => { onFetchColumnsRef.current = onFetchColumns; }, [onFetchColumns]);
     useEffect(() => { onFormatSqlRef.current = onFormatSql; }, [onFormatSql]);
     useEffect(() => { onNextActionRef.current = onNextAction; }, [onNextAction]);
+    useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
     useEffect(() => {
         aiConfigRef.current = {
             aiAutocompleteEnabled,
@@ -626,6 +628,66 @@ export function MonacoSqlEditor({
                 },
             });
 
+            // Custom paste (Cmd+V / Ctrl+V): read clipboard, insert at cursor, sync to parent.
+            // Ensures paste works even when default paste is blocked (e.g. in Tauri/desktop).
+            editorInstance.addAction({
+                id: "helix-paste",
+                label: "Paste",
+                keybindings: [monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyV],
+                run: async () => {
+                    const model = editorInstance.getModel();
+                    if (!model || disabledRef.current) return;
+                    try {
+                        const text = await navigator.clipboard.readText();
+                        if (text === "") return;
+                        const selection = editorInstance.getSelection();
+                        if (!selection) return;
+                        const edit = {
+                            range: selection,
+                            text,
+                            forceMoveMarkers: true as const,
+                        };
+                        editorInstance.executeEdits("helix-paste", [edit]);
+                        const newValue = model.getValue();
+                        onChangeRef.current(newValue);
+                    } catch {
+                        // Fallback: trigger built-in paste then sync
+                        editorInstance.trigger("keyboard", "editor.action.clipboardPasteAction", null);
+                        queueMicrotask(() => {
+                            const v = model.getValue();
+                            onChangeRef.current(v);
+                        });
+                    }
+                },
+            });
+
+            // Sync to parent after any paste (built-in or custom)
+            if (typeof editorInstance.onDidPaste === "function") {
+                const pasteDisposable = editorInstance.onDidPaste(() => {
+                    const model = editorInstance.getModel();
+                    if (model) {
+                        const v = model.getValue();
+                        queueMicrotask(() => onChangeRef.current(v));
+                    }
+                });
+                disposablesRef.current.push(pasteDisposable);
+            }
+
+            // DOM paste fallback: when paste reaches the editor dom node, sync after
+            const domNode = editorInstance.getDomNode();
+            if (domNode) {
+                const onDomPaste = () => {
+                    queueMicrotask(() => {
+                        const model = editorInstance.getModel();
+                        if (model) onChangeRef.current(model.getValue());
+                    });
+                };
+                domNode.addEventListener("paste", onDomPaste);
+                disposablesRef.current.push({
+                    dispose: () => domNode.removeEventListener("paste", onDomPaste),
+                });
+            }
+
             editorInstance.focus();
         },
         [onExecute, onReview]
@@ -636,8 +698,18 @@ export function MonacoSqlEditor({
             {/* ── Editor ──────────────────────────────────────────────────────── */}
             <div
                 className="relative overflow-hidden rounded-b border border-t-0"
-                style={{ borderColor: "var(--monaco-editor-border, rgba(255,255,255,0.12))" }}
+                style={{ borderColor: "var(--monaco-editor-border, rgba(255,255,255,0.12))", minHeight: editorHeight }}
             >
+                {!value.trim() && !disabled && (
+                    <div
+                        className="absolute left-0 top-0 right-0 bottom-0 flex items-start pt-[52px] pl-[52px] pointer-events-none z-[1]"
+                        aria-hidden
+                    >
+                        <span className="text-[13px] font-mono text-muted-foreground/50">
+                            Type or paste SQL here… (⌘↵ to run)
+                        </span>
+                    </div>
+                )}
                 <Editor
                     height={editorHeight}
                     defaultLanguage="sql"

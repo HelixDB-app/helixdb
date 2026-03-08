@@ -59,7 +59,7 @@ interface QueryState {
     activeTabId: string | null;
     history: QueryHistoryEntry[];
 
-    addTab: (title?: string, sql?: string) => void;
+    addTab: (title?: string, sql?: string) => string;
     removeTab: (tabId: string) => void;
     setActiveTab: (tabId: string) => void;
     updateSql: (tabId: string, sql: string) => void;
@@ -107,6 +107,7 @@ export const useQueryStore = create<QueryState>((set, get) => ({
             tabs: [...state.tabs, newTab],
             activeTabId: id,
         }));
+        return id;
     },
 
     removeTab: (tabId) => {
