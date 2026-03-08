@@ -96,7 +96,11 @@ async fn init_trial_remote(
         .await
         .map_err(|e| format!("Failed to parse trial init response: {e}"))?;
 
-    Ok(evaluate_trial_result(data.trial, data.trial_disabled, data.message))
+    Ok(evaluate_trial_result(
+        data.trial,
+        data.trial_disabled,
+        data.message,
+    ))
 }
 
 /// Call GET /api/trial/status?deviceId=... (lighter, read-only endpoint).
@@ -132,7 +136,11 @@ fn evaluate_trial_result(
         Some(t) => {
             let allowed = t.state == "active" && t.days_remaining > 0;
             let msg = if allowed {
-                format!("Free trial — {} day{} remaining", t.days_remaining, if t.days_remaining == 1 { "" } else { "s" })
+                format!(
+                    "Free trial — {} day{} remaining",
+                    t.days_remaining,
+                    if t.days_remaining == 1 { "" } else { "s" }
+                )
             } else {
                 "Your free trial has expired. Please log in and subscribe to continue.".to_string()
             };
@@ -147,13 +155,16 @@ fn evaluate_trial_result(
             allowed: false,
             trial: None,
             trial_disabled: true,
-            message: message.unwrap_or_else(|| "Free trial is not available. Please log in to continue.".to_string()),
+            message: message.unwrap_or_else(|| {
+                "Free trial is not available. Please log in to continue.".to_string()
+            }),
         },
         None => TrialCheckResult {
             allowed: false,
             trial: None,
             trial_disabled: false,
-            message: message.unwrap_or_else(|| "Unable to determine trial status. Please log in.".to_string()),
+            message: message
+                .unwrap_or_else(|| "Unable to determine trial status. Please log in.".to_string()),
         },
     }
 }
@@ -198,7 +209,10 @@ pub async fn trial_get_status() -> Result<TrialCheckResult, String> {
         format!("Device identification failed: {e}")
     })?;
 
-    log::debug!("[trial] trial_get_status — fingerprint={} (truncated)", &fp[..8]);
+    log::debug!(
+        "[trial] trial_get_status — fingerprint={} (truncated)",
+        &fp[..8]
+    );
 
     get_trial_status_remote(&fp).await
 }
@@ -207,9 +221,7 @@ pub async fn trial_get_status() -> Result<TrialCheckResult, String> {
 /// Call this after the user completes authentication.
 #[tauri::command]
 pub async fn trial_associate_user(user_id: String) -> Result<TrialCheckResult, String> {
-    let fp = get_device_fingerprint().map_err(|e| {
-        format!("Device identification failed: {e}")
-    })?;
+    let fp = get_device_fingerprint().map_err(|e| format!("Device identification failed: {e}"))?;
 
     init_trial_remote(&fp, Some(&user_id)).await
 }

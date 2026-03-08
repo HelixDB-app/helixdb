@@ -30,6 +30,12 @@ if [[ -f "$REPO_ROOT/apple/.env" ]]; then
   source "$REPO_ROOT/apple/.env"
   set +a
 fi
+# Load repo root .env for GITHUB_CLIENT_ID/SECRET (embedded at build time for TestFlight)
+if [[ -f "$REPO_ROOT/.env" ]]; then
+  set -a
+  source "$REPO_ROOT/.env"
+  set +a
+fi
 
 SIGN_ID="${APPLE_SIGNING_IDENTITY:-$SIGNING_IDENTITY}"
 INSTALL_ID="${APPLE_INSTALLER_IDENTITY:-$INSTALLER_IDENTITY}"
@@ -114,11 +120,18 @@ grep -q 'TEAM_ID' "$ENTITLEMENTS" && { echo "ERROR: entitlements still contain l
 trap "rm -f '$ENTITLEMENTS'" EXIT
 echo "Using Team ID: $TEAM_ID"
 
-echo "=== 1. Build (universal macOS for App Store) ==="
+echo "=== 1. Build (macOS for App Store) ==="
+# Build for host arch only to avoid OpenSSL cross-compilation (universal would need x86_64 OpenSSL).
+# GITHUB_CLIENT_ID/SECRET from .env are embedded at compile time so TestFlight build has GitHub integration.
+ARCH=$(uname -m)
+[[ "$ARCH" == "arm64" ]] && TARGET="aarch64-apple-darwin" || TARGET="x86_64-apple-darwin"
+echo "Target: $TARGET"
 unset CI
-cargo tauri build --target universal-apple-darwin
+export GITHUB_CLIENT_ID="${GITHUB_CLIENT_ID:-}"
+export GITHUB_CLIENT_SECRET="${GITHUB_CLIENT_SECRET:-}"
+cargo tauri build --target "$TARGET"
 
-APP_PATH="$REPO_ROOT/src-tauri/target/universal-apple-darwin/release/bundle/macos/$APP_NAME.app"
+APP_PATH="$REPO_ROOT/src-tauri/target/$TARGET/release/bundle/macos/$APP_NAME.app"
 if [[ ! -d "$APP_PATH" ]]; then
   APP_PATH="$REPO_ROOT/src-tauri/target/release/bundle/macos/$APP_NAME.app"
   [[ ! -d "$APP_PATH" ]] && { echo "Build failed: no $APP_NAME.app found"; exit 1; }

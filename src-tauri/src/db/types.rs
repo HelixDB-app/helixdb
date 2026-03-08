@@ -711,3 +711,84 @@ pub struct ExportProgressPayload {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub rows_exported: Option<u64>,
 }
+
+// ── Schema import types ───────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedTable {
+    pub name: String,
+    pub estimated_rows: i64,
+    pub comment: Option<String>,
+    pub ddl: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedView {
+    pub name: String,
+    pub is_materialized: bool,
+    pub ddl: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedIndex {
+    pub name: String,
+    pub table_name: String,
+    pub is_unique: bool,
+    pub is_primary: bool,
+    pub ddl: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedFunction {
+    pub name: String,
+    pub kind: String,
+    pub arguments: String,
+    pub return_type: String,
+    pub ddl: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedTrigger {
+    pub name: String,
+    pub table_name: String,
+    pub ddl: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ImportedSequence {
+    pub name: String,
+    pub ddl: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaImportResult {
+    pub schema: String,
+    pub tables: Vec<ImportedTable>,
+    pub views: Vec<ImportedView>,
+    pub indexes: Vec<ImportedIndex>,
+    pub functions: Vec<ImportedFunction>,
+    pub triggers: Vec<ImportedTrigger>,
+    pub sequences: Vec<ImportedSequence>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DbImportResult {
+    pub database: String,
+    pub schemas: Vec<SchemaImportResult>,
+    pub total_tables: usize,
+    pub total_views: usize,
+    pub total_functions: usize,
+    pub total_indexes: usize,
+    pub total_triggers: usize,
+    pub total_sequences: usize,
+}
+
+/// Progress event for schema import
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaImportProgress {
+    pub phase: String, // "scanning" | "tables" | "views" | "functions" | "indexes" | "triggers" | "sequences" | "done"
+    pub schema: String,
+    pub message: String,
+    pub current: u32,
+    pub total: u32,
+}

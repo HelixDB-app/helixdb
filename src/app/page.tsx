@@ -11,6 +11,7 @@ import { useTrialStore } from "@/stores/trial-store";
 import { authFetchProfile } from "@/lib/tauri";
 import { eventMatchesCombo, formatShortcut } from "@/lib/shortcut-keys";
 import { APP_NAME } from "@/lib/app-config";
+import { invoke } from "@tauri-apps/api/core";
 import dynamic from "next/dynamic";
 import { LandingConnections } from "@/components/landing-connections";
 import { WelcomeScreen } from "@/components/welcome-screen";
@@ -31,6 +32,7 @@ const SessionMonitor = dynamic(() => import("@/components/session-monitor").then
 const IndexBuilder = dynamic(() => import("@/components/index-builder").then((m) => ({ default: m.IndexBuilder })), { ssr: false });
 const SchemaTopology = dynamic(() => import("@/components/schema-topology").then((m) => ({ default: m.SchemaTopology })), { ssr: false });
 const AIChatPanel = dynamic(() => import("@/components/ai-chat-panel").then((m) => ({ default: m.AIChatPanel })), { ssr: false });
+const GitPanel = dynamic(() => import("@/components/git-panel").then((m) => ({ default: m.GitPanel })), { ssr: false });
 import {
     ResizableHandle,
     ResizablePanel,
@@ -48,11 +50,14 @@ import { ConnectionEnvBadge } from "@/components/connection-env-badge";
 import { cn } from "@/lib/utils";
 import {
     Activity,
+    AppWindowMac,
     Layers,
     Network,
     PlugZap,
     RefreshCw,
     Clock3,
+    GitCompare,
+    GitBranch,
     Search,
     Settings,
     ShieldCheck,
@@ -85,7 +90,7 @@ export default function Home() {
         && trialResult !== null
         && !isTrialActive();
     const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-    const [activeView, setActiveView] = useState<"data" | "query" | "sessions" | "indexes" | "topology" | "ai">("data");
+    const [activeView, setActiveView] = useState<"data" | "query" | "sessions" | "indexes" | "topology" | "ai" | "git">("data");
     const [searchOpen, setSearchOpen] = useState(false);
     const [showWelcome, setShowWelcome] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
@@ -143,12 +148,14 @@ export default function Home() {
                 { id: "view_sessions", combo: getCombo("view_sessions") },
                 { id: "view_indexes", combo: getCombo("view_indexes") },
                 { id: "view_topology", combo: getCombo("view_topology") },
+                { id: "view_git", combo: getCombo("view_git") },
                 { id: "view_ai", combo: getCombo("view_ai") },
                 { id: "disconnect", combo: getCombo("disconnect") },
                 { id: "query_history", combo: getCombo("query_history") },
                 { id: "extensions", combo: getCombo("extensions") },
                 { id: "bug_report", combo: getCombo("bug_report") },
                 { id: "connect", combo: getCombo("connect") },
+                { id: "new_window", combo: getCombo("new_window") },
             ];
             for (const { id, combo } of actions) {
                 if (!combo || !eventMatchesCombo(e, combo)) continue;
@@ -183,6 +190,9 @@ export default function Home() {
                     case "view_ai":
                         if (isConnected) setActiveView("ai");
                         break;
+                    case "view_git":
+                        if (isConnected) setActiveView("git");
+                        break;
                     case "disconnect":
                         if (isConnected && connectionId) disconnect(connectionId);
                         break;
@@ -197,6 +207,9 @@ export default function Home() {
                         break;
                     case "connect":
                         if (!isConnected) setShowConnectionDialog(true);
+                        break;
+                    case "new_window":
+                        invoke("open_new_window");
                         break;
                     default:
                         break;
@@ -329,6 +342,14 @@ export default function Home() {
                                     <Sparkles className="h-3 w-3" />
                                     <span>AI</span>
                                 </TabsTrigger>
+                                <TabsTrigger
+                                    value="git"
+                                    className="h-6 gap-1.5 px-2 text-[10.5px]"
+                                    title={sc("view_git") ? `Git (${sc("view_git")})` : "Git"}
+                                >
+                                    <GitBranch className="h-3 w-3" />
+                                    <span className="hidden sm:inline">Git</span>
+                                </TabsTrigger>
                             </TabsList>
                         </Tabs>
                     )}
@@ -442,6 +463,43 @@ export default function Home() {
                         </TooltipContent>
                     </Tooltip>
 
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                asChild
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
+                            >
+                                <Link href="/migration-studio">
+                                    <GitCompare className="h-3.5 w-3.5" />
+                                    <span className="hidden lg:inline">Migrate</span>
+                                </Link>
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                            Migration Studio
+                        </TooltipContent>
+                    </Tooltip>
+
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
+                                onClick={() => invoke("open_new_window")}
+                                aria-label="Open new window"
+                            >
+                                <AppWindowMac className="h-3.5 w-3.5" />
+                                <span className="hidden lg:inline">New</span>
+                            </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                            New Window{sc("new_window") && ` (${sc("new_window")})`}
+                        </TooltipContent>
+                    </Tooltip>
+
                     <div className="h-4 w-px bg-border/30 mx-0.5" />
 
                     {/* Connection + Settings */}
@@ -549,6 +607,7 @@ export default function Home() {
                                     <SchemaTopology onNavigateToTable={() => setActiveView("data")} />
                                 )}
                                 {activeView === "ai" && <AIChatPanel />}
+                                {activeView === "git" && <GitPanel />}
                             </div>
                         </ResizablePanel>
                     </ResizablePanelGroup>

@@ -7,10 +7,13 @@ import { useSandboxStore } from "@/stores/sandbox-store";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useNotesStore } from "@/stores/notes-store";
 import { useSettingsStore } from "@/stores/settings-store";
+import { useQueryFilesStore } from "@/stores/query-files-store";
+import { useIdeFsStore } from "@/stores/ide-fs-store";
 import { useShallow } from "zustand/react/shallow";
 import { formatCellValue } from "@/lib/types";
 import type { QueryResult } from "@/lib/types";
 import { dbGetColumns, dbExplainQuery, dbExecuteQuery } from "@/lib/tauri";
+import type { SandboxExecuteResult } from "@/lib/tauri";
 import { NotesPanel } from "@/components/notes-panel";
 import { QueryPlanViewer } from "@/components/query-plan-viewer";
 import { SandboxDiffViewer } from "@/components/sandbox-diff-viewer";
@@ -31,6 +34,11 @@ import {
     shouldRequireProductionGuard,
     type SqlRiskClassification,
 } from "@/lib/sql-risk-guard";
+import { QueryErrorPanel } from "@/components/query-error-panel";
+import { QueryHistorySidebar } from "@/components/query-history-sidebar";
+import { QueryTabBar } from "@/components/query-tab-bar";
+import { QueryToolbar } from "@/components/query-toolbar";
+import { QuerySidebar, QueryActivityBar, type SidebarPanel } from "@/components/query-sidebar";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -49,6 +57,11 @@ import {
     TooltipTrigger,
 } from "@/components/ui/tooltip";
 import {
+    Popover,
+    PopoverContent,
+    PopoverTrigger,
+} from "@/components/ui/popover";
+import {
     DropdownMenu,
     DropdownMenuContent,
     DropdownMenuItem,
@@ -60,49 +73,35 @@ import {
     ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import {
-    Play,
-    Plus,
-    X,
-    Loader2,
-    Clock,
     AlertCircle,
-    CheckCircle2,
-    Terminal,
-    Copy,
-    Lightbulb,
-    History,
-    Trash2,
-    Download,
-    FileText,
     Braces,
     ChevronDown,
-    AlignLeft,
-    Search,
+    CheckCircle2,
+    Clock,
+    Copy,
+    Database,
+    Download,
+    FileText,
     GitBranch,
-    Shield,
-    ShieldCheck,
     LayoutDashboard,
-    StickyNote,
+    Loader2,
     Maximize2,
     Minimize2,
-    Sparkles,
+    Play,
+    Shield,
+    ShieldCheck,
+    StickyNote,
+    Terminal,
+    X,
 } from "lucide-react";
-import { explainQueryErrorWithAI } from "@/lib/query-error-ai";
-import { AIError } from "@/lib/ai-chat-engine";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import dynamic from "next/dynamic";
 
-// ── Helpers ────────────────────────────────────────────────────────────────
+const GitPanel = dynamic(() => import("@/components/git-panel").then((m) => ({ default: m.GitPanel })), { ssr: false });
 
-function timeAgo(ms: number): string {
-    const sec = Math.floor((Date.now() - ms) / 1000);
-    if (sec < 60) return `${sec}s ago`;
-    if (sec < 3600) return `${Math.floor(sec / 60)}m ago`;
-    if (sec < 86400) return `${Math.floor(sec / 3600)}h ago`;
-    return new Date(ms).toLocaleDateString();
-}
+// ── Helpers ─────────────────────────────────────────────────────────────────
 
-/** True when backend returned a single "affected_rows" column (INSERT/UPDATE/DELETE). */
 function isCommandResult(result: QueryResult): boolean {
     return (
         result.columns.length === 1 &&
@@ -111,7 +110,6 @@ function isCommandResult(result: QueryResult): boolean {
     );
 }
 
-/** True when backend ran multiple statements (DDL script); column name "statements". */
 function isMultiStatementResult(result: QueryResult): boolean {
     return (
         result.columns.length === 1 &&
@@ -120,7 +118,6 @@ function isMultiStatementResult(result: QueryResult): boolean {
     );
 }
 
-/** Display count: for command results use the cell value; for SELECT use row_count. */
 function getDisplayCount(result: QueryResult): number {
     if (isCommandResult(result) || isMultiStatementResult(result)) {
         const cell = result.rows[0]?.[0];
@@ -129,7 +126,6 @@ function getDisplayCount(result: QueryResult): number {
     return result.row_count;
 }
 
-/** Human-readable row summary: "2 rows affected" vs "3 rows returned" vs "4 statements executed". */
 function getRowCountLabel(result: QueryResult): string {
     const n = getDisplayCount(result);
     if (isMultiStatementResult(result)) {
@@ -144,11 +140,7 @@ function exportResultToCSV(result: QueryResult): string {
     const escapeCSV = (v: string) => `"${v.replace(/"/g, '""')}"`;
     const header = result.columns.map((c) => escapeCSV(c.name)).join(",");
     const body = result.rows
-        .map((row) =>
-            row
-                .map((cell) => (cell.type === "Null" ? "" : escapeCSV(formatCellValue(cell))))
-                .join(",")
-        )
+        .map((row) => row.map((cell) => (cell.type === "Null" ? "" : escapeCSV(formatCellValue(cell)))).join(","))
         .join("\n");
     return header + "\n" + body;
 }
@@ -207,474 +199,7 @@ function getCachedColumns(cache: Record<string, string[]>, schema: string, table
     return cache[table.toLowerCase()] ?? [];
 }
 
-// ── Error panel ────────────────────────────────────────────────────────────
-
-/** Extract quoted or parenthesized name from messages like: function "foo"(date) or function foo(integer) */
-function extractObjectName(raw: string, prefix: string): string | null {
-    const lower = raw.toLowerCase();
-    const i = lower.indexOf(prefix);
-    if (i === -1) return null;
-    const after = raw.slice(i + prefix.length).trim();
-    const match = after.match(/^["']?([a-z_][a-z0-9_]*)/i) || after.match(/^([a-z_][a-z0-9_]*)\s*\(/i);
-    return match ? match[1] : null;
-}
-
-function explainQueryError(raw: string): { summary: string; fix: string } | null {
-    const lower = raw.toLowerCase();
-    // Function missing (check before generic "does not exist")
-    if (lower.includes("function") && (lower.includes("does not exist") || lower.includes("no function matches"))) {
-        const name = extractObjectName(raw, "function");
-        const withName = name ? ` The function \`${name}\` is not defined or has different argument types.` : "";
-        let fix = "Create the function with CREATE FUNCTION, fix the name/schema, or call an existing overload.";
-        if (lower.includes("argument type") || lower.includes("type cast") || lower.includes("explicit type")) {
-            fix = "No function matches the name and argument types. Create the function with the right signature, or add explicit casts (e.g. mycol::date).";
-        }
-        return {
-            summary: `A function you're calling doesn't exist in this database.${withName}`,
-            fix,
-        };
-    }
-    if (lower.includes("column") && (lower.includes("does not exist") || lower.includes("undefined"))) {
-        return {
-            summary: "A column in your query doesn't exist on the table.",
-            fix: "Check spelling and that the column exists. Use the correct column names from the table definition.",
-        };
-    }
-    if (lower.includes("relation") && lower.includes("does not exist") || (lower.includes("does not exist") && !lower.includes("schema"))) {
-        return {
-            summary: "The table or view you're referring to doesn't exist.",
-            fix: "Check the table name and schema (e.g. public.mytable). Use CREATE TABLE or fix the typo.",
-        };
-    }
-    if (lower.includes("schema") && lower.includes("does not exist")) {
-        return {
-            summary: "The schema doesn't exist.",
-            fix: "Check the schema name (e.g. public). Use CREATE SCHEMA or fix the typo.",
-        };
-    }
-    if (lower.includes("syntax error") || lower.includes("parse error")) {
-        return {
-            summary: "PostgreSQL couldn't parse your SQL.",
-            fix: "Check brackets, commas, quotes, and keywords. Common issues: missing comma, unclosed quote, wrong keyword order.",
-        };
-    }
-    if (lower.includes("permission denied") || lower.includes("access denied")) {
-        return {
-            summary: "Your database user doesn't have permission for this operation.",
-            fix: "Use a user with the right privileges, or GRANT the needed permissions.",
-        };
-    }
-    if (lower.includes("duplicate key") || lower.includes("unique constraint")) {
-        return {
-            summary: "A unique or primary key constraint would be violated.",
-            fix: "Change the value for the unique/PK column so it doesn't match an existing row.",
-        };
-    }
-    if (lower.includes("foreign key") || lower.includes("violates foreign key")) {
-        return {
-            summary: "A foreign key constraint failed.",
-            fix: "Insert the referenced row first, or use a valid foreign key value.",
-        };
-    }
-    if (lower.includes("null value") && lower.includes("violates not-null")) {
-        return {
-            summary: "A NOT NULL column received a NULL value.",
-            fix: "Provide a non-NULL value, or alter the column to allow NULL.",
-        };
-    }
-    if (lower.includes("connection") || lower.includes("pool")) {
-        return {
-            summary: "The connection to the database was lost.",
-            fix: "Check your network and DB server. Try reconnecting.",
-        };
-    }
-    return null;
-}
-
-interface QueryErrorPanelProps {
-    message: string;
-    sql?: string;
-    schemaContextForAi?: string;
-}
-
-function QueryErrorPanel({ message, sql, schemaContextForAi }: QueryErrorPanelProps) {
-    const [copied, setCopied] = useState(false);
-    const [showTechnical, setShowTechnical] = useState(false);
-    const [aiExplanation, setAiExplanation] = useState<string | null>(null);
-    const [aiLoading, setAiLoading] = useState(false);
-    const [aiError, setAiError] = useState<string | null>(null);
-    const explanation = explainQueryError(message);
-    const shortMessage = message.split(/\n/)[0]?.trim() || message;
-    const canUseAi = Boolean(sql?.trim() && schemaContextForAi?.trim());
-
-    const handleAiExplain = useCallback(async () => {
-        if (!sql?.trim() || !schemaContextForAi?.trim()) return;
-        setAiLoading(true);
-        setAiError(null);
-        setAiExplanation(null);
-        try {
-            const result = await explainQueryErrorWithAI(sql, message, schemaContextForAi);
-            setAiExplanation(result);
-        } catch (err) {
-            const msg = err instanceof AIError ? err.userMessage : err instanceof Error ? err.message : "Could not get AI explanation.";
-            setAiError(msg);
-        } finally {
-            setAiLoading(false);
-        }
-    }, [sql, message, schemaContextForAi]);
-
-    return (
-        <div className="flex flex-col h-full overflow-hidden">
-            <div className="p-4 space-y-3">
-                <div className="rounded-xl border border-destructive/30 bg-destructive/5 overflow-hidden">
-                    <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-destructive/10">
-                        <div className="flex items-center gap-2 min-w-0">
-                            <AlertCircle className="h-5 w-5 text-destructive shrink-0" />
-                            <div className="min-w-0">
-                                <p className="text-sm font-semibold text-destructive">Query failed</p>
-                                {!explanation && (
-                                    <p className="text-xs text-muted-foreground truncate mt-0.5" title={shortMessage}>
-                                        {shortMessage}
-                                    </p>
-                                )}
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                            {canUseAi && (
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="h-8 gap-1.5 text-xs border-primary/30 text-primary hover:bg-primary/10"
-                                    onClick={handleAiExplain}
-                                    disabled={aiLoading}
-                                >
-                                    {aiLoading ? (
-                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                    ) : (
-                                        <Sparkles className="h-3.5 w-3.5" />
-                                    )}
-                                    AI Explain
-                                </Button>
-                            )}
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-8 gap-1.5 text-xs"
-                                onClick={() => {
-                                    navigator.clipboard.writeText(message);
-                                    setCopied(true);
-                                    setTimeout(() => setCopied(false), 2000);
-                                }}
-                            >
-                                {copied ? (
-                                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
-                                ) : (
-                                    <Copy className="h-3.5 w-3.5" />
-                                )}
-                                {copied ? "Copied" : "Copy"}
-                            </Button>
-                        </div>
-                    </div>
-
-                    {explanation ? (
-                        <div className="px-4 py-3 space-y-3">
-                            <p className="text-sm text-foreground/95">{explanation.summary}</p>
-                            <div className="flex items-start gap-2 rounded-lg bg-muted/40 p-2.5">
-                                <Lightbulb className="h-4 w-4 text-amber-500/80 mt-0.5 shrink-0" />
-                                <div className="text-xs">
-                                    <span className="font-medium text-foreground/90">How to fix: </span>
-                                    <span className="text-muted-foreground">{explanation.fix}</span>
-                                </div>
-                            </div>
-                        </div>
-                    ) : null}
-
-                    {(aiExplanation || aiError) && (
-                        <div className="px-4 py-3 border-t border-destructive/10 space-y-2">
-                            <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/80">
-                                AI analysis
-                            </p>
-                            {aiError && (
-                                <p className="text-xs text-destructive/90">{aiError}</p>
-                            )}
-                            {aiExplanation && (
-                                <ScrollArea className="max-h-56 rounded-lg border border-border/30 bg-background/90 p-3">
-                                    <pre className="text-xs text-foreground/90 whitespace-pre-wrap break-words font-sans">
-                                        {aiExplanation}
-                                    </pre>
-                                </ScrollArea>
-                            )}
-                        </div>
-                    )}
-
-                    <div className="border-t border-destructive/10">
-                        <button
-                            type="button"
-                            onClick={() => setShowTechnical((v) => !v)}
-                            className="flex items-center gap-2 w-full px-4 py-2.5 text-left text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
-                        >
-                            <ChevronDown
-                                className={`h-3.5 w-3.5 shrink-0 transition-transform ${showTechnical ? "rotate-180" : ""}`}
-                            />
-                            {showTechnical ? "Hide" : "Show"} technical details
-                        </button>
-                        {showTechnical && (
-                            <div className="px-4 pb-4 pt-0">
-                                <ScrollArea className="max-h-48 rounded-lg border border-border/30 bg-background/90 p-3">
-                                    <pre className="text-xs font-mono whitespace-pre-wrap break-all text-foreground/80">
-                                        {message}
-                                    </pre>
-                                </ScrollArea>
-                            </div>
-                        )}
-                    </div>
-                </div>
-            </div>
-        </div>
-    );
-}
-
-// ── History panel ──────────────────────────────────────────────────────────
-
-function HistoryPanel({
-    history,
-    onLoadSql,
-    onClearHistory,
-    onDeleteEntry,
-    onRerunSql,
-}: {
-    history: QueryHistoryEntry[];
-    onLoadSql: (sql: string) => void;
-    onClearHistory: () => void;
-    onDeleteEntry: (id: string) => void;
-    onRerunSql: (sql: string) => void;
-}) {
-    const [search, setSearch] = useState("");
-    const [filter, setFilter] = useState<"all" | "success" | "error">("all");
-
-    const filtered = useMemo(() => {
-        return history.filter((e) => {
-            const matchesSearch =
-                !search || e.sql.toLowerCase().includes(search.toLowerCase());
-            const matchesFilter =
-                filter === "all" ||
-                (filter === "success" && !e.isError) ||
-                (filter === "error" && e.isError);
-            return matchesSearch && matchesFilter;
-        });
-    }, [history, search, filter]);
-
-    return (
-        <div className="flex flex-col h-full border-t border-border/20 bg-card/10">
-            {/* Header */}
-            <div className="flex items-center justify-between px-4 py-2 border-b border-border/20 shrink-0">
-                <div className="flex items-center gap-2">
-                    <History className="h-3.5 w-3.5 text-muted-foreground/60" />
-                    <span className="text-xs font-medium text-muted-foreground/80">
-                        Query History
-                    </span>
-                    <span className="text-[10px] text-muted-foreground/40 font-mono">
-                        ({filtered.length}/{history.length})
-                    </span>
-                </div>
-                {history.length > 0 && (
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-6 px-2 text-[10px] gap-1 text-muted-foreground hover:text-destructive"
-                                onClick={onClearHistory}
-                            >
-                                <Trash2 className="h-3 w-3" />
-                                Clear all
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Clear all query history</TooltipContent>
-                    </Tooltip>
-                )}
-            </div>
-
-            {/* Search + filter bar */}
-            {history.length > 0 && (
-                <div className="flex items-center gap-2 px-3 py-1.5 border-b border-border/10 shrink-0">
-                    <div className="relative flex-1">
-                        <Search className="absolute left-2 top-1/2 -translate-y-1/2 h-3 w-3 text-muted-foreground/40 pointer-events-none" />
-                        <input
-                            type="text"
-                            value={search}
-                            onChange={(e) => setSearch(e.target.value)}
-                            placeholder="Search queries…"
-                            className="w-full pl-6 pr-2 py-1 text-[11px] bg-muted/20 border border-border/20 rounded text-foreground/80 placeholder:text-muted-foreground/30 focus:outline-none focus:border-border/50 focus:bg-muted/30 transition-colors"
-                        />
-                    </div>
-                    <div className="flex items-center gap-0.5">
-                        {(["all", "success", "error"] as const).map((f) => (
-                            <button
-                                key={f}
-                                onClick={() => setFilter(f)}
-                                className={cn(
-                                    "px-2 py-0.5 text-[10px] rounded transition-colors capitalize",
-                                    filter === f
-                                        ? f === "error"
-                                            ? "bg-destructive/15 text-destructive border border-destructive/20"
-                                            : f === "success"
-                                                ? "bg-emerald-500/15 text-emerald-400 border border-emerald-500/20"
-                                                : "bg-muted/50 text-foreground/70 border border-border/30"
-                                        : "text-muted-foreground/50 hover:text-muted-foreground border border-transparent"
-                                )}
-                            >
-                                {f}
-                            </button>
-                        ))}
-                    </div>
-                </div>
-            )}
-
-            {/* List — min-h-0 so flex child can shrink and scroll */}
-            <ScrollArea className="flex-1 min-h-0 overflow-hidden overscroll-contain">
-                {history.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-10 text-center">
-                        <History className="h-8 w-8 text-muted-foreground/20 mb-2" />
-                        <p className="text-xs text-muted-foreground/40">No queries yet</p>
-                        <p className="text-[10px] text-muted-foreground/30 mt-0.5">
-                            Executed queries appear here
-                        </p>
-                    </div>
-                ) : filtered.length === 0 ? (
-                    <div className="flex flex-col items-center justify-center py-10 text-center">
-                        <Search className="h-6 w-6 text-muted-foreground/20 mb-2" />
-                        <p className="text-xs text-muted-foreground/40">No matches</p>
-                    </div>
-                ) : (
-                    <div className="divide-y divide-border/10">
-                        {filtered.map((entry) => (
-                            <div
-                                key={entry.id}
-                                className="group flex items-start gap-3 px-4 py-2.5 hover:bg-accent/20 transition-colors cursor-pointer"
-                                onClick={() => onLoadSql(entry.sql)}
-                                title="Click to load into editor"
-                            >
-                                {/* Status dot */}
-                                <div
-                                    className={cn(
-                                        "mt-1.5 h-1.5 w-1.5 rounded-full shrink-0",
-                                        entry.isError ? "bg-destructive" : "bg-emerald-500"
-                                    )}
-                                />
-
-                                {/* SQL preview */}
-                                <div className="flex-1 min-w-0">
-                                    <p className="text-[11px] font-mono text-foreground/80 truncate leading-relaxed">
-                                        {entry.sql.replace(/\s+/g, " ").slice(0, 120)}
-                                        {entry.sql.length > 120 ? "…" : ""}
-                                    </p>
-                                    <div className="flex items-center gap-2 mt-1 flex-wrap">
-                                        <span className="text-[10px] text-muted-foreground/40">
-                                            {timeAgo(entry.executedAt)}
-                                        </span>
-                                        {entry.databaseName && (
-                                            <>
-                                                <span className="text-muted-foreground/20">·</span>
-                                                <span className="text-[10px] font-mono text-muted-foreground/35">
-                                                    {entry.databaseName}
-                                                </span>
-                                            </>
-                                        )}
-                                        {!entry.isError && (
-                                            <>
-                                                <span className="text-muted-foreground/20">·</span>
-                                                <span className="text-[10px] font-mono text-muted-foreground/40">
-                                                    {entry.executionTimeMs.toFixed(1)}ms
-                                                </span>
-                                                <span className="text-muted-foreground/20">·</span>
-                                                <span className="text-[10px] font-mono text-muted-foreground/40">
-                                                    {entry.rowCount} rows
-                                                </span>
-                                            </>
-                                        )}
-                                        {entry.isError && (
-                                            <>
-                                                <span className="text-muted-foreground/20">·</span>
-                                                <span className="text-[10px] text-destructive/60">
-                                                    error
-                                                </span>
-                                            </>
-                                        )}
-                                        {entry.aiReview && (
-                                            <>
-                                                <span className="text-muted-foreground/20">·</span>
-                                                <span
-                                                    className={cn(
-                                                        "text-[10px] font-medium",
-                                                        entry.aiReview.overridden
-                                                            ? "text-amber-400/80"
-                                                            : "text-emerald-400/70"
-                                                    )}
-                                                >
-                                                    {entry.aiReview.overridden ? "AI override" : "AI reviewed"}
-                                                </span>
-                                            </>
-                                        )}
-                                    </div>
-                                </div>
-
-                                {/* Hover actions */}
-                                <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity shrink-0">
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <button
-                                                className="p-1 rounded text-muted-foreground/40 hover:text-emerald-400 hover:bg-emerald-500/10 transition-colors"
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    onRerunSql(entry.sql);
-                                                }}
-                                            >
-                                                <Play className="h-3 w-3" />
-                                            </button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>Re-run query</TooltipContent>
-                                    </Tooltip>
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <button
-                                                className="p-1 rounded text-muted-foreground/40 hover:text-foreground hover:bg-muted/60 transition-colors"
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    navigator.clipboard.writeText(entry.sql);
-                                                    toast.success("SQL copied", { duration: 1500 });
-                                                }}
-                                            >
-                                                <Copy className="h-3 w-3" />
-                                            </button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>Copy SQL</TooltipContent>
-                                    </Tooltip>
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <button
-                                                className="p-1 rounded text-muted-foreground/40 hover:text-destructive hover:bg-destructive/10 transition-colors"
-                                                onClick={(e) => {
-                                                    e.stopPropagation();
-                                                    onDeleteEntry(entry.id);
-                                                }}
-                                            >
-                                                <Trash2 className="h-3 w-3" />
-                                            </button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>Delete entry</TooltipContent>
-                                    </Tooltip>
-                                </div>
-                            </div>
-                        ))}
-                    </div>
-                )}
-            </ScrollArea>
-        </div>
-    );
-}
-
-// ── Main component ─────────────────────────────────────────────────────────
+// ── Types ────────────────────────────────────────────────────────────────────
 
 interface PendingProductionGuardExecution {
     connectionId: string;
@@ -685,6 +210,8 @@ interface PendingProductionGuardExecution {
     classification: SqlRiskClassification;
 }
 
+// ── Main component ───────────────────────────────────────────────────────────
+
 export function QueryEditor() {
     const {
         connectionId,
@@ -694,6 +221,10 @@ export function QueryEditor() {
         schemaFunctions,
         connections,
         activeConnectionId,
+        databases,
+        switchDatabase,
+        schemas,
+        selectSchema,
     } = useConnectionStore(
         useShallow((state) => ({
             connectionId: state.connectionId,
@@ -703,8 +234,13 @@ export function QueryEditor() {
             schemaFunctions: state.schemaFunctions,
             connections: state.connections,
             activeConnectionId: state.activeConnectionId,
+            databases: state.databases,
+            switchDatabase: state.switchDatabase,
+            schemas: state.schemas,
+            selectSchema: state.selectSchema,
         }))
     );
+
     const {
         aiReviewEnabled,
         aiReviewAutoOnDml,
@@ -714,6 +250,7 @@ export function QueryEditor() {
         geminiApiKey,
         strictProductionGuard,
     } = useSettingsStore();
+
     const {
         tabs,
         activeTabId,
@@ -728,7 +265,9 @@ export function QueryEditor() {
         loadHistoryFromStorage,
     } = useQueryStore();
 
-    // ── Sandbox integration ────────────────────────────────────────────────
+    const { updateFile } = useQueryFilesStore();
+
+    // ── Sandbox ────────────────────────────────────────────────────────────
     const {
         status: sandboxStatus,
         result: sandboxResult,
@@ -751,14 +290,12 @@ export function QueryEditor() {
     const isSandboxRollingBack = sandboxStatus === "rolling_back";
     const isSandboxBusy = sandboxStatus === "executing" || isSandboxCommitting || isSandboxRollingBack;
 
-    // Tick elapsed timer while sandbox transaction is open
     useEffect(() => {
         if (!isSandboxMode) return;
         const interval = setInterval(tickElapsed, 5000);
         return () => clearInterval(interval);
     }, [isSandboxMode, tickElapsed]);
 
-    // Idle transaction warning (10 min)
     useEffect(() => {
         if (sandboxElapsed > 600 && isSandboxReviewing) {
             toast.warning("Sandbox transaction has been open for over 10 minutes — remember to commit or rollback.", {
@@ -768,23 +305,32 @@ export function QueryEditor() {
         }
     }, [sandboxElapsed, isSandboxReviewing]);
 
-    // Show sandbox errors as toasts
     useEffect(() => {
-        if (sandboxError) {
-            toast.error(sandboxError, { duration: 5000 });
-        }
+        if (sandboxError) toast.error(sandboxError, { duration: 5000 });
     }, [sandboxError]);
 
-    useEffect(() => {
-        loadSandboxHistory();
-    }, [loadSandboxHistory]);
+    useEffect(() => { loadSandboxHistory(); }, [loadSandboxHistory]);
 
-    const activeTab = tabs.find((t) => t.id === activeTabId);
-    const activeConnectionEntry = useMemo(
-        () => connections.find((entry) => entry.connectionId === activeConnectionId) ?? null,
-        [connections, activeConnectionId]
-    );
-    const activeEnvironment = normalizeConnectionEnvironment(activeConnectionEntry?.environment);
+    // ── Notes ──────────────────────────────────────────────────────────────
+    const { saveNote: storeNoteSave } = useNotesStore();
+
+    // ── UI state ───────────────────────────────────────────────────────────
+    const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel | null>("files");
+    const [notesOpen, setNotesOpen] = useState(false);
+    const [saveNoteOpen, setSaveNoteOpen] = useState(false);
+    const [saveNoteTitle, setSaveNoteTitle] = useState("");
+    const [saveNoteLoading, setSaveNoteLoading] = useState(false);
+    const [editorFullScreen, setEditorFullScreen] = useState(false);
+    const [runSqlFileOpen, setRunSqlFileOpen] = useState(false);
+    const runSqlFileInputRef = useRef<HTMLInputElement>(null);
+
+    // Tab → file mapping for unsaved indicator
+    const [tabFileMap, setTabFileMap] = useState<Record<string, string>>({});
+    // Ref always holds latest tabFileMap to avoid stale closures in Monaco onChange
+    const tabFileMapRef = useRef(tabFileMap);
+    useEffect(() => { tabFileMapRef.current = tabFileMap; }, [tabFileMap]);
+
+    // ── Review state ───────────────────────────────────────────────────────
     const [reviewReport, setReviewReport] = useState<SqlReviewReport | null>(null);
     const [reviewLoading, setReviewLoading] = useState(false);
     const [reviewPendingApproval, setReviewPendingApproval] = useState<{
@@ -792,22 +338,13 @@ export function QueryEditor() {
         mode: "direct" | "sandbox";
         trigger: "auto" | "manual";
     } | null>(null);
-    const [commandPaletteOpen, setCommandPaletteOpen] = useState(false);
-    const [historyOpen, setHistoryOpen] = useState(false);
-    const [notesOpen, setNotesOpen] = useState(false);
-    const [saveNoteOpen, setSaveNoteOpen] = useState(false);
-    const [saveNoteTitle, setSaveNoteTitle] = useState("");
-    const [saveNoteLoading, setSaveNoteLoading] = useState(false);
-    const [editorFullScreen, setEditorFullScreen] = useState(false);
+
+    // ── Prod guard ─────────────────────────────────────────────────────────
     const [prodGuardPending, setProdGuardPending] = useState<PendingProductionGuardExecution | null>(null);
     const [prodGuardTypedText, setProdGuardTypedText] = useState("");
     const [prodGuardReason, setProdGuardReason] = useState("");
-    const historyPanelRef = useRef<HTMLDivElement>(null);
 
-    // Notes store
-    const { saveNote: storeNoteSave } = useNotesStore();
-
-    // Plan state: keyed by tab id so each tab has its own plan
+    // ── Plan/result view per tab ───────────────────────────────────────────
     const [planData, setPlanData] = useState<Record<string, string>>({});
     const [planLoading, setPlanLoading] = useState<Record<string, boolean>>({});
     const [resultView, setResultView] = useState<Record<string, "results" | "plan" | "canvas">>({});
@@ -816,7 +353,7 @@ export function QueryEditor() {
     const isExplaining = activeTabId ? (planLoading[activeTabId] ?? false) : false;
     const activeResultView = activeTabId ? (resultView[activeTabId] ?? "results") : "results";
 
-    // Column cache for schema-aware completions.
+    // ── Column cache ───────────────────────────────────────────────────────
     const [columnCache, setColumnCache] = useState<Record<string, string[]>>({});
     const columnCacheRef = useRef<Record<string, string[]>>({});
     const pendingColumnLoadsRef = useRef<Record<string, Promise<string[]>>>({});
@@ -828,15 +365,22 @@ export function QueryEditor() {
         pendingColumnLoadsRef.current = {};
     }, [connectionId]);
 
+    // ── Derived ────────────────────────────────────────────────────────────
+    const activeTab = tabs.find((t) => t.id === activeTabId);
+    const activeConnectionEntry = useMemo(
+        () => connections.find((entry) => entry.connectionId === activeConnectionId) ?? null,
+        [connections, activeConnectionId]
+    );
+    const activeEnvironment = normalizeConnectionEnvironment(activeConnectionEntry?.environment);
+
     const tablesByPriority = useMemo(() => {
         if (!selectedSchema) return tables;
         return [
-            ...tables.filter((table) => table.schema === selectedSchema),
-            ...tables.filter((table) => table.schema !== selectedSchema),
+            ...tables.filter((t) => t.schema === selectedSchema),
+            ...tables.filter((t) => t.schema !== selectedSchema),
         ];
     }, [tables, selectedSchema]);
 
-    // Build schema context from connection store
     const schemaContext = useMemo(
         () => ({
             tables: tablesByPriority.map((t) => t.name),
@@ -852,9 +396,7 @@ export function QueryEditor() {
 
     const tableRowCounts = useMemo(() => {
         const out: Record<string, number> = {};
-        for (const table of tables) {
-            out[table.name.toLowerCase()] = table.row_count ?? 0;
-        }
+        for (const table of tables) out[table.name.toLowerCase()] = table.row_count ?? 0;
         return out;
     }, [tables]);
 
@@ -863,9 +405,7 @@ export function QueryEditor() {
         for (const table of tables) {
             const cols = getCachedColumns(columnCache, table.schema, table.name);
             const tableName = table.name.toLowerCase();
-            if (!out[tableName] || table.schema === selectedSchema) {
-                out[tableName] = cols.map((c) => c.toLowerCase());
-            }
+            if (!out[tableName] || table.schema === selectedSchema) out[tableName] = cols.map((c) => c.toLowerCase());
         }
         return out;
     }, [tables, columnCache, selectedSchema]);
@@ -875,7 +415,6 @@ export function QueryEditor() {
         return normalizeSqlForCompare(reviewReport.sql) !== normalizeSqlForCompare(activeTab.sql);
     }, [reviewReport, activeTab?.sql]);
 
-    // Schema summary for AI error explanation (tables + columns, functions in current schema)
     const schemaContextForAi = useMemo(() => {
         const schema = selectedSchema ?? "public";
         const tableLines = tables
@@ -885,49 +424,37 @@ export function QueryEditor() {
         const funcLines = funcs
             .filter((f) => !f.is_trigger_function)
             .map((f) => `  ${f.name}(${f.arguments}) -> ${f.return_type}`);
-        return [
-            "Tables:",
-            ...tableLines,
-            "",
-            "Functions:",
-            ...(funcLines.length ? funcLines : ["  (none listed)"]),
-        ].join("\n");
+        return ["Tables:", ...tableLines, "", "Functions:", ...(funcLines.length ? funcLines : ["  (none listed)"])].join("\n");
     }, [tables, columnCache, selectedSchema, schemaFunctions]);
 
-    // Lazily fetch columns on-demand (e.g. "tableName." typed), with request dedupe.
+    const savedFileSqlMap = useMemo(() => {
+        const files = useQueryFilesStore.getState().files;
+        return Object.fromEntries(files.map((f) => [f.id, f.sql]));
+    }, []); // updated via store, intentionally simple here
+
+    // ── Column fetching ────────────────────────────────────────────────────
     const handleFetchColumns = useCallback(
         async (tableName: string): Promise<string[]> => {
             if (!connectionId) return [];
             const normalized = tableName.toLowerCase();
-            const tableInfo = tables.find(
-                (table) =>
-                    table.name.toLowerCase() === normalized &&
-                    (!selectedSchema || table.schema === selectedSchema)
-            ) ?? tables.find((table) => table.name.toLowerCase() === normalized);
+            const tableInfo =
+                tables.find((t) => t.name.toLowerCase() === normalized && (!selectedSchema || t.schema === selectedSchema)) ??
+                tables.find((t) => t.name.toLowerCase() === normalized);
             if (!tableInfo) return [];
-
             const cacheKey = columnCacheKey(tableInfo.schema, tableInfo.name);
             const cached = getCachedColumns(columnCacheRef.current, tableInfo.schema, tableInfo.name);
             if (cached.length > 0) return cached;
-
             const requestKey = `${connectionId}:${cacheKey}`;
             const existingRequest = pendingColumnLoadsRef.current[requestKey];
             if (existingRequest) return existingRequest;
-
             try {
-                const request = dbGetColumns(
-                    connectionId,
-                    tableInfo.schema,
-                    tableInfo.name
-                ).then((cols) => {
+                const request = dbGetColumns(connectionId, tableInfo.schema, tableInfo.name).then((cols) => {
                     if (useConnectionStore.getState().connectionId !== connectionId) return [];
                     const colNames = cols.map((c) => c.name);
                     setColumnCache((prev) => {
                         const next = { ...prev, [cacheKey]: colNames };
                         const unscoped = tableInfo.name.toLowerCase();
-                        if (!prev[unscoped] || tableInfo.schema === selectedSchema) {
-                            next[unscoped] = colNames;
-                        }
+                        if (!prev[unscoped] || tableInfo.schema === selectedSchema) next[unscoped] = colNames;
                         return next;
                     });
                     return colNames;
@@ -943,15 +470,12 @@ export function QueryEditor() {
         [connectionId, selectedSchema, tables]
     );
 
+    // ── Format ─────────────────────────────────────────────────────────────
     const handleFormatSql = useCallback(
         (sql: string) => {
             if (!activeTabId) return;
             try {
-                const formatted = formatSQL(sql, {
-                    language: "postgresql",
-                    tabWidth: 4,
-                    keywordCase: "upper",
-                });
+                const formatted = formatSQL(sql, { language: "postgresql", tabWidth: 4, keywordCase: "upper" });
                 updateSql(activeTabId, formatted);
                 toast.success("SQL formatted", { duration: 1200 });
             } catch {
@@ -961,18 +485,17 @@ export function QueryEditor() {
         [activeTabId, updateSql]
     );
 
-    // Convert a next-action suggestion (plain-text description) to SQL and apply it
+    // ── Next action ────────────────────────────────────────────────────────
     const handleNextAction = useCallback(
         async (action: string) => {
             if (!activeTabId) return;
             const currentSql = activeTab?.sql ?? "";
             toast.loading("Nova is applying suggestion…", { id: "nova-action" });
             try {
-                const ctx = schemaContext;
                 const prompt = currentSql
                     ? `Given this existing query:\n${currentSql}\n\nApply the following change and return the updated SQL:\n${action}`
                     : action;
-                const newSql = await aiSuggestionEngine.getNaturalLanguageSQL(prompt, ctx);
+                const newSql = await aiSuggestionEngine.getNaturalLanguageSQL(prompt, schemaContext);
                 if (newSql) {
                     updateSql(activeTabId, newSql);
                     toast.success("Suggestion applied", { id: "nova-action", duration: 1500 });
@@ -986,22 +509,15 @@ export function QueryEditor() {
         [activeTabId, activeTab?.sql, schemaContext, updateSql]
     );
 
-    // Load history from localStorage on mount
-    useEffect(() => {
-        loadHistoryFromStorage();
-    }, [loadHistoryFromStorage]);
+    // ── Load history ───────────────────────────────────────────────────────
+    useEffect(() => { loadHistoryFromStorage(); }, [loadHistoryFromStorage]);
+    useEffect(() => { if (tabs.length === 0) addTab(); }, [tabs.length, addTab]);
 
-    // Add initial tab if none exist
-    useEffect(() => {
-        if (tabs.length === 0) addTab();
-    }, [tabs.length, addTab]);
-
-    // If SQL changed after an auto-review gate, require a fresh review.
+    // ── SQL change guards ──────────────────────────────────────────────────
     useEffect(() => {
         if (!reviewPendingApproval || !activeTab?.sql) return;
-        if (normalizeSqlForCompare(reviewPendingApproval.sql) !== normalizeSqlForCompare(activeTab.sql)) {
+        if (normalizeSqlForCompare(reviewPendingApproval.sql) !== normalizeSqlForCompare(activeTab.sql))
             setReviewPendingApproval(null);
-        }
     }, [reviewPendingApproval, activeTab?.sql]);
 
     useEffect(() => {
@@ -1017,38 +533,13 @@ export function QueryEditor() {
         setProdGuardReason("");
     }, [prodGuardPending, connectionId, activeTabId, activeTab?.sql]);
 
-    // ⌘+Shift+P command palette / ⌘+Shift+H history / Esc exit full-screen
-    useEffect(() => {
-        const onKey = (e: KeyboardEvent) => {
-            if (e.key === "Escape") {
-                setEditorFullScreen((v) => (v ? false : v));
-                return;
-            }
-            if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "P") {
-                e.preventDefault();
-                setCommandPaletteOpen((o) => !o);
-            }
-            if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "H") {
-                e.preventDefault();
-                setHistoryOpen((o) => !o);
-            }
-            if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "N") {
-                e.preventDefault();
-                setNotesOpen((o) => !o);
-            }
-        };
-        window.addEventListener("keydown", onKey);
-        return () => window.removeEventListener("keydown", onKey);
-    }, []);
-
+    // ── Review audit ───────────────────────────────────────────────────────
     const buildReviewAudit = useCallback(
         (mode: "manual" | "auto", report?: SqlReviewReport): QueryHistoryEntry["aiReview"] | undefined => {
             if (!report) return undefined;
             return {
                 mode,
-                overridden: report.issues.some(
-                    (issue) => issue.severity === "block" || issue.severity === "warn"
-                ),
+                overridden: report.issues.some((i) => i.severity === "block" || i.severity === "warn"),
                 aiModel: report.aiModel,
                 issueCounts: getReviewIssueCounts(report),
             };
@@ -1056,26 +547,16 @@ export function QueryEditor() {
         []
     );
 
+    // ── Execute ────────────────────────────────────────────────────────────
     const executeCurrentSql = useCallback(
         (mode: "direct" | "sandbox", reviewAudit?: QueryHistoryEntry["aiReview"], guardReason?: string) => {
             if (!connectionId || !activeTabId) return;
             const sql = activeTab?.sql.trim() ?? "";
             if (!sql) return;
 
-            const guardDecision = shouldRequireProductionGuard({
-                strictProductionGuard,
-                environment: activeEnvironment,
-                sql,
-            });
+            const guardDecision = shouldRequireProductionGuard({ strictProductionGuard, environment: activeEnvironment, sql });
             if (guardDecision.required && !guardReason) {
-                setProdGuardPending({
-                    connectionId,
-                    tabId: activeTabId,
-                    sqlSnapshot: sql,
-                    mode,
-                    reviewAudit,
-                    classification: guardDecision.classification,
-                });
+                setProdGuardPending({ connectionId, tabId: activeTabId, sqlSnapshot: sql, mode, reviewAudit, classification: guardDecision.classification });
                 setProdGuardTypedText("");
                 setProdGuardReason("");
                 return;
@@ -1092,73 +573,37 @@ export function QueryEditor() {
                 productionGuardReason: guardReason?.trim() || undefined,
             });
         },
-        [
-            connectionId,
-            activeTabId,
-            activeTab?.sql,
-            strictProductionGuard,
-            activeEnvironment,
-            databaseName,
-            executeQuery,
-            runInSandbox,
-        ]
+        [connectionId, activeTabId, activeTab?.sql, strictProductionGuard, activeEnvironment, databaseName, executeQuery, runInSandbox]
     );
 
     const runQueryReview = useCallback(
         async (trigger: "manual" | "auto"): Promise<SqlReviewReport | null> => {
             if (!activeTab?.sql.trim()) return null;
             const sql = activeTab.sql.trim();
-
             setReviewLoading(true);
             setReviewPendingApproval(null);
             try {
                 const report = await runSqlSafetyReview(
                     sql,
-                    {
-                        tableColumns: tableColumnsForReview,
-                        tableRowCounts,
-                        schemaSummary: schemaContextForAi,
-                    },
-                    {
-                        enableGemini: aiReviewUseGemini,
-                        geminiApiKey: geminiApiKey.trim(),
-                        geminiModel: aiReviewModel,
-                        complexLineThreshold: aiReviewComplexLineThreshold,
-                    }
+                    { tableColumns: tableColumnsForReview, tableRowCounts, schemaSummary: schemaContextForAi },
+                    { enableGemini: aiReviewUseGemini, geminiApiKey: geminiApiKey.trim(), geminiModel: aiReviewModel, complexLineThreshold: aiReviewComplexLineThreshold }
                 );
-
                 setReviewReport(report);
-
                 if (trigger === "manual") {
                     const counts = getReviewIssueCounts(report);
-                    if (counts.block > 0) {
-                        toast.error(`AI Review: ${counts.block} blocking issue(s) found.`, { duration: 2600 });
-                    } else if (counts.warn > 0) {
-                        toast.warning(`AI Review: ${counts.warn} warning(s) found.`, { duration: 2600 });
-                    } else {
-                        toast.success("AI Review passed.", { duration: 1800 });
-                    }
+                    if (counts.block > 0) toast.error(`AI Review: ${counts.block} blocking issue(s) found.`, { duration: 2600 });
+                    else if (counts.warn > 0) toast.warning(`AI Review: ${counts.warn} warning(s) found.`, { duration: 2600 });
+                    else toast.success("AI Review passed.", { duration: 1800 });
                 }
-
                 return report;
             } catch (error) {
-                const msg = error instanceof Error ? error.message : "Review failed.";
-                toast.error(`AI review failed: ${msg}`, { duration: 3500 });
+                toast.error(`AI review failed: ${error instanceof Error ? error.message : "Review failed."}`, { duration: 3500 });
                 return null;
             } finally {
                 setReviewLoading(false);
             }
         },
-        [
-            activeTab?.sql,
-            aiReviewUseGemini,
-            geminiApiKey,
-            aiReviewModel,
-            aiReviewComplexLineThreshold,
-            tableColumnsForReview,
-            tableRowCounts,
-            schemaContextForAi,
-        ]
+        [activeTab?.sql, aiReviewUseGemini, geminiApiKey, aiReviewModel, aiReviewComplexLineThreshold, tableColumnsForReview, tableRowCounts, schemaContextForAi]
     );
 
     const handleManualReview = useCallback(async () => {
@@ -1177,15 +622,10 @@ export function QueryEditor() {
             toast.info("SQL changed after review. Run review again before executing.");
             return;
         }
-
         const reviewAudit = buildReviewAudit(reviewPendingApproval.trigger, reviewReport ?? undefined);
         executeCurrentSql(reviewPendingApproval.mode, reviewAudit);
         setReviewPendingApproval(null);
     }, [reviewPendingApproval, activeTab?.sql, executeCurrentSql, reviewReport, buildReviewAudit]);
-
-    const handleCancelPendingReview = useCallback(() => {
-        setReviewPendingApproval(null);
-    }, []);
 
     const closeProdGuardDialog = useCallback(() => {
         setProdGuardPending(null);
@@ -1195,19 +635,12 @@ export function QueryEditor() {
 
     const handleConfirmProdGuard = useCallback(() => {
         if (!prodGuardPending) return;
-
-        const typedToken = prodGuardTypedText.trim();
-        if (typedToken !== STRICT_PRODUCTION_CONFIRMATION) {
+        if (prodGuardTypedText.trim() !== STRICT_PRODUCTION_CONFIRMATION) {
             toast.error(`Type exactly "${STRICT_PRODUCTION_CONFIRMATION}" to continue.`);
             return;
         }
-
         const reason = prodGuardReason.trim();
-        if (!reason) {
-            toast.error("Please enter a reason before executing on production.");
-            return;
-        }
-
+        if (!reason) { toast.error("Please enter a reason before executing on production."); return; }
         const sql = activeTab?.sql.trim() ?? "";
         const isStillValid =
             prodGuardPending.connectionId === connectionId &&
@@ -1218,62 +651,49 @@ export function QueryEditor() {
             toast.info("Query changed. Re-run to review production guard again.");
             return;
         }
-
         executeCurrentSql(prodGuardPending.mode, prodGuardPending.reviewAudit, reason);
         closeProdGuardDialog();
-    }, [
-        prodGuardPending,
-        prodGuardTypedText,
-        prodGuardReason,
-        activeTab?.sql,
-        connectionId,
-        activeTabId,
-        closeProdGuardDialog,
-        executeCurrentSql,
-    ]);
+    }, [prodGuardPending, prodGuardTypedText, prodGuardReason, activeTab?.sql, connectionId, activeTabId, closeProdGuardDialog, executeCurrentSql]);
 
     const handleExecute = useCallback(async () => {
         if (!connectionId || !activeTabId) return;
         const sql = activeTab?.sql.trim() ?? "";
         if (!sql) return;
-
         const mode: "direct" | "sandbox" = isSandboxMode ? "sandbox" : "direct";
         const intent = getSqlReviewIntent(sql);
         const shouldAutoReview = aiReviewEnabled && aiReviewAutoOnDml && intent.autoReviewCandidate;
-
         if (!shouldAutoReview) {
             if (reviewPendingApproval) setReviewPendingApproval(null);
-            const reviewedForCurrentSql =
-                reviewReport && !reviewIsStale ? reviewReport : undefined;
+            const reviewedForCurrentSql = reviewReport && !reviewIsStale ? reviewReport : undefined;
             const reviewAudit = buildReviewAudit("manual", reviewedForCurrentSql);
             executeCurrentSql(mode, reviewAudit);
             return;
         }
-
         const report = await runQueryReview("auto");
         if (!report) return;
-
-        setReviewPendingApproval({
-            sql,
-            mode,
-            trigger: "auto",
-        });
+        setReviewPendingApproval({ sql, mode, trigger: "auto" });
         toast.info("AI review complete. Confirm in the review panel to execute.", { duration: 2600 });
-    }, [
-        connectionId,
-        activeTabId,
-        activeTab?.sql,
-        isSandboxMode,
-        aiReviewEnabled,
-        aiReviewAutoOnDml,
-        reviewPendingApproval,
-        reviewReport,
-        reviewIsStale,
-        buildReviewAudit,
-        executeCurrentSql,
-        runQueryReview,
-    ]);
+    }, [connectionId, activeTabId, activeTab?.sql, isSandboxMode, aiReviewEnabled, aiReviewAutoOnDml, reviewPendingApproval, reviewReport, reviewIsStale, buildReviewAudit, executeCurrentSql, runQueryReview]);
 
+    // ── Keyboard shortcuts ─────────────────────────────────────────────────
+    useEffect(() => {
+        const onKey = (e: KeyboardEvent) => {
+            if (e.key === "Escape") { setEditorFullScreen((v) => v ? false : v); return; }
+            const isModEnter = (e.metaKey || e.ctrlKey) && e.key === "Enter";
+            if (isModEnter) {
+                const target = e.target as Node;
+                if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable)) return;
+                e.preventDefault();
+                handleExecute();
+                return;
+            }
+            if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "N") { e.preventDefault(); setNotesOpen((o) => !o); }
+        };
+        window.addEventListener("keydown", onKey);
+        return () => window.removeEventListener("keydown", onKey);
+    }, [handleExecute]);
+
+    // ── Explain ────────────────────────────────────────────────────────────
     const handleExplain = useCallback(async (tabId?: string, sql?: string) => {
         const tid = tabId ?? activeTabId;
         const query = sql ?? activeTab?.sql.trim();
@@ -1291,7 +711,6 @@ export function QueryEditor() {
         }
     }, [connectionId, activeTabId, activeTab?.sql]);
 
-    // One-click fix: execute the SQL then automatically re-run the plan
     const handleApplyFix = useCallback(async (fixSql: string) => {
         if (!connectionId || !activeTabId) return;
         try {
@@ -1303,24 +722,11 @@ export function QueryEditor() {
         }
     }, [connectionId, activeTabId, activeTab?.sql, activeEnvironment, handleExplain]);
 
-    const runCommand = useCallback(
-        (cmd: "run" | "new-tab" | "close-tab") => {
-            setCommandPaletteOpen(false);
-            if (cmd === "run") handleExecute();
-            else if (cmd === "new-tab") addTab();
-            else if (cmd === "close-tab" && activeTabId) removeTab(activeTabId);
-        },
-        [handleExecute, addTab, activeTabId, removeTab]
-    );
-
+    // ── History actions ────────────────────────────────────────────────────
     const handleLoadFromHistory = useCallback(
         (sql: string) => {
-            if (!activeTabId) {
-                addTab("History", sql);
-            } else {
-                updateSql(activeTabId, sql);
-            }
-            setHistoryOpen(false);
+            if (!activeTabId) addTab("History", sql);
+            else updateSql(activeTabId, sql);
         },
         [activeTabId, addTab, updateSql]
     );
@@ -1330,31 +736,60 @@ export function QueryEditor() {
             if (!connectionId) return;
             if (!activeTabId) {
                 addTab("Re-run", sql);
-                // Execute after the tab state updates
                 setTimeout(() => {
                     const { activeTabId: newTabId } = useQueryStore.getState();
-                    if (newTabId) {
-                        executeQuery(connectionId, newTabId, databaseName || undefined, {
-                            environment: activeEnvironment,
-                        });
-                    }
+                    if (newTabId) executeQuery(connectionId, newTabId, databaseName || undefined, { environment: activeEnvironment });
                 }, 50);
             } else {
                 updateSql(activeTabId, sql);
                 setTimeout(() => handleExecute(), 50);
             }
-            setHistoryOpen(false);
         },
         [connectionId, activeTabId, addTab, updateSql, executeQuery, databaseName, activeEnvironment, handleExecute]
     );
 
+    // ── Load SQL from sidebar file ─────────────────────────────────────────
+    const handleLoadSql = useCallback(
+        (sql: string, fromFileId?: string) => {
+            if (!activeTabId) {
+                addTab(undefined, sql);
+                // After addTab, track the mapping
+                if (fromFileId) {
+                    setTimeout(() => {
+                        const { activeTabId: newId } = useQueryStore.getState();
+                        if (newId) setTabFileMap((prev) => ({ ...prev, [newId]: fromFileId }));
+                    }, 0);
+                }
+            } else {
+                updateSql(activeTabId, sql);
+                if (fromFileId) setTabFileMap((prev) => ({ ...prev, [activeTabId]: fromFileId }));
+            }
+        },
+        [activeTabId, addTab, updateSql]
+    );
+
+    // ── File save (when SQL changes, sync to file) ─────────────────────────
+    // Uses ref to always read latest tabFileMap — prevents stale closure in Monaco's onChange
+    const handleSqlChange = useCallback(
+        (tabId: string, sql: string) => {
+            updateSql(tabId, sql);
+            const fileId = tabFileMapRef.current[tabId];
+            if (!fileId) return;
+            if (fileId.startsWith("fs-")) {
+                useIdeFsStore.getState().updateContent(fileId, sql);
+            } else {
+                updateFile(fileId, { sql });
+            }
+        },
+        [updateSql, updateFile]
+    );
+
+    // ── Export ─────────────────────────────────────────────────────────────
     const handleExport = (format: "csv" | "json") => {
         const result = activeTab?.result;
         if (!result || result.is_error || result.columns.length === 0) return;
-
         const tabTitle = activeTab?.title ?? "query";
         const filename = `${tabTitle.replace(/\s+/g, "-").toLowerCase()}-${Date.now()}`;
-
         if (format === "csv") {
             downloadBlob(exportResultToCSV(result), `${filename}.csv`, "text/csv;charset=utf-8;");
             toast.success("CSV downloaded", { duration: 1500 });
@@ -1364,46 +799,100 @@ export function QueryEditor() {
         }
     };
 
-    const hasResult =
-        activeTab?.result && !activeTab.result.is_error && activeTab.result.columns.length > 0;
+    const hasResult = activeTab?.result && !activeTab.result.is_error && activeTab.result.columns.length > 0;
+
+    // ── File run ───────────────────────────────────────────────────────────
+    const handleRunSqlFile = useCallback(
+        (content: string) => {
+            if (!activeTabId) return;
+            updateSql(activeTabId, content);
+            setRunSqlFileOpen(false);
+            toast.success("SQL loaded — running…", { duration: 1500 });
+            setTimeout(() => handleExecute(), 50);
+        },
+        [activeTabId, updateSql, handleExecute]
+    );
+
+    const handleRunSqlFileSelect = useCallback(
+        (e: React.ChangeEvent<HTMLInputElement>) => {
+            const file = e.target.files?.[0];
+            e.target.value = "";
+            if (!file) return;
+            if (!file.name.toLowerCase().endsWith(".sql")) { toast.error("Please select a .sql file"); return; }
+            const reader = new FileReader();
+            reader.onload = () => {
+                const sql = String(reader.result ?? "").trim();
+                if (!sql) { toast.warning("File is empty"); return; }
+                handleRunSqlFile(sql);
+            };
+            reader.readAsText(file, "UTF-8");
+        },
+        [handleRunSqlFile]
+    );
+
+    const handleRunSqlFileDrop = useCallback(
+        (e: React.DragEvent) => {
+            e.preventDefault();
+            e.stopPropagation();
+            const file = e.dataTransfer.files?.[0];
+            if (!file) return;
+            if (!file.name.toLowerCase().endsWith(".sql")) { toast.error("Please select a .sql file"); return; }
+            const reader = new FileReader();
+            reader.onload = () => {
+                const sql = String(reader.result ?? "").trim();
+                if (!sql) { toast.warning("File is empty"); return; }
+                handleRunSqlFile(sql);
+            };
+            reader.readAsText(file, "UTF-8");
+        },
+        [handleRunSqlFile]
+    );
+
+    // ── Activity bar toggle ────────────────────────────────────────────────
+    const handleActivityBarToggle = useCallback((panel: SidebarPanel) => {
+        setSidebarPanel((prev) => prev === panel ? null : panel);
+    }, []);
+
+    // ── DB/Schema popover state ────────────────────────────────────────────
+    const [dbPopoverOpen, setDbPopoverOpen] = useState(false);
+    const isSwitchingDb = useConnectionStore((s) => s.isSwitchingDatabase);
 
     return (
-        <div className="flex h-full flex-col">
-            <Dialog open={commandPaletteOpen} onOpenChange={setCommandPaletteOpen}>
+        <div className="flex h-full overflow-hidden bg-background">
+            {/* ── Dialogs ──────────────────────────────────────────────── */}
+
+            {/* Run SQL file dialog */}
+            <Dialog open={runSqlFileOpen} onOpenChange={setRunSqlFileOpen}>
                 <DialogContent className="sm:max-w-md gap-0 p-0">
-                    <DialogTitle className="sr-only">Command palette</DialogTitle>
-                    <div className="px-3 py-2 border-b border-border/30 text-xs text-muted-foreground font-mono">
-                        Run a command
-                    </div>
-                    <div className="max-h-[280px] overflow-auto">
-                        {[
-                            { id: "run" as const, label: "Run Query", shortcut: "⌘+Enter" },
-                            { id: "new-tab" as const, label: "New Tab", shortcut: "" },
-                            { id: "close-tab" as const, label: "Close Tab", shortcut: "" },
-                        ].map(({ id, label, shortcut }) => (
-                            <button
-                                key={id}
-                                type="button"
-                                className="w-full flex items-center justify-between gap-4 px-3 py-2.5 text-left text-sm rounded-md hover:bg-accent"
-                                onClick={() => runCommand(id)}
-                            >
-                                <span>{label}</span>
-                                {shortcut && (
-                                    <span className="text-[10px] text-muted-foreground font-mono">
-                                        {shortcut}
-                                    </span>
-                                )}
-                            </button>
-                        ))}
+                    <DialogHeader className="px-4 pt-4 pb-2">
+                        <DialogTitle className="text-sm flex items-center gap-2">
+                            <FileText className="h-4 w-4 text-sky-400" />
+                            Run SQL file
+                        </DialogTitle>
+                    </DialogHeader>
+                    <div
+                        className="mx-4 mb-4 rounded-xl border-2 border-dashed border-border/40 hover:border-sky-500/40 hover:bg-sky-500/5 transition-colors p-6 text-center cursor-pointer"
+                        onClick={() => runSqlFileInputRef.current?.click()}
+                        onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
+                        onDrop={handleRunSqlFileDrop}
+                        role="button"
+                        tabIndex={0}
+                        onKeyDown={(e) => e.key === "Enter" && runSqlFileInputRef.current?.click()}
+                    >
+                        <input ref={runSqlFileInputRef} type="file" accept=".sql" className="hidden" onChange={handleRunSqlFileSelect} />
+                        <FileText className="h-10 w-10 mx-auto text-muted-foreground/50 mb-2" />
+                        <p className="text-sm font-medium text-foreground">Choose a .sql file</p>
+                        <p className="text-xs text-muted-foreground/60 mt-0.5">Load into editor and run</p>
                     </div>
                 </DialogContent>
             </Dialog>
 
+            {/* Production guard dialog */}
             <Dialog open={Boolean(prodGuardPending)} onOpenChange={(open) => { if (!open) closeProdGuardDialog(); }}>
                 <DialogContent className="sm:max-w-lg">
                     <DialogHeader>
                         <DialogTitle className="flex items-center gap-2 text-base">
-                            <ShieldCheck className="h-4.5 w-4.5 text-red-300" />
+                            <ShieldCheck className="h-4 w-4 text-red-300" />
                             Production guard required
                         </DialogTitle>
                     </DialogHeader>
@@ -1416,11 +905,7 @@ export function QueryEditor() {
                         <div className="flex flex-wrap items-center gap-1.5">
                             <span className="text-xs text-muted-foreground">Detected risky statements:</span>
                             {(prodGuardPending?.classification.riskyStatements ?? []).map((statement) => (
-                                <Badge
-                                    key={statement}
-                                    variant="outline"
-                                    className="h-5 px-1.5 text-[10px] border-red-500/30 text-red-300 bg-red-500/10"
-                                >
+                                <Badge key={statement} variant="outline" className="h-5 px-1.5 text-[10px] border-red-500/30 text-red-300 bg-red-500/10">
                                     {statement}
                                 </Badge>
                             ))}
@@ -1431,7 +916,7 @@ export function QueryEditor() {
                             </label>
                             <Input
                                 value={prodGuardTypedText}
-                                onChange={(event) => setProdGuardTypedText(event.target.value)}
+                                onChange={(e) => setProdGuardTypedText(e.target.value)}
                                 placeholder={STRICT_PRODUCTION_CONFIRMATION}
                                 className="h-9 font-mono text-xs"
                                 autoFocus
@@ -1441,24 +926,19 @@ export function QueryEditor() {
                             <label className="text-xs text-muted-foreground">Reason for this production query</label>
                             <Textarea
                                 value={prodGuardReason}
-                                onChange={(event) => setProdGuardReason(event.target.value)}
+                                onChange={(e) => setProdGuardReason(e.target.value)}
                                 placeholder="Describe why this change is needed and what scope it impacts."
                                 className="min-h-24 text-sm resize-none"
                             />
                         </div>
                     </div>
                     <DialogFooter>
-                        <Button variant="ghost" size="sm" onClick={closeProdGuardDialog}>
-                            Cancel
-                        </Button>
+                        <Button variant="ghost" size="sm" onClick={closeProdGuardDialog}>Cancel</Button>
                         <Button
                             size="sm"
                             className="bg-red-600 hover:bg-red-500 text-white"
                             onClick={handleConfirmProdGuard}
-                            disabled={
-                                prodGuardTypedText.trim() !== STRICT_PRODUCTION_CONFIRMATION ||
-                                !prodGuardReason.trim()
-                            }
+                            disabled={prodGuardTypedText.trim() !== STRICT_PRODUCTION_CONFIRMATION || !prodGuardReason.trim()}
                         >
                             Continue on production
                         </Button>
@@ -1466,361 +946,184 @@ export function QueryEditor() {
                 </DialogContent>
             </Dialog>
 
-            {/* Tab bar */}
-            <div className="flex items-center border-b border-border/30 bg-card/30">
-                <ScrollArea className="flex-1">
-                    <div className="flex items-center px-2 py-1.5 gap-1">
-                        {tabs.map((tab) => (
-                            <button
-                                key={tab.id}
-                                className={cn(
-                                    "group flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs transition-all",
-                                    "hover:bg-accent/50",
-                                    tab.id === activeTabId
-                                        ? "bg-accent text-accent-foreground shadow-sm"
-                                        : "text-muted-foreground"
-                                )}
-                                onClick={() => setActiveTab(tab.id)}
-                            >
-                                <Terminal className="h-3 w-3 shrink-0" />
-                                <span className="max-w-24 truncate">{tab.title}</span>
-                                {tab.isExecuting && (
-                                    <Loader2 className="h-3 w-3 animate-spin text-emerald-400 shrink-0" />
-                                )}
-                                <button
-                                    className="ml-1 opacity-0 group-hover:opacity-100 transition-opacity hover:text-destructive"
-                                    onClick={(e) => {
-                                        e.stopPropagation();
-                                        removeTab(tab.id);
-                                    }}
-                                >
-                                    <X className="h-3 w-3" />
-                                </button>
-                            </button>
-                        ))}
-                    </div>
-                    <ScrollBar orientation="horizontal" />
-                </ScrollArea>
-
-                {/* Tab actions */}
-                <div className="flex items-center gap-0.5 px-2 shrink-0">
-                    <div className="mr-1 flex items-center gap-1.5">
-                        <ConnectionEnvBadge environment={activeEnvironment} compact />
-                        {strictProductionGuard && activeEnvironment === "prod" && (
-                            <Badge
-                                variant="outline"
-                                className="h-4 px-1.5 text-[9px] border-red-500/30 text-red-300 bg-red-500/10"
-                            >
-                                Guard
-                            </Badge>
-                        )}
-                    </div>
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                                onClick={() => addTab()}
-                            >
-                                <Plus className="h-3.5 w-3.5" />
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>New query tab</TooltipContent>
-                    </Tooltip>
-
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                className={cn(
-                                    "h-7 w-7 transition-colors",
-                                    historyOpen
-                                        ? "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/20"
-                                        : "text-muted-foreground hover:text-foreground"
-                                )}
-                                onClick={() => setHistoryOpen((o) => !o)}
-                            >
-                                <History className="h-3.5 w-3.5" />
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Query history (⌘⇧H)</TooltipContent>
-                    </Tooltip>
-
-                    {/* Notes toggle */}
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <Button
-                                variant="ghost"
-                                size="icon"
-                                className={cn(
-                                    "h-7 w-7 transition-colors",
-                                    notesOpen
-                                        ? "bg-amber-500/15 text-amber-400 hover:bg-amber-500/20"
-                                        : "text-muted-foreground hover:text-foreground"
-                                )}
-                                onClick={() => setNotesOpen((o) => !o)}
-                            >
-                                <StickyNote className="h-3.5 w-3.5" />
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Notes (⌘⇧N)</TooltipContent>
-                    </Tooltip>
-
-                    {/* Sandbox toggle */}
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                className={cn(
-                                    "h-7 gap-1.5 px-2 text-[11px] font-medium transition-all",
-                                    isSandboxMode
-                                        ? "bg-emerald-500/15 text-emerald-400 hover:bg-emerald-500/20 border border-emerald-500/30"
-                                        : "text-muted-foreground hover:text-foreground border border-transparent"
-                                )}
-                                onClick={() => {
-                                    if (isSandboxMode) {
-                                        disableSandbox();
-                                        toast.info("Sandbox mode off", { duration: 1500 });
-                                    } else {
-                                        enableSandbox();
-                                        toast.success("Sandbox mode enabled — queries run inside a transaction", { duration: 2500 });
+            {/* Save Note dialog */}
+            <Dialog open={saveNoteOpen} onOpenChange={setSaveNoteOpen}>
+                <DialogContent className="sm:max-w-md">
+                    <DialogHeader>
+                        <DialogTitle className="text-sm font-medium flex items-center gap-2">
+                            <StickyNote className="h-4 w-4 text-amber-400" />
+                            Save Note
+                        </DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-3 py-2">
+                        <div>
+                            <label className="text-xs text-muted-foreground mb-1 block">Title</label>
+                            <Input
+                                value={saveNoteTitle}
+                                onChange={(e) => setSaveNoteTitle(e.target.value)}
+                                placeholder="e.g. User activity report…"
+                                className="h-8 text-sm"
+                                autoFocus
+                                onKeyDown={(e) => {
+                                    if (e.key === "Enter" && saveNoteTitle.trim()) {
+                                        e.preventDefault();
+                                        (async () => {
+                                            setSaveNoteLoading(true);
+                                            try {
+                                                const now = new Date().toISOString();
+                                                await storeNoteSave({ id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, title: saveNoteTitle.trim(), sql: activeTab?.sql ?? "", created_at: now, updated_at: now, tags: [] });
+                                                setSaveNoteOpen(false);
+                                                toast.success("Note saved", { duration: 1500 });
+                                            } catch { toast.error("Failed to save note", { duration: 2000 }); }
+                                            finally { setSaveNoteLoading(false); }
+                                        })();
                                     }
                                 }}
-                            >
-                                {isSandboxMode ? (
-                                    <ShieldCheck className="h-3.5 w-3.5" />
-                                ) : (
-                                    <Shield className="h-3.5 w-3.5" />
-                                )}
-                                {isSandboxMode ? "Sandbox" : "Sandbox"}
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                            {isSandboxMode
-                                ? "Sandbox ON — queries run in a transaction. Click to disable."
-                                : "Enable sandbox mode — preview changes before committing"}
-                        </TooltipContent>
-                    </Tooltip>
-                </div>
-            </div>
-
-            {/* Sandbox active banner */}
-            {isSandboxMode && (
-                <div className="flex items-center gap-2 px-4 py-1.5 bg-emerald-500/6 border-b border-emerald-500/15 shrink-0">
-                    <ShieldCheck className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
-                    <span className="text-xs text-emerald-400/90 font-medium">
-                        SANDBOX MODE
-                    </span>
-                    <span className="text-xs text-emerald-400/50 ml-1">
-                        {isSandboxReviewing
-                            ? "— Review the diff below, then Commit or Rollback"
-                            : isSandboxBusy
-                                ? "— Processing…"
-                                : "— Queries run inside an automatic transaction. Nothing is committed until you approve."}
-                    </span>
-                    {isSandboxReviewing && sandboxElapsed > 0 && (
-                        <span className="ml-auto text-[10px] font-mono text-emerald-400/40">
-                            txn open {sandboxElapsed}s
-                        </span>
-                    )}
-                </div>
-            )}
-
-            {/* History panel — inline below tab bar, scrollable list */}
-            {historyOpen && (
-                <div
-                    ref={historyPanelRef}
-                    className="shrink-0 border-b border-border/20 overflow-hidden flex flex-col"
-                    style={{ height: "min(20rem, 40vh)" }}
-                >
-                    <HistoryPanel
-                        history={history}
-                        onLoadSql={handleLoadFromHistory}
-                        onClearHistory={clearHistory}
-                        onDeleteEntry={deleteHistoryEntry}
-                        onRerunSql={handleRerunFromHistory}
-                    />
-                </div>
-            )}
-
-            {/* Notes panel */}
-            {notesOpen && (
-                <div
-                    className="shrink-0 border-b border-border/20 overflow-hidden flex flex-col"
-                    style={{ height: "min(22rem, 40vh)" }}
-                >
-                    <NotesPanel
-                        onInsertSql={(sql) => {
-                            if (activeTabId) {
-                                updateSql(activeTabId, sql);
-                                setNotesOpen(false);
-                            } else {
-                                addTab("From Note", sql);
-                                setNotesOpen(false);
-                            }
-                        }}
-                        onClose={() => setNotesOpen(false)}
-                    />
-                </div>
-            )}
-
-            {/* AI review panel */}
-            {aiReviewEnabled && (
-                <QueryReviewPanel
-                    report={reviewReport}
-                    isLoading={reviewLoading}
-                    isStale={reviewIsStale}
-                    onRecheck={handleManualReview}
-                    onClose={() => {
-                        setReviewReport(null);
-                        setReviewPendingApproval(null);
-                    }}
-                    pendingApproval={Boolean(reviewPendingApproval)}
-                    onRunPending={handleRunAfterReview}
-                    onCancelPending={handleCancelPendingReview}
-                />
-            )}
-
-            {/* Editor area */}
-            {activeTab && (
-                <>
-                    {/* Full-screen editor overlay */}
-                    {editorFullScreen && (
-                        <div className="fixed inset-0 z-50 bg-background flex flex-col">
-                            <header className="flex items-center justify-between px-4 py-2 border-b border-border/30 bg-card/50 shrink-0">
-                                <span className="text-sm font-medium text-muted-foreground">Query editor</span>
-                                <div className="flex items-center gap-2">
-                                    <Button
-                                        size="sm"
-                                        variant="outline"
-                                        className="h-8 gap-1.5"
-                                        onClick={handleManualReview}
-                                        disabled={!activeTab.sql.trim() || activeTab.isExecuting || reviewLoading || !aiReviewEnabled}
-                                    >
-                                        {reviewLoading ? (
-                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                        ) : (
-                                            <Shield className="h-3.5 w-3.5" />
-                                        )}
-                                        Review
-                                    </Button>
-                                    <Button
-                                        size="sm"
-                                        variant="outline"
-                                        className="h-8 gap-1.5"
-                                        onClick={handleExecute}
-                                        disabled={
-                                            activeTab.isExecuting ||
-                                            reviewLoading ||
-                                            isSandboxBusy ||
-                                            isSandboxReviewing ||
-                                            !activeTab.sql.trim()
-                                        }
-                                    >
-                                        {activeTab.isExecuting || isSandboxBusy ? (
-                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                        ) : (
-                                            <Play className="h-3.5 w-3.5" />
-                                        )}
-                                        Run
-                                    </Button>
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <Button
-                                                size="sm"
-                                                variant="ghost"
-                                                className="h-8 gap-1.5"
-                                                onClick={() => setEditorFullScreen(false)}
-                                            >
-                                                <Minimize2 className="h-3.5 w-3.5" />
-                                                Exit full screen
-                                            </Button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>Exit full screen (Esc)</TooltipContent>
-                                    </Tooltip>
-                                </div>
-                            </header>
-                            <div className="flex-1 min-h-0 flex flex-col">
-                                <div className="shrink-0 border-b border-border/30">
-                                    <MonacoSqlEditor
-                                        value={activeTab.sql}
-                                        onChange={(v) => updateSql(activeTab.id, v)}
-                                        onExecute={handleExecute}
-                                        onReview={handleManualReview}
-                                        onFormatSql={handleFormatSql}
-                                        onFetchColumns={handleFetchColumns}
-                                        onNextAction={handleNextAction}
-                                        reviewIssues={reviewReport?.issues ?? []}
-                                        schemaContext={schemaContext}
-                                        disabled={activeTab.isExecuting}
-                                        className="rounded-none border-0"
-                                        editorHeight={380}
-                                        hideNextActionSuggestions
-                                    />
-                                </div>
-                                <div className="flex-1 min-h-0 overflow-auto flex flex-col p-4">
-                                    {activeTab.result ? (
-                                        activeTab.result.is_error ? (
-                                            <QueryErrorPanel
-                                                message={activeTab.result.error_message ?? "Unknown error"}
-                                                sql={activeTab.sql}
-                                                schemaContextForAi={schemaContextForAi}
-                                            />
-                                        ) : (
-                                            <div className="space-y-3">
-                                                <div className="flex items-center gap-3 text-sm">
-                                                    <CheckCircle2 className="h-4 w-4 text-emerald-500 shrink-0" />
-                                                    <span className="text-emerald-600 dark:text-emerald-400 font-medium">
-                                                        {getRowCountLabel(activeTab.result)}
-                                                    </span>
-                                                    <Badge variant="outline" className="text-xs font-mono">
-                                                        {activeTab.result.execution_time_ms.toFixed(1)}ms
-                                                    </Badge>
-                                                </div>
-                                                {!isCommandResult(activeTab.result) && !isMultiStatementResult(activeTab.result) && activeTab.result.columns.length > 0 && (
-                                                    <VirtualizedQueryResultTable
-                                                        result={activeTab.result}
-                                                        showRowIndex={false}
-                                                        maxHeight="40vh"
-                                                        compact
-                                                    />
-                                                )}
-                                                {(isCommandResult(activeTab.result) || isMultiStatementResult(activeTab.result)) && (
-                                                    <p className="text-sm text-muted-foreground">
-                                                        {isMultiStatementResult(activeTab.result)
-                                                            ? `${getDisplayCount(activeTab.result)} statement(s) executed successfully.`
-                                                            : `${getDisplayCount(activeTab.result).toLocaleString()} row(s) affected.`}
-                                                    </p>
-                                                )}
-                                            </div>
-                                        )
-                                    ) : (
-                                        <p className="text-sm text-muted-foreground">Run a query to see results.</p>
-                                    )}
-                                </div>
-                            </div>
+                            />
                         </div>
-                    )}
-
-                    <ResizablePanelGroup
-                        id="query-editor-resize-group"
-                        orientation="vertical"
-                        className="flex-1 min-h-0"
-                    >
-                        <ResizablePanel
-                            id="query-editor-sql-panel"
-                            defaultSize={42}
-                            minSize={20}
-                            maxSize={75}
-                            className="flex flex-col min-h-0"
+                        <div className="rounded-md border border-border/30 bg-muted/20 p-2">
+                            <p className="text-[10px] text-muted-foreground/50 mb-1">SQL content</p>
+                            <p className="text-xs font-mono text-foreground/70 truncate">
+                                {(activeTab?.sql ?? "").replace(/\s+/g, " ").slice(0, 200) || "(empty)"}
+                            </p>
+                        </div>
+                    </div>
+                    <DialogFooter>
+                        <Button variant="ghost" size="sm" onClick={() => setSaveNoteOpen(false)}>Cancel</Button>
+                        <Button
+                            size="sm"
+                            className="bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white"
+                            disabled={!saveNoteTitle.trim() || saveNoteLoading}
+                            onClick={async () => {
+                                setSaveNoteLoading(true);
+                                try {
+                                    const now = new Date().toISOString();
+                                    await storeNoteSave({ id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, title: saveNoteTitle.trim(), sql: activeTab?.sql ?? "", created_at: now, updated_at: now, tags: [] });
+                                    setSaveNoteOpen(false);
+                                    toast.success("Note saved", { duration: 1500 });
+                                } catch { toast.error("Failed to save note", { duration: 2000 }); }
+                                finally { setSaveNoteLoading(false); }
+                            }}
                         >
-                            <div className="relative border-b border-border/30 flex flex-col min-h-0">
+                            {saveNoteLoading && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
+                            Save Note
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
+
+            {/* ── Layout ───────────────────────────────────────────────── */}
+
+            {/* Activity bar */}
+            <QueryActivityBar activePanel={sidebarPanel} onToggle={handleActivityBarToggle} />
+
+            {/* Git panel — full-width takeover (like VS Code Source Control) */}
+            {sidebarPanel === "git" && (
+                <div className="flex-1 min-w-0 overflow-hidden">
+                    <GitPanel />
+                </div>
+            )}
+
+            {/* Sidebar panel (files / templates / history) */}
+            {sidebarPanel && sidebarPanel !== "git" && (
+                <div className="w-64 shrink-0 flex flex-col overflow-hidden border-r border-border/25">
+                    <QuerySidebar
+                        activePanel={sidebarPanel}
+                        history={history}
+                        onLoadSql={handleLoadSql}
+                        onRerunSql={handleRerunFromHistory}
+                        onClearHistory={clearHistory}
+                        onDeleteHistoryEntry={deleteHistoryEntry}
+                        schemaContext={schemaContext}
+                        connectionId={connectionId ?? "default"}
+                        databaseName={databaseName || "workspace"}
+                    />
+                </div>
+            )}
+
+            {/* Main editor column — hidden when git panel is open */}
+            <div className={cn("flex flex-col flex-1 min-w-0 overflow-hidden", sidebarPanel === "git" && "hidden")}>
+                {/* Tab bar */}
+                <QueryTabBar
+                    tabs={tabs}
+                    activeTabId={activeTabId}
+                    onSelectTab={setActiveTab}
+                    onCloseTab={removeTab}
+                    onNewTab={addTab}
+                    tabFileMap={tabFileMap}
+                    savedFileSqlMap={savedFileSqlMap}
+                />
+
+                {/* Sandbox banner */}
+                {isSandboxMode && (
+                    <div className="flex items-center gap-2 px-4 py-1 bg-emerald-500/5 border-b border-emerald-500/15 shrink-0">
+                        <ShieldCheck className="h-3.5 w-3.5 text-emerald-400 shrink-0" />
+                        <span className="text-xs text-emerald-400/90 font-medium">SANDBOX MODE</span>
+                        <span className="text-xs text-emerald-400/50 ml-1">
+                            {isSandboxReviewing ? "— Review diff, then Commit or Rollback"
+                                : isSandboxBusy ? "— Processing…"
+                                : "— Nothing committed until you approve"}
+                        </span>
+                        {isSandboxReviewing && sandboxElapsed > 0 && (
+                            <span className="ml-auto text-[10px] font-mono text-emerald-400/40">txn open {sandboxElapsed}s</span>
+                        )}
+                    </div>
+                )}
+
+                {/* AI review panel */}
+                {aiReviewEnabled && (
+                    <QueryReviewPanel
+                        report={reviewReport}
+                        isLoading={reviewLoading}
+                        isStale={reviewIsStale}
+                        onRecheck={handleManualReview}
+                        onClose={() => { setReviewReport(null); setReviewPendingApproval(null); }}
+                        pendingApproval={Boolean(reviewPendingApproval)}
+                        onRunPending={handleRunAfterReview}
+                        onCancelPending={() => setReviewPendingApproval(null)}
+                    />
+                )}
+
+                {/* Notes panel */}
+                {notesOpen && (
+                    <div className="shrink-0 border-b border-border/20 overflow-hidden flex flex-col" style={{ height: "min(22rem, 40vh)" }}>
+                        <NotesPanel
+                            onInsertSql={(sql) => {
+                                if (activeTabId) { updateSql(activeTabId, sql); setNotesOpen(false); }
+                                else { addTab("From Note", sql); setNotesOpen(false); }
+                            }}
+                            onClose={() => setNotesOpen(false)}
+                        />
+                    </div>
+                )}
+
+                {activeTab ? (
+                    <>
+                        {/* Full-screen editor overlay */}
+                        {editorFullScreen && (
+                            <div className="fixed inset-0 z-50 bg-background flex flex-col">
+                                <header className="flex items-center justify-between px-4 py-2 border-b border-border/30 bg-card/50 shrink-0">
+                                    <span className="text-sm font-medium text-muted-foreground">Query editor</span>
+                                    <div className="flex items-center gap-2">
+                                        <Button size="sm" variant="outline" className="h-8 gap-1.5" onClick={handleManualReview}
+                                            disabled={!activeTab.sql.trim() || activeTab.isExecuting || reviewLoading || !aiReviewEnabled}>
+                                            {reviewLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Shield className="h-3.5 w-3.5" />}
+                                            Review
+                                        </Button>
+                                        <Button size="sm" variant="outline" className="h-8 gap-1.5" onClick={handleExecute}
+                                            disabled={activeTab.isExecuting || reviewLoading || isSandboxBusy || isSandboxReviewing || !activeTab.sql.trim()}>
+                                            {activeTab.isExecuting || isSandboxBusy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Play className="h-3.5 w-3.5" />}
+                                            Run
+                                        </Button>
+                                        <Button size="sm" variant="ghost" className="h-8 gap-1.5" onClick={() => setEditorFullScreen(false)}>
+                                            <Minimize2 className="h-3.5 w-3.5" />
+                                            Exit full screen
+                                        </Button>
+                                    </div>
+                                </header>
                                 <MonacoSqlEditor
                                     value={activeTab.sql}
-                                    onChange={(v) => updateSql(activeTab.id, v)}
+                                    onChange={(v) => handleSqlChange(activeTab.id, v)}
                                     onExecute={handleExecute}
                                     onReview={handleManualReview}
                                     onFormatSql={handleFormatSql}
@@ -1829,519 +1132,575 @@ export function QueryEditor() {
                                     reviewIssues={reviewReport?.issues ?? []}
                                     schemaContext={schemaContext}
                                     disabled={activeTab.isExecuting}
-                                    className="rounded-none border-0"
+                                    className="rounded-none border-0 flex-1"
+                                    editorHeight={380}
                                     hideNextActionSuggestions
                                 />
-                        <div className="absolute bottom-2 right-2 flex items-center gap-2 z-10">
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        className="h-8 gap-1.5 text-xs text-muted-foreground/50 hover:text-amber-400 px-2"
-                                        onClick={() => {
-                                            setSaveNoteTitle("");
-                                            setSaveNoteOpen(true);
-                                        }}
-                                        disabled={!activeTab.sql.trim() || activeTab.isExecuting}
-                                    >
-                                        <StickyNote className="h-3 w-3" />
-                                        Note
-                                    </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Save as note</TooltipContent>
-                            </Tooltip>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        className="h-8 gap-1.5 text-xs text-muted-foreground/50 hover:text-muted-foreground px-2"
-                                        onClick={() => {
-                                            if (activeTab.sql) handleFormatSql(activeTab.sql);
-                                        }}
-                                        disabled={!activeTab.sql.trim() || activeTab.isExecuting}
-                                    >
-                                        <AlignLeft className="h-3 w-3" />
-                                        Format
-                                    </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Format SQL (⇧⌥F)</TooltipContent>
-                            </Tooltip>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <Button
-                                        variant="outline"
-                                        size="sm"
-                                        className="h-8 gap-1.5 text-xs border-border/40 text-muted-foreground hover:text-foreground hover:border-border/70"
-                                        onClick={handleManualReview}
-                                        disabled={!activeTab.sql.trim() || activeTab.isExecuting || reviewLoading || !aiReviewEnabled}
-                                    >
-                                        {reviewLoading ? (
-                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                        ) : (
-                                            <Shield className="h-3.5 w-3.5" />
-                                        )}
-                                        Review
-                                    </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>AI Review Mode (⌘R)</TooltipContent>
-                            </Tooltip>
-                            <span className="text-[10px] text-muted-foreground/40 font-mono">
-                                ⌘+Enter to run
-                            </span>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        className="h-8 gap-1.5 text-xs text-muted-foreground/50 hover:text-foreground px-2"
-                                        onClick={() => setEditorFullScreen((v) => !v)}
-                                    >
-                                        <Maximize2 className="h-3.5 w-3.5" />
-                                    </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>Full-screen editor</TooltipContent>
-                            </Tooltip>
-                            <Tooltip>
-                                <TooltipTrigger asChild>
-                                    <Button
-                                        variant="outline"
-                                        size="sm"
-                                        className="h-8 gap-1.5 text-xs border-border/40 text-muted-foreground hover:text-foreground hover:border-border/70"
-                                        onClick={() => handleExplain()}
-                                        disabled={isExplaining || activeTab.isExecuting || !activeTab.sql.trim()}
-                                    >
-                                        {isExplaining ? (
-                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                        ) : (
-                                            <GitBranch className="h-3.5 w-3.5" />
-                                        )}
-                                        Explain
-                                    </Button>
-                                </TooltipTrigger>
-                                <TooltipContent>EXPLAIN ANALYZE — visualise query plan</TooltipContent>
-                            </Tooltip>
-                            <Button
-                                size="sm"
-                                className={cn(
-                                    "h-8 gap-1.5 text-white shadow-md",
-                                    isSandboxMode
-                                        ? "bg-emerald-700 hover:bg-emerald-600 shadow-emerald-700/20"
-                                        : "bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 shadow-emerald-600/20"
-                                )}
-                                onClick={handleExecute}
-                                disabled={
-                                    activeTab.isExecuting ||
-                                    reviewLoading ||
-                                    isSandboxBusy ||
-                                    isSandboxReviewing ||
-                                    !activeTab.sql.trim()
-                                }
-                            >
-                                {activeTab.isExecuting || isSandboxBusy ? (
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                ) : isSandboxMode ? (
-                                    <ShieldCheck className="h-3.5 w-3.5" />
-                                ) : (
-                                    <Play className="h-3.5 w-3.5" />
-                                )}
-                                {isSandboxMode ? "Run in Sandbox" : "Run"}
-                            </Button>
-                        </div>
-
-                        {/* Save Note Dialog */}
-                        <Dialog open={saveNoteOpen} onOpenChange={setSaveNoteOpen}>
-                            <DialogContent className="sm:max-w-md">
-                                <DialogHeader>
-                                    <DialogTitle className="text-sm font-medium flex items-center gap-2">
-                                        <StickyNote className="h-4 w-4 text-amber-400" />
-                                        Save Note
-                                    </DialogTitle>
-                                </DialogHeader>
-                                <div className="space-y-3 py-2">
-                                    <div>
-                                        <label className="text-xs text-muted-foreground mb-1 block">Title</label>
-                                        <Input
-                                            value={saveNoteTitle}
-                                            onChange={(e) => setSaveNoteTitle(e.target.value)}
-                                            placeholder="e.g. User activity report…"
-                                            className="h-8 text-sm"
-                                            autoFocus
-                                            onKeyDown={(e) => {
-                                                if (e.key === "Enter" && saveNoteTitle.trim()) {
-                                                    e.preventDefault();
-                                                    (async () => {
-                                                        setSaveNoteLoading(true);
-                                                        try {
-                                                            const now = new Date().toISOString();
-                                                            await storeNoteSave({
-                                                                id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                                                                title: saveNoteTitle.trim(),
-                                                                sql: activeTab?.sql ?? "",
-                                                                created_at: now,
-                                                                updated_at: now,
-                                                                tags: [],
-                                                            });
-                                                            setSaveNoteOpen(false);
-                                                            toast.success("Note saved", { duration: 1500 });
-                                                        } catch {
-                                                            toast.error("Failed to save note", { duration: 2000 });
-                                                        } finally {
-                                                            setSaveNoteLoading(false);
-                                                        }
-                                                    })();
-                                                }
-                                            }}
-                                        />
-                                    </div>
-                                    <div className="rounded-md border border-border/30 bg-muted/20 p-2">
-                                        <p className="text-[10px] text-muted-foreground/50 mb-1">SQL content</p>
-                                        <p className="text-xs font-mono text-foreground/70 truncate">
-                                            {(activeTab?.sql ?? "").replace(/\s+/g, " ").slice(0, 200) || "(empty)"}
-                                        </p>
-                                    </div>
-                                </div>
-                                <DialogFooter>
-                                    <Button
-                                        variant="ghost"
-                                        size="sm"
-                                        onClick={() => setSaveNoteOpen(false)}
-                                    >
-                                        Cancel
-                                    </Button>
-                                    <Button
-                                        size="sm"
-                                        className="bg-gradient-to-r from-amber-600 to-orange-600 hover:from-amber-500 hover:to-orange-500 text-white"
-                                        disabled={!saveNoteTitle.trim() || saveNoteLoading}
-                                        onClick={async () => {
-                                            setSaveNoteLoading(true);
-                                            try {
-                                                const now = new Date().toISOString();
-                                                await storeNoteSave({
-                                                    id: `note-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-                                                    title: saveNoteTitle.trim(),
-                                                    sql: activeTab?.sql ?? "",
-                                                    created_at: now,
-                                                    updated_at: now,
-                                                    tags: [],
-                                                });
-                                                setSaveNoteOpen(false);
-                                                toast.success("Note saved", { duration: 1500 });
-                                            } catch {
-                                                toast.error("Failed to save note", { duration: 2000 });
-                                            } finally {
-                                                setSaveNoteLoading(false);
-                                            }
-                                        }}
-                                    >
-                                        {saveNoteLoading && <Loader2 className="h-3.5 w-3.5 animate-spin mr-1.5" />}
-                                        Save Note
-                                    </Button>
-                                </DialogFooter>
-                            </DialogContent>
-                        </Dialog>
                             </div>
-                        </ResizablePanel>
+                        )}
 
-                        <ResizableHandle
-                            withHandle
-                            className="shrink-0 min-h-2 py-1 bg-border/20 hover:bg-border/50 data-[resize-handle-active]:bg-emerald-500/40 transition-colors"
-                        />
+                        <ResizablePanelGroup id="qe-vgroup" orientation="vertical" className="flex-1 min-h-0">
+                            {/* Editor panel */}
+                            <ResizablePanel id="qe-editor" defaultSize={40} minSize={20} maxSize={75} className="flex flex-col min-h-0">
+                                <QueryToolbar
+                                    isExecuting={activeTab.isExecuting}
+                                    isReviewLoading={reviewLoading}
+                                    isExplaining={isExplaining}
+                                    hasSql={Boolean(activeTab.sql.trim())}
+                                    isSandboxMode={isSandboxMode}
+                                    isSandboxBusy={isSandboxBusy}
+                                    isSandboxReviewing={isSandboxReviewing}
+                                    aiReviewEnabled={aiReviewEnabled}
+                                    isFullScreen={editorFullScreen}
+                                    onRun={handleExecute}
+                                    onReview={handleManualReview}
+                                    onFormat={() => activeTab.sql && handleFormatSql(activeTab.sql)}
+                                    onExplain={() => handleExplain()}
+                                    onRunFile={() => setRunSqlFileOpen(true)}
+                                    onSaveNote={() => { setSaveNoteTitle(""); setSaveNoteOpen(true); }}
+                                    onToggleFullScreen={() => setEditorFullScreen((v) => !v)}
+                                    onToggleSandbox={() => {
+                                        if (isSandboxMode) { disableSandbox(); toast.info("Sandbox mode off", { duration: 1500 }); }
+                                        else { enableSandbox(); toast.success("Sandbox mode enabled — queries run inside a transaction", { duration: 2500 }); }
+                                    }}
+                                />
+                                <MonacoSqlEditor
+                                    value={activeTab.sql}
+                                    onChange={(v) => handleSqlChange(activeTab.id, v)}
+                                    onExecute={handleExecute}
+                                    onReview={handleManualReview}
+                                    onFormatSql={handleFormatSql}
+                                    onFetchColumns={handleFetchColumns}
+                                    onNextAction={handleNextAction}
+                                    reviewIssues={reviewReport?.issues ?? []}
+                                    schemaContext={schemaContext}
+                                    disabled={activeTab.isExecuting}
+                                    className="rounded-none border-0 flex-1"
+                                    hideNextActionSuggestions
+                                />
+                            </ResizablePanel>
 
-                        <ResizablePanel
-                            id="query-editor-results-panel"
-                            defaultSize={58}
-                            minSize={28}
-                            maxSize={80}
-                            className="flex flex-col min-h-0 overflow-hidden"
-                        >
-                    {/* Results */}
-                    <div className="flex-1 min-h-0 overflow-hidden flex flex-col">
+                            <ResizableHandle
+                                withHandle
+                                className="shrink-0 min-h-2 py-1 bg-border/20 hover:bg-border/50 data-[resize-handle-active]:bg-emerald-500/40 transition-colors"
+                            />
 
-                        {/* ── Sandbox diff viewer ── */}
-                        {isSandboxReviewing && sandboxResult && (
-                            <div className="flex-1 overflow-hidden">
-                                <SandboxDiffViewer
-                                    result={sandboxResult}
-                                    sql={sandboxPendingSql ?? ""}
-                                    elapsedSecs={sandboxElapsed}
+                            {/* Results panel */}
+                            <ResizablePanel id="qe-results" defaultSize={60} minSize={25} maxSize={80} className="flex flex-col min-h-0 overflow-hidden">
+                                <ResultsArea
+                                    activeTab={activeTab}
+                                    isSandboxMode={isSandboxMode}
+                                    isSandboxReviewing={isSandboxReviewing}
+                                    isSandboxBusy={isSandboxBusy}
+                                    isSandboxCommitting={isSandboxCommitting}
+                                    isSandboxRollingBack={isSandboxRollingBack}
+                                    sandboxResult={sandboxResult}
+                                    sandboxPendingSql={sandboxPendingSql}
+                                    sandboxElapsed={sandboxElapsed}
+                                    sandboxStatus={sandboxStatus}
                                     anomalyWarning={anomalyWarning}
                                     onCommit={commitSandbox}
                                     onRollback={rollbackSandbox}
-                                    isCommitting={isSandboxCommitting}
-                                    isRollingBack={isSandboxRollingBack}
-                                />
-                            </div>
-                        )}
-
-                        {/* Sandbox executing spinner */}
-                        {isSandboxBusy && (
-                            <div className="flex-1 flex items-center justify-center">
-                                <div className="flex items-center gap-3">
-                                    <ShieldCheck className="h-5 w-5 animate-pulse text-emerald-400" />
-                                    <span className="text-sm text-muted-foreground">
-                                        {sandboxStatus === "executing"
-                                            ? "Running in sandbox transaction…"
-                                            : sandboxStatus === "committing"
-                                                ? "Committing changes…"
-                                                : "Rolling back changes…"}
-                                    </span>
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Sandbox ready (no result yet) */}
-                        {isSandboxMode && sandboxStatus === "ready" && !activeTab.result && (
-                            <div className="flex-1 flex h-full flex-col items-center justify-center text-muted-foreground">
-                                <ShieldCheck className="h-12 w-12 mb-3 opacity-15 text-emerald-400" />
-                                <p className="text-sm font-medium">Sandbox mode active</p>
-                                <p className="text-xs mt-1 opacity-60">
-                                    Write SQL above and press ⌘+Enter. Changes will not be committed until you approve.
-                                </p>
-                            </div>
-                        )}
-
-                        {/* Results / Plan / Canvas tab switcher */}
-                        {!isSandboxMode && (activeTab.result || activePlan) && (
-                            <div className="flex items-center gap-0.5 border-b border-border/20 bg-muted/20 px-2 shrink-0">
-                                <button
-                                    className={cn(
-                                        "px-3 py-2 text-[11px] font-medium border-b-2 transition-colors -mb-px",
-                                        activeResultView === "results"
-                                            ? "border-primary text-foreground"
-                                            : "border-transparent text-muted-foreground hover:text-foreground/80"
-                                    )}
-                                    onClick={() => activeTabId && setResultView((p) => ({ ...p, [activeTabId]: "results" }))}
-                                >
-                                    Results
-                                </button>
-                                {activePlan && (
-                                    <button
-                                        className={cn(
-                                            "flex items-center gap-1.5 px-3 py-2 text-[11px] font-medium border-b-2 transition-colors -mb-px",
-                                            activeResultView === "plan"
-                                                ? "border-primary text-foreground"
-                                                : "border-transparent text-muted-foreground hover:text-foreground/80"
-                                        )}
-                                        onClick={() => activeTabId && setResultView((p) => ({ ...p, [activeTabId]: "plan" }))}
-                                    >
-                                        <GitBranch className="h-3 w-3" />
-                                        Plan
-                                    </button>
-                                )}
-                                {activeTab.result &&
-                                    !activeTab.result.is_error &&
-                                    activeTab.result.columns.length > 0 &&
-                                    !isCommandResult(activeTab.result) &&
-                                    !isMultiStatementResult(activeTab.result) && (
-                                        <button
-                                            className={cn(
-                                                "flex items-center gap-1.5 px-3 py-2 text-[11px] font-medium border-b-2 transition-colors -mb-px",
-                                                activeResultView === "canvas"
-                                                    ? "border-primary text-foreground"
-                                                    : "border-transparent text-muted-foreground hover:text-foreground/80"
-                                            )}
-                                            onClick={() => activeTabId && setResultView((p) => ({ ...p, [activeTabId]: "canvas" }))}
-                                        >
-                                            <LayoutDashboard className="h-3 w-3" />
-                                            Canvas
-                                        </button>
-                                    )}
-                            </div>
-                        )}
-
-                        {/* Plan view */}
-                        {!isSandboxMode && activeResultView === "plan" && activePlan && (
-                            <div className="flex-1 overflow-hidden">
-                                <QueryPlanViewer rawJson={activePlan} onApplyFix={handleApplyFix} />
-                            </div>
-                        )}
-
-                        {/* Explain loading */}
-                        {!isSandboxMode && activeResultView === "plan" && isExplaining && (
-                            <div className="flex-1 flex items-center justify-center">
-                                <div className="flex items-center gap-3">
-                                    <Loader2 className="h-5 w-5 animate-spin text-blue-400" />
-                                    <span className="text-sm text-muted-foreground">Analysing query plan…</span>
-                                </div>
-                            </div>
-                        )}
-
-                        {/* Canvas view */}
-                        {!isSandboxMode && activeResultView === "canvas" && activeTab.result && !activeTab.result.is_error && (
-                            <div className="flex-1 overflow-hidden">
-                                <DataCanvas result={activeTab.result} />
-                            </div>
-                        )}
-
-                        {!isSandboxMode && activeResultView === "results" && activeTab.result ? (
-                            activeTab.result.is_error ? (
-                                <QueryErrorPanel
-                                    message={activeTab.result.error_message ?? "Unknown error"}
-                                    sql={activeTab.sql}
+                                    activeResultView={activeResultView}
+                                    setResultView={(view) => activeTabId && setResultView((p) => ({ ...p, [activeTabId]: view }))}
+                                    activePlan={activePlan}
+                                    isExplaining={isExplaining}
+                                    onExplain={() => handleExplain()}
+                                    onApplyFix={handleApplyFix}
+                                    hasResult={Boolean(hasResult)}
+                                    history={history}
+                                    onShowHistory={() => setSidebarPanel((p) => p === "history" ? null : "history")}
+                                    onExport={handleExport}
                                     schemaContextForAi={schemaContextForAi}
+                                    // Status bar props
+                                    databaseName={databaseName}
+                                    databases={databases}
+                                    selectedSchema={selectedSchema}
+                                    schemas={schemas}
+                                    onSwitchDatabase={(db) => connectionId && switchDatabase(connectionId, db)}
+                                    onSwitchSchema={(schema) => selectSchema(schema ?? "public")}
+                                    activeEnvironment={activeEnvironment}
+                                    strictProductionGuard={strictProductionGuard}
+                                    isSwitchingDb={isSwitchingDb}
+                                    connectionId={connectionId}
                                 />
-                            ) : (
-                                <div className="flex h-full min-h-0 flex-col">
-                                    {/* Slow query banner */}
-                                    {activeTab.result.execution_time_ms > 500 && activeResultView === "results" && (
-                                        <div className="flex items-center justify-between gap-3 px-4 py-1.5 bg-amber-500/5 border-b border-amber-500/15 shrink-0">
-                                            <div className="flex items-center gap-2">
-                                                <AlertCircle className="h-3 w-3 text-amber-500 shrink-0" />
-                                                <span className="text-[11px] text-muted-foreground">
-                                                    Slow query ({activeTab.result.execution_time_ms.toFixed(0)}ms)
-                                                </span>
-                                            </div>
-                                            <Button
-                                                size="sm"
-                                                variant="ghost"
-                                                className="h-6 px-2 text-[11px] gap-1 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 shrink-0"
-                                                onClick={() => handleExplain()}
-                                                disabled={isExplaining}
-                                            >
-                                                {isExplaining ? <Loader2 className="h-3 w-3 animate-spin" /> : <GitBranch className="h-3 w-3" />}
-                                                Explain
-                                            </Button>
-                                        </div>
-                                    )}
-                                    {/* Result info bar — success message and stats */}
-                                    <div className="flex items-center justify-between gap-4 px-4 py-2 border-b border-border/20 bg-muted/30 shrink-0">
-                                        <div className="flex items-center gap-3 flex-wrap">
-                                            <div className="flex items-center gap-2">
-                                                <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
-                                                <span className="text-xs font-medium text-foreground/90">
-                                                    {getRowCountLabel(activeTab.result)}
-                                                </span>
-                                            </div>
-                                            <Badge
-                                                variant="outline"
-                                                className="text-[10px] font-mono gap-1 border-border/40 text-muted-foreground"
-                                            >
-                                                <Clock className="h-2.5 w-2.5" />
-                                                {activeTab.result.execution_time_ms.toFixed(1)}ms
-                                            </Badge>
-                                        </div>
+                            </ResizablePanel>
+                        </ResizablePanelGroup>
+                    </>
+                ) : (
+                    <div className="flex-1 flex items-center justify-center text-muted-foreground">
+                        <div className="flex flex-col items-center gap-4">
+                            <div className="rounded-2xl border border-border/30 bg-muted/20 p-8 flex flex-col items-center gap-3">
+                                <Terminal className="h-12 w-12 opacity-20" />
+                                <p className="text-sm font-medium text-foreground/80">No query tab open</p>
+                                <Button size="sm" variant="outline" onClick={() => addTab()} className="gap-1.5">
+                                    Open new tab
+                                </Button>
+                            </div>
+                        </div>
+                    </div>
+                )}
 
-                                        {/* Export dropdown — only for result sets with multiple columns */}
-                                        <div className="flex items-center gap-1">
-                                            {!isCommandResult(activeTab.result) && !isMultiStatementResult(activeTab.result) && (
-                                                <>
-                                                    <Tooltip>
-                                                        <TooltipTrigger asChild>
-                                                            <Button
-                                                                variant="ghost"
-                                                                size="sm"
-                                                                className="h-7 text-xs gap-1.5 text-muted-foreground hover:text-foreground px-2"
-                                                                onClick={() => {
-                                                                    const r = activeTab.result!;
-                                                                    const header = r.columns.map((c) => c.name).join("\t");
-                                                                    const rows = r.rows.map((row) =>
-                                                                        row.map((cell) => formatCellValue(cell)).join("\t")
-                                                                    );
-                                                                    navigator.clipboard.writeText([header, ...rows].join("\n"));
-                                                                    toast.success("Copied as TSV", { duration: 1500 });
-                                                                }}
-                                                                disabled={!hasResult}
-                                                            >
-                                                                <Copy className="h-3 w-3" />
-                                                                Copy
-                                                            </Button>
-                                                        </TooltipTrigger>
-                                                        <TooltipContent>Copy as TSV</TooltipContent>
-                                                    </Tooltip>
+                {/* Notes panel toggle in tab bar area — sticky note button */}
+                {activeTab && (
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <button
+                                className={cn(
+                                    "fixed bottom-8 right-4 z-30 h-8 w-8 flex items-center justify-center rounded-full shadow-lg border transition-all",
+                                    notesOpen
+                                        ? "bg-amber-500/15 border-amber-500/30 text-amber-400"
+                                        : "bg-card/80 border-border/40 text-muted-foreground hover:text-foreground backdrop-blur-sm"
+                                )}
+                                onClick={() => setNotesOpen((o) => !o)}
+                            >
+                                <StickyNote className="h-3.5 w-3.5" />
+                            </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="left">Notes (⌘⇧N)</TooltipContent>
+                    </Tooltip>
+                )}
+            </div>
+        </div>
+    );
+}
 
-                                                    <DropdownMenu>
-                                                        <DropdownMenuTrigger asChild>
-                                                            <Button
-                                                                variant="ghost"
-                                                                size="sm"
-                                                                className="h-7 text-xs gap-1.5 text-muted-foreground hover:text-foreground px-2"
-                                                                disabled={!hasResult}
-                                                            >
-                                                                <Download className="h-3 w-3" />
-                                                                Export
-                                                                <ChevronDown className="h-3 w-3 ml-0.5" />
-                                                            </Button>
-                                                        </DropdownMenuTrigger>
-                                                        <DropdownMenuContent align="end" className="w-44">
-                                                            <DropdownMenuItem
-                                                                onClick={() => handleExport("csv")}
-                                                                className="gap-2 text-xs"
-                                                            >
-                                                                <FileText className="h-3.5 w-3.5" />
-                                                                Download as CSV
-                                                            </DropdownMenuItem>
-                                                            <DropdownMenuItem
-                                                                onClick={() => handleExport("json")}
-                                                                className="gap-2 text-xs"
-                                                            >
-                                                                <Braces className="h-3.5 w-3.5" />
-                                                                Download as JSON
-                                                            </DropdownMenuItem>
-                                                        </DropdownMenuContent>
-                                                    </DropdownMenu>
-                                                </>
-                                            )}
-                                        </div>
-                                    </div>
+// ── Results area subcomponent ─────────────────────────────────────────────
 
-                                    {/* Result: compact message for INSERT/UPDATE/DELETE/multi-statement, table for SELECT */}
-                                    {isCommandResult(activeTab.result) || isMultiStatementResult(activeTab.result) ? (
-                                        <div className="flex-1 flex items-center justify-center p-6">
-                                            <p className="text-sm text-muted-foreground">
-                                                {isMultiStatementResult(activeTab.result)
-                                                    ? `${getDisplayCount(activeTab.result)} statement${getDisplayCount(activeTab.result) !== 1 ? "s" : ""} executed successfully.`
-                                                    : `${getDisplayCount(activeTab.result).toLocaleString()} row${getDisplayCount(activeTab.result) !== 1 ? "s" : ""} affected.`}
-                                            </p>
-                                        </div>
-                                    ) : (
-                                        <div className="flex-1 min-h-0 overflow-hidden">
-                                            <VirtualizedQueryResultTable
-                                                result={activeTab.result}
-                                                showRowIndex
-                                                className="h-full"
-                                            />
-                                        </div>
-                                    )}
+interface ResultsAreaProps {
+    activeTab: NonNullable<ReturnType<typeof useQueryStore.getState>["tabs"][number]> & { result: QueryResult | null; isExecuting: boolean };
+    isSandboxMode: boolean;
+    isSandboxReviewing: boolean;
+    isSandboxBusy: boolean;
+    isSandboxCommitting: boolean;
+    isSandboxRollingBack: boolean;
+    sandboxResult: SandboxExecuteResult | null;
+    sandboxPendingSql: string | null;
+    sandboxElapsed: number;
+    sandboxStatus: string;
+    anomalyWarning: string | null;
+    onCommit: () => void;
+    onRollback: () => void;
+    activeResultView: "results" | "plan" | "canvas";
+    setResultView: (v: "results" | "plan" | "canvas") => void;
+    activePlan?: string;
+    isExplaining: boolean;
+    onExplain: () => void;
+    onApplyFix: (sql: string) => Promise<void>;
+    hasResult: boolean;
+    history: QueryHistoryEntry[];
+    onShowHistory: () => void;
+    onExport: (format: "csv" | "json") => void;
+    schemaContextForAi: string;
+    databaseName: string | null;
+    databases: string[];
+    selectedSchema: string | null;
+    schemas: { name: string }[];
+    onSwitchDatabase: (db: string) => void;
+    onSwitchSchema: (schema: string | null) => void;
+    activeEnvironment: ReturnType<typeof normalizeConnectionEnvironment>;
+    strictProductionGuard: boolean;
+    isSwitchingDb: boolean;
+    connectionId: string | null;
+}
+
+function ResultsArea({
+    activeTab,
+    isSandboxMode,
+    isSandboxReviewing,
+    isSandboxBusy,
+    isSandboxCommitting,
+    isSandboxRollingBack,
+    sandboxResult,
+    sandboxPendingSql,
+    sandboxElapsed,
+    sandboxStatus,
+    anomalyWarning,
+    onCommit,
+    onRollback,
+    activeResultView,
+    setResultView,
+    activePlan,
+    isExplaining,
+    onExplain,
+    onApplyFix,
+    hasResult,
+    history,
+    onShowHistory,
+    onExport,
+    schemaContextForAi,
+    databaseName,
+    databases,
+    selectedSchema,
+    schemas,
+    onSwitchDatabase,
+    onSwitchSchema,
+    activeEnvironment,
+    strictProductionGuard,
+    isSwitchingDb,
+    connectionId,
+}: ResultsAreaProps) {
+    return (
+        <div className="flex flex-col h-full overflow-hidden">
+            {/* Sandbox diff */}
+            {isSandboxReviewing && sandboxResult && (
+                <div className="flex-1 overflow-hidden">
+                    <SandboxDiffViewer
+                        result={sandboxResult}
+                        sql={sandboxPendingSql ?? ""}
+                        elapsedSecs={sandboxElapsed}
+                        anomalyWarning={anomalyWarning}
+                        onCommit={onCommit}
+                        onRollback={onRollback}
+                        isCommitting={isSandboxCommitting}
+                        isRollingBack={isSandboxRollingBack}
+                    />
+                </div>
+            )}
+
+            {/* Sandbox busy */}
+            {isSandboxBusy && (
+                <div className="flex-1 flex items-center justify-center">
+                    <div className="flex items-center gap-3">
+                        <ShieldCheck className="h-5 w-5 animate-pulse text-emerald-400" />
+                        <span className="text-sm text-muted-foreground">
+                            {sandboxStatus === "executing" ? "Running in sandbox transaction…"
+                                : sandboxStatus === "committing" ? "Committing changes…"
+                                : "Rolling back changes…"}
+                        </span>
+                    </div>
+                </div>
+            )}
+
+            {/* Sandbox ready */}
+            {isSandboxMode && sandboxStatus === "ready" && !activeTab.result && (
+                <div className="flex-1 flex h-full flex-col items-center justify-center text-muted-foreground">
+                    <ShieldCheck className="h-12 w-12 mb-3 opacity-15 text-emerald-400" />
+                    <p className="text-sm font-medium">Sandbox mode active</p>
+                    <p className="text-xs mt-1 opacity-60">Write SQL above and press ⌘+Enter. Changes won't be committed until you approve.</p>
+                </div>
+            )}
+
+            {/* Result view tab switcher */}
+            {!isSandboxMode && (activeTab.result || activePlan) && (
+                <div className="flex items-center gap-0.5 border-b border-border/20 bg-muted/20 px-2 shrink-0">
+                    {(["results", "plan", "canvas"] as const).map((view) => {
+                        if (view === "plan" && !activePlan) return null;
+                        if (view === "canvas" && (!activeTab.result || activeTab.result.is_error || activeTab.result.columns.length === 0 || isCommandResult(activeTab.result) || isMultiStatementResult(activeTab.result))) return null;
+                        return (
+                            <button
+                                key={view}
+                                onClick={() => setResultView(view)}
+                                className={cn(
+                                    "flex items-center gap-1.5 px-3 py-2 text-[11px] font-medium border-b-2 transition-colors -mb-px capitalize",
+                                    activeResultView === view
+                                        ? "border-primary text-foreground"
+                                        : "border-transparent text-muted-foreground hover:text-foreground/80"
+                                )}
+                            >
+                                {view === "plan" && <GitBranch className="h-3 w-3" />}
+                                {view === "canvas" && <LayoutDashboard className="h-3 w-3" />}
+                                {view}
+                            </button>
+                        );
+                    })}
+                </div>
+            )}
+
+            {/* Plan view */}
+            {!isSandboxMode && activeResultView === "plan" && activePlan && (
+                <div className="flex-1 overflow-hidden">
+                    <QueryPlanViewer rawJson={activePlan} onApplyFix={onApplyFix} />
+                </div>
+            )}
+
+            {/* Explain loading */}
+            {!isSandboxMode && activeResultView === "plan" && isExplaining && (
+                <div className="flex-1 flex items-center justify-center">
+                    <div className="flex items-center gap-3">
+                        <Loader2 className="h-5 w-5 animate-spin text-blue-400" />
+                        <span className="text-sm text-muted-foreground">Analysing query plan…</span>
+                    </div>
+                </div>
+            )}
+
+            {/* Canvas view */}
+            {!isSandboxMode && activeResultView === "canvas" && activeTab.result && !activeTab.result.is_error && (
+                <div className="flex-1 overflow-hidden">
+                    <DataCanvas result={activeTab.result} />
+                </div>
+            )}
+
+            {/* Results view */}
+            {!isSandboxMode && activeResultView === "results" && activeTab.result ? (
+                activeTab.result.is_error ? (
+                    <QueryErrorPanel
+                        message={activeTab.result.error_message ?? "Unknown error"}
+                        sql={activeTab.sql}
+                        schemaContextForAi={schemaContextForAi}
+                    />
+                ) : (
+                    <div className="flex h-full min-h-0 flex-col">
+                        {/* Slow query banner */}
+                        {activeTab.result.execution_time_ms > 500 && (
+                            <div className="flex items-center justify-between gap-3 px-4 py-1.5 bg-amber-500/5 border-b border-amber-500/15 shrink-0">
+                                <div className="flex items-center gap-2">
+                                    <AlertCircle className="h-3 w-3 text-amber-500 shrink-0" />
+                                    <span className="text-[11px] text-muted-foreground">Slow query ({activeTab.result.execution_time_ms.toFixed(0)}ms)</span>
                                 </div>
-                            )
-                        ) : null}
-
-                        {!isSandboxMode && activeResultView === "results" && activeTab.isExecuting && !activeTab.result && (
-                            <div className="flex-1 flex items-center justify-center min-h-[200px]">
-                                <div className="flex flex-col items-center gap-4">
-                                    <div className="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-500/10 border border-emerald-500/20">
-                                        <Loader2 className="h-5 w-5 animate-spin text-emerald-500" />
-                                    </div>
-                                    <p className="text-sm font-medium text-foreground/80">Executing query…</p>
-                                    <p className="text-xs text-muted-foreground/60">Results will appear here</p>
-                                </div>
+                                <Button size="sm" variant="ghost" className="h-6 px-2 text-[11px] gap-1 text-amber-600 dark:text-amber-400 hover:bg-amber-500/10 shrink-0" onClick={onExplain} disabled={isExplaining}>
+                                    {isExplaining ? <Loader2 className="h-3 w-3 animate-spin" /> : <GitBranch className="h-3 w-3" />}
+                                    Explain
+                                </Button>
                             </div>
                         )}
 
-                        {!isSandboxMode && activeResultView === "results" && !activeTab.result && !activeTab.isExecuting && (
-                            <div className="flex-1 flex h-full flex-col items-center justify-center text-muted-foreground">
-                                <Terminal className="h-12 w-12 mb-3 opacity-15" />
-                                <p className="text-sm font-medium">Run a query</p>
-                                <p className="text-xs mt-1 opacity-60">
-                                    Write SQL above and press ⌘+Enter
+                        {/* Result info bar */}
+                        <div className="flex items-center justify-between gap-4 px-3 py-1.5 border-b border-border/20 bg-muted/20 shrink-0">
+                            <div className="flex items-center gap-2 flex-wrap">
+                                <div className="flex items-center gap-1.5">
+                                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
+                                    <span className="text-xs font-medium text-foreground/90">{getRowCountLabel(activeTab.result)}</span>
+                                </div>
+                                <Badge variant="outline" className="text-[10px] font-mono gap-1 border-border/40 text-muted-foreground">
+                                    <Clock className="h-2.5 w-2.5" />
+                                    {activeTab.result.execution_time_ms.toFixed(1)}ms
+                                </Badge>
+                            </div>
+
+                            {!isCommandResult(activeTab.result) && !isMultiStatementResult(activeTab.result) && (
+                                <div className="flex items-center gap-1">
+                                    <Tooltip>
+                                        <TooltipTrigger asChild>
+                                            <Button variant="ghost" size="sm" className="h-6 text-xs gap-1.5 text-muted-foreground hover:text-foreground px-2"
+                                                onClick={() => {
+                                                    const r = activeTab.result!;
+                                                    const header = r.columns.map((c) => c.name).join("\t");
+                                                    const rows = r.rows.map((row) => row.map((cell) => formatCellValue(cell)).join("\t"));
+                                                    navigator.clipboard.writeText([header, ...rows].join("\n"));
+                                                    toast.success("Copied as TSV", { duration: 1500 });
+                                                }}
+                                                disabled={!hasResult}
+                                            >
+                                                <Copy className="h-3 w-3" />
+                                                Copy
+                                            </Button>
+                                        </TooltipTrigger>
+                                        <TooltipContent>Copy as TSV</TooltipContent>
+                                    </Tooltip>
+                                    <DropdownMenu>
+                                        <DropdownMenuTrigger asChild>
+                                            <Button variant="ghost" size="sm" className="h-6 text-xs gap-1.5 text-muted-foreground hover:text-foreground px-2" disabled={!hasResult}>
+                                                <Download className="h-3 w-3" />
+                                                Export
+                                                <ChevronDown className="h-3 w-3 ml-0.5" />
+                                            </Button>
+                                        </DropdownMenuTrigger>
+                                        <DropdownMenuContent align="end" className="w-44">
+                                            <DropdownMenuItem onClick={() => onExport("csv")} className="gap-2 text-xs">
+                                                <FileText className="h-3.5 w-3.5" />
+                                                Download as CSV
+                                            </DropdownMenuItem>
+                                            <DropdownMenuItem onClick={() => onExport("json")} className="gap-2 text-xs">
+                                                <Braces className="h-3.5 w-3.5" />
+                                                Download as JSON
+                                            </DropdownMenuItem>
+                                        </DropdownMenuContent>
+                                    </DropdownMenu>
+                                </div>
+                            )}
+                        </div>
+
+                        {isCommandResult(activeTab.result) || isMultiStatementResult(activeTab.result) ? (
+                            <div className="flex-1 flex items-center justify-center p-6">
+                                <p className="text-sm text-muted-foreground">
+                                    {isMultiStatementResult(activeTab.result)
+                                        ? `${getDisplayCount(activeTab.result)} statement${getDisplayCount(activeTab.result) !== 1 ? "s" : ""} executed successfully.`
+                                        : `${getDisplayCount(activeTab.result).toLocaleString()} row${getDisplayCount(activeTab.result) !== 1 ? "s" : ""} affected.`}
                                 </p>
-                                {history.length > 0 && (
-                                    <button
-                                        onClick={() => setHistoryOpen(true)}
-                                        className="mt-3 text-xs text-muted-foreground/50 hover:text-muted-foreground flex items-center gap-1.5 transition-colors"
-                                    >
-                                        <History className="h-3 w-3" />
-                                        View query history
-                                    </button>
-                                )}
+                            </div>
+                        ) : (
+                            <div className="flex-1 min-h-0 overflow-hidden">
+                                <VirtualizedQueryResultTable result={activeTab.result} showRowIndex className="h-full" />
                             </div>
                         )}
                     </div>
-                        </ResizablePanel>
-                    </ResizablePanelGroup>
-                </>
+                )
+            ) : null}
+
+            {/* Executing */}
+            {!isSandboxMode && activeResultView === "results" && activeTab.isExecuting && !activeTab.result && (
+                <div className="flex-1 flex items-center justify-center min-h-[200px] animate-in fade-in duration-200">
+                    <div className="flex flex-col items-center gap-5">
+                        <div className="relative flex h-14 w-14 items-center justify-center rounded-2xl bg-gradient-to-br from-emerald-500/15 to-cyan-500/10 border border-emerald-500/25 shadow-lg shadow-emerald-500/5">
+                            <Loader2 className="h-7 w-7 animate-spin text-emerald-500" />
+                            <div className="absolute inset-0 rounded-2xl bg-emerald-500/5 animate-pulse" aria-hidden />
+                        </div>
+                        <div className="text-center space-y-1">
+                            <p className="text-sm font-medium text-foreground/90">Executing query…</p>
+                            <p className="text-xs text-muted-foreground/60">Results will appear here</p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Empty state */}
+            {!isSandboxMode && activeResultView === "results" && !activeTab.result && !activeTab.isExecuting && (
+                <div className="flex-1 flex h-full flex-col items-center justify-center text-muted-foreground">
+                    <div className="flex flex-col items-center gap-4">
+                        <div className="rounded-2xl border border-border/30 bg-muted/20 p-6 flex flex-col items-center gap-3">
+                            <Terminal className="h-10 w-10 opacity-20" />
+                            <p className="text-sm font-medium text-foreground/80">Run a query</p>
+                            <p className="text-xs opacity-70">Write SQL above and press</p>
+                            <div className="flex items-center gap-1.5">
+                                <kbd className="px-2 py-1 rounded-md bg-muted/80 font-mono text-[11px] border border-border/50 text-foreground/80">⌘</kbd>
+                                <span className="text-muted-foreground/60">+</span>
+                                <kbd className="px-2 py-1 rounded-md bg-muted/80 font-mono text-[11px] border border-border/50 text-foreground/80">Enter</kbd>
+                            </div>
+                        </div>
+                        {history.length > 0 && (
+                            <button onClick={onShowHistory} className="text-xs text-muted-foreground/50 hover:text-muted-foreground flex items-center gap-1.5 transition-colors">
+                                <GitBranch className="h-3 w-3" />
+                                View query history
+                            </button>
+                        )}
+                    </div>
+                </div>
+            )}
+
+            {/* Status bar */}
+            <StatusBar
+                databaseName={databaseName}
+                databases={databases}
+                selectedSchema={selectedSchema}
+                schemas={schemas}
+                onSwitchDatabase={onSwitchDatabase}
+                onSwitchSchema={onSwitchSchema}
+                activeEnvironment={activeEnvironment}
+                strictProductionGuard={strictProductionGuard}
+                isSwitchingDb={isSwitchingDb}
+                connectionId={connectionId}
+                result={activeTab.result}
+            />
+        </div>
+    );
+}
+
+// ── Status bar ────────────────────────────────────────────────────────────
+
+interface StatusBarProps {
+    databaseName: string | null;
+    databases: string[];
+    selectedSchema: string | null;
+    schemas: { name: string }[];
+    onSwitchDatabase: (db: string) => void;
+    onSwitchSchema: (schema: string | null) => void;
+    activeEnvironment: ReturnType<typeof normalizeConnectionEnvironment>;
+    strictProductionGuard: boolean;
+    isSwitchingDb: boolean;
+    connectionId: string | null;
+    result: QueryResult | null;
+}
+
+function StatusBar({
+    databaseName,
+    databases,
+    selectedSchema,
+    schemas,
+    onSwitchDatabase,
+    onSwitchSchema,
+    activeEnvironment,
+    strictProductionGuard,
+    isSwitchingDb,
+    connectionId,
+    result,
+}: StatusBarProps) {
+    const [dbOpen, setDbOpen] = useState(false);
+    const [schemaOpen, setSchemaOpen] = useState(false);
+
+    if (!connectionId) return null;
+
+    return (
+        <div className="flex items-center gap-2 px-3 py-1 border-t border-border/20 bg-card/30 shrink-0 text-[11px]">
+            {/* DB switcher */}
+            <Popover open={dbOpen} onOpenChange={setDbOpen}>
+                <PopoverTrigger asChild>
+                    <button className="flex items-center gap-1.5 text-muted-foreground hover:text-foreground transition-colors">
+                        {isSwitchingDb ? (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                            <Database className="h-3 w-3" />
+                        )}
+                        <span className="font-mono">{databaseName ?? "—"}</span>
+                        <ChevronDown className="h-3 w-3 opacity-50" />
+                    </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-52 p-1" align="start" side="top">
+                    <p className="text-[10px] font-medium text-muted-foreground/60 px-2 py-1 uppercase tracking-widest">Switch database</p>
+                    <ScrollArea className="max-h-48">
+                        {databases.length === 0 ? (
+                            <p className="text-xs text-muted-foreground/40 px-2 py-2">No databases listed</p>
+                        ) : (
+                            databases.map((db) => (
+                                <button
+                                    key={db}
+                                    className={cn(
+                                        "w-full text-left px-2 py-1.5 text-xs rounded hover:bg-accent transition-colors",
+                                        db === databaseName ? "text-primary font-medium" : "text-foreground/80"
+                                    )}
+                                    onClick={() => { onSwitchDatabase(db); setDbOpen(false); }}
+                                >
+                                    {db}
+                                </button>
+                            ))
+                        )}
+                    </ScrollArea>
+                </PopoverContent>
+            </Popover>
+
+            <span className="text-muted-foreground/20">/</span>
+
+            {/* Schema switcher */}
+            <Popover open={schemaOpen} onOpenChange={setSchemaOpen}>
+                <PopoverTrigger asChild>
+                    <button className="flex items-center gap-1 text-muted-foreground hover:text-foreground transition-colors">
+                        <span className="font-mono">{selectedSchema ?? "public"}</span>
+                        <ChevronDown className="h-3 w-3 opacity-50" />
+                    </button>
+                </PopoverTrigger>
+                <PopoverContent className="w-44 p-1" align="start" side="top">
+                    <p className="text-[10px] font-medium text-muted-foreground/60 px-2 py-1 uppercase tracking-widest">Switch schema</p>
+                    <ScrollArea className="max-h-40">
+                        {schemas.map((s) => (
+                            <button
+                                key={s.name}
+                                className={cn(
+                                    "w-full text-left px-2 py-1.5 text-xs rounded hover:bg-accent transition-colors",
+                                    s.name === selectedSchema ? "text-primary font-medium" : "text-foreground/80"
+                                )}
+                                onClick={() => { onSwitchSchema(s.name); setSchemaOpen(false); }}
+                            >
+                                {s.name}
+                            </button>
+                        ))}
+                    </ScrollArea>
+                </PopoverContent>
+            </Popover>
+
+            <span className="flex-1" />
+
+            {/* Result count */}
+            {result && !result.is_error && (
+                <span className="text-muted-foreground/50 font-mono">
+                    {result.row_count.toLocaleString()} row{result.row_count !== 1 ? "s" : ""}
+                </span>
+            )}
+
+            {/* Env badge */}
+            <ConnectionEnvBadge environment={activeEnvironment} compact />
+
+            {strictProductionGuard && activeEnvironment === "prod" && (
+                <Badge variant="outline" className="h-4 px-1 text-[9px] border-red-500/30 text-red-300 bg-red-500/10">Guard</Badge>
             )}
         </div>
     );

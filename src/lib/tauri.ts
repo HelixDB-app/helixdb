@@ -1269,3 +1269,427 @@ export async function trialAssociateUser(userId: string): Promise<TrialCheckResu
 export async function trialGetDeviceId(): Promise<string> {
     return invoke<string>("trial_get_device_id");
 }
+
+// ─── Schema Import ──────────────────────────────────────────────────────────
+// NOTE: Tauri serializes Rust structs as snake_case by default
+
+export interface ImportedTable {
+    name: string;
+    estimated_rows: number;
+    comment: string | null;
+    ddl: string;
+}
+
+export interface ImportedView {
+    name: string;
+    is_materialized: boolean;
+    ddl: string;
+}
+
+export interface ImportedIndex {
+    name: string;
+    table_name: string;
+    is_unique: boolean;
+    is_primary: boolean;
+    ddl: string;
+}
+
+export interface ImportedFunction {
+    name: string;
+    kind: string;
+    arguments: string;
+    return_type: string;
+    ddl: string;
+}
+
+export interface ImportedTrigger {
+    name: string;
+    table_name: string;
+    ddl: string;
+}
+
+export interface ImportedSequence {
+    name: string;
+    ddl: string;
+}
+
+export interface SchemaImportResult {
+    schema: string;
+    tables: ImportedTable[];
+    views: ImportedView[];
+    indexes: ImportedIndex[];
+    functions: ImportedFunction[];
+    triggers: ImportedTrigger[];
+    sequences: ImportedSequence[];
+}
+
+export interface DbImportResult {
+    database: string;
+    schemas: SchemaImportResult[];
+    total_tables: number;
+    total_views: number;
+    total_functions: number;
+    total_indexes: number;
+    total_triggers: number;
+    total_sequences: number;
+}
+
+/**
+ * Import all DDL (tables, views, functions, indexes, triggers, sequences)
+ * from the connected database. Pass `schemas` to limit to specific schemas,
+ * or an empty array to import all non-system schemas.
+ */
+export async function dbImportSchema(
+    connectionId: string,
+    schemas: string[] = []
+): Promise<DbImportResult> {
+    return invoke<DbImportResult>("db_import_schema", { connectionId, schemas });
+}
+
+// ─── Git ─────────────────────────────────────────────────────────────────────
+
+export interface GitFileStatus {
+    path: string;
+    status: "added" | "modified" | "deleted" | "untracked" | "renamed";
+    staged: boolean;
+    old_path: string | null;
+}
+
+export interface GitDiff {
+    old_content: string;
+    new_content: string;
+    is_binary: boolean;
+}
+
+export interface GitBranch {
+    name: string;
+    is_current: boolean;
+    is_remote: boolean;
+    upstream: string | null;
+    last_commit_message: string | null;
+    last_commit_hash: string | null;
+}
+
+export interface GitCommit {
+    hash: string;
+    short_hash: string;
+    message: string;
+    author_name: string;
+    author_email: string;
+    date: string;
+}
+
+export interface GitRemoteInfo {
+    remote_url: string | null;
+    owner: string | null;
+    repo: string | null;
+    current_branch: string | null;
+    ahead: number;
+    behind: number;
+}
+
+export interface WorkspaceInfo {
+    path: string;
+    is_git_repo: boolean;
+    current_branch: string | null;
+    has_remote: boolean;
+}
+
+export interface GitWorkspace {
+    id: string;
+    path: string;
+    remote_url: string | null;
+    github_owner: string | null;
+    github_repo: string | null;
+    author_name: string | null;
+    author_email: string | null;
+    created_at: string;
+    project_key: string | null;
+    host_name: string | null;
+    workspace_name: string | null;
+    connection_scope: string | null;
+    updated_at: string;
+}
+
+export interface GitWorkspaceBindingOptions {
+    projectKey?: string | null;
+    host?: string | null;
+    workspaceName?: string | null;
+    connectionId?: string | null;
+}
+
+export async function gitOpenWorkspace(
+    path: string,
+    binding?: GitWorkspaceBindingOptions
+): Promise<WorkspaceInfo> {
+    return invoke<WorkspaceInfo>("git_open_workspace", {
+        path,
+        projectKey: binding?.projectKey ?? null,
+        host: binding?.host ?? null,
+        workspaceName: binding?.workspaceName ?? null,
+        connectionId: binding?.connectionId ?? null,
+    });
+}
+
+/** Get or create a Git workspace for the given DB connection (stored under app data). No folder picker. */
+export async function gitEnsureWorkspaceForConnection(
+    connectionId: string,
+    binding?: Omit<GitWorkspaceBindingOptions, "connectionId">
+): Promise<WorkspaceInfo> {
+    return invoke<WorkspaceInfo>("git_ensure_workspace_for_connection", {
+        connectionId,
+        projectKey: binding?.projectKey ?? null,
+        host: binding?.host ?? null,
+        workspaceName: binding?.workspaceName ?? null,
+    });
+}
+
+export async function gitSetWorkspace(path: string): Promise<WorkspaceInfo> {
+    return invoke<WorkspaceInfo>("git_set_workspace", { path });
+}
+
+export async function gitGetStatus(): Promise<GitFileStatus[]> {
+    return invoke<GitFileStatus[]>("git_get_status");
+}
+
+export async function gitGetDiff(path: string, staged: boolean): Promise<GitDiff> {
+    return invoke<GitDiff>("git_get_diff", { path, staged });
+}
+
+export async function gitStageFiles(paths: string[]): Promise<void> {
+    return invoke<void>("git_stage_files", { paths });
+}
+
+export async function gitStageAll(): Promise<void> {
+    return invoke<void>("git_stage_all");
+}
+
+export async function gitUnstageFiles(paths: string[]): Promise<void> {
+    return invoke<void>("git_unstage_files", { paths });
+}
+
+export async function gitCommit(
+    message: string,
+    authorName: string,
+    authorEmail: string
+): Promise<GitCommit> {
+    return invoke<GitCommit>("git_commit", { message, authorName, authorEmail });
+}
+
+export async function gitPush(
+    remoteName: string,
+    branch: string,
+    token: string
+): Promise<void> {
+    return invoke<void>("git_push", { remoteName, branch, token });
+}
+
+export async function gitFetchRemote(
+    remoteName: string,
+    token?: string | null
+): Promise<void> {
+    return invoke<void>("git_fetch_remote", { remoteName, token: token ?? null });
+}
+
+export async function gitSetRemote(remoteName: string, url: string): Promise<void> {
+    return invoke<void>("git_set_remote", { remoteName, url });
+}
+
+export async function gitListBranches(): Promise<GitBranch[]> {
+    return invoke<GitBranch[]>("git_list_branches");
+}
+
+export async function gitCreateBranch(name: string, fromRef: string): Promise<GitBranch> {
+    return invoke<GitBranch>("git_create_branch", { name, fromRef });
+}
+
+export async function gitCheckoutBranch(name: string): Promise<void> {
+    return invoke<void>("git_checkout_branch", { name });
+}
+
+export async function gitDeleteBranch(name: string): Promise<void> {
+    return invoke<void>("git_delete_branch", { name });
+}
+
+export async function gitGetLog(limit: number): Promise<GitCommit[]> {
+    return invoke<GitCommit[]>("git_get_log", { limit });
+}
+
+export async function gitGetRemoteInfo(): Promise<GitRemoteInfo> {
+    return invoke<GitRemoteInfo>("git_get_remote_info");
+}
+
+export async function gitGetDiffSummary(): Promise<string> {
+    return invoke<string>("git_get_diff_summary");
+}
+
+export async function gitDiscardChanges(path: string): Promise<void> {
+    return invoke<void>("git_discard_changes", { path });
+}
+
+export async function writeWorkspaceFile(
+    workspacePath: string,
+    relativePath: string,
+    content: string
+): Promise<void> {
+    return invoke<void>("write_workspace_file", {
+        workspacePath,
+        relativePath,
+        content,
+    });
+}
+
+export async function deleteWorkspaceFile(
+    workspacePath: string,
+    relativePath: string
+): Promise<void> {
+    return invoke<void>("delete_workspace_file", {
+        workspacePath,
+        relativePath,
+    });
+}
+
+export async function syncIdeFilesToWorkspace(
+    workspacePath: string,
+    files: { path: string; content: string }[]
+): Promise<void> {
+    return invoke<void>("sync_ide_files_to_workspace", {
+        workspacePath,
+        files,
+    });
+}
+
+// Git storage
+export async function gitStorageListWorkspaces(): Promise<GitWorkspace[]> {
+    return invoke<GitWorkspace[]>("git_storage_list_workspaces");
+}
+
+export async function gitStorageSaveWorkspace(path: string): Promise<GitWorkspace> {
+    return invoke<GitWorkspace>("git_storage_save_workspace", { path });
+}
+
+export async function gitStorageDeleteWorkspace(path: string): Promise<void> {
+    return invoke<void>("git_storage_delete_workspace", { path });
+}
+
+export async function gitStorageUpdateRemote(
+    path: string,
+    remoteUrl: string | null,
+    githubOwner: string | null,
+    githubRepo: string | null
+): Promise<void> {
+    return invoke<void>("git_storage_update_remote", { path, remoteUrl, githubOwner, githubRepo });
+}
+
+export async function gitStorageUpdateAuthor(
+    path: string,
+    authorName: string,
+    authorEmail: string
+): Promise<void> {
+    return invoke<void>("git_storage_update_author", { path, authorName, authorEmail });
+}
+
+export async function gitStorageGetGithubToken(): Promise<string | null> {
+    return invoke<string | null>("git_storage_get_github_token");
+}
+
+// ─── GitHub ───────────────────────────────────────────────────────────────────
+
+export interface GithubUser {
+    login: string;
+    name: string | null;
+    avatar_url: string;
+    html_url: string;
+    email: string | null;
+}
+
+export interface GithubRepo {
+    id: number;
+    name: string;
+    full_name: string;
+    html_url: string;
+    clone_url: string;
+    ssh_url: string;
+    private: boolean;
+    description: string | null;
+    default_branch: string;
+}
+
+export interface GithubPullRequest {
+    number: number;
+    html_url: string;
+    title: string;
+    body: string | null;
+    state: string;
+    head_ref: string;
+    base_ref: string;
+}
+
+export interface GithubCollaborator {
+    login: string;
+    avatar_url: string;
+    html_url: string;
+}
+
+export interface GithubBranch {
+    name: string;
+    protected: boolean;
+}
+
+export async function githubStartOauth(): Promise<void> {
+    return invoke<void>("github_start_oauth");
+}
+
+export async function githubExchangeCode(code: string): Promise<GithubUser> {
+    return invoke<GithubUser>("github_exchange_code", { code });
+}
+
+export async function githubGetCurrentUser(): Promise<GithubUser | null> {
+    return invoke<GithubUser | null>("github_get_current_user");
+}
+
+export async function githubGetToken(): Promise<string | null> {
+    return invoke<string | null>("github_get_token");
+}
+
+export async function githubRevokeToken(): Promise<void> {
+    return invoke<void>("github_revoke_token");
+}
+
+export async function githubListRepos(): Promise<GithubRepo[]> {
+    return invoke<GithubRepo[]>("github_list_repos");
+}
+
+export async function githubCreateRepo(
+    name: string,
+    description: string | null,
+    isPrivate: boolean
+): Promise<GithubRepo> {
+    return invoke<GithubRepo>("github_create_repo", { name, description, private: isPrivate });
+}
+
+export async function githubCreatePr(
+    owner: string,
+    repo: string,
+    title: string,
+    body: string | null,
+    head: string,
+    base: string,
+    reviewers: string[]
+): Promise<GithubPullRequest> {
+    return invoke<GithubPullRequest>("github_create_pr", { owner, repo, title, body, head, base, reviewers });
+}
+
+export async function githubListCollaborators(
+    owner: string,
+    repo: string
+): Promise<GithubCollaborator[]> {
+    return invoke<GithubCollaborator[]>("github_list_collaborators", { owner, repo });
+}
+
+export async function githubListRemoteBranches(
+    owner: string,
+    repo: string
+): Promise<GithubBranch[]> {
+    return invoke<GithubBranch[]>("github_list_remote_branches", { owner, repo });
+}

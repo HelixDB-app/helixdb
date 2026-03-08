@@ -24,6 +24,7 @@ tauri-plugin-log = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-deep-link = "2"
+tauri-plugin-dialog = "2"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -46,6 +47,12 @@ dashmap = "6"
 chrono = { version = "0.4", features = ["serde"] }
 rusqlite = { version = "0.32", features = ["bundled"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
+
+# Git operations
+git2 = { version = "0.19", default-features = false, features = ["https"] }
+
+# Runtime .env loading
+dotenvy = "0.15"
 
 # Cryptography (device fingerprint)
 sha2 = "0.10"

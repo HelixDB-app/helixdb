@@ -24,11 +24,7 @@ pub struct UserProfile {
 /// `state` is a random nonce that the frontend generates to prevent CSRF.
 #[tauri::command]
 pub async fn auth_open_login(_app: AppHandle, state: String) -> Result<(), String> {
-    let url = format!(
-        "{}/login?source=desktop&state={}",
-        WEB_BASE_URL,
-        state
-    );
+    let url = format!("{}/login?source=desktop&state={}", WEB_BASE_URL, state);
     opener::open_browser(&url).map_err(|e| format!("Failed to open browser: {e}"))?;
     Ok(())
 }
@@ -49,7 +45,10 @@ pub async fn auth_store_token(token: String) -> Result<(), String> {
     entry
         .set_password(&token)
         .map_err(|e| format!("Failed to store token: {e}"))?;
-    log::info!("[auth] desktop JWT stored in keychain (len={})", token.len());
+    log::info!(
+        "[auth] desktop JWT stored in keychain (len={})",
+        token.len()
+    );
     Ok(())
 }
 
@@ -122,15 +121,15 @@ pub async fn auth_fetch_profile() -> Result<Option<UserProfile>, String> {
         return Err(format!("API error {status}: {body}"));
     }
 
-    let profile: UserProfile = resp
-        .json()
-        .await
-        .map_err(|e| {
-            log::error!("[auth] auth_fetch_profile: failed to parse JSON — {e}");
-            format!("Failed to parse profile: {e}")
-        })?;
+    let profile: UserProfile = resp.json().await.map_err(|e| {
+        log::error!("[auth] auth_fetch_profile: failed to parse JSON — {e}");
+        format!("Failed to parse profile: {e}")
+    })?;
 
-    log::info!("[auth] auth_fetch_profile: success for user={}", profile.email);
+    log::info!(
+        "[auth] auth_fetch_profile: success for user={}",
+        profile.email
+    );
     Ok(Some(profile))
 }
 

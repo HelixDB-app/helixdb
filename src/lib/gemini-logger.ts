@@ -18,6 +18,7 @@ export type ApiFeatureType =
     | "schema-designer"
     | "sql-to-schema"
     | "query-error"
+    | "git"
     | "other";
 
 export interface GeminiLogEntry {

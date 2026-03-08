@@ -11,12 +11,21 @@ export type ShortcutActionId =
     | "view_sessions"
     | "view_indexes"
     | "view_topology"
+    | "view_git"
     | "view_ai"
     | "disconnect"
     | "query_history"
     | "extensions"
     | "bug_report"
-    | "connect";
+    | "connect"
+    | "new_window"
+    | "git_stage_all"
+    | "git_unstage_all"
+    | "git_ai_message"
+    | "git_ai_rewrite"
+    | "git_commit"
+    | "git_commit_push"
+    | "git_open_pr";
 
 export interface ShortcutDefinition {
     id: ShortcutActionId;
@@ -34,12 +43,21 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     { id: "view_sessions", label: "Sessions view", description: "Switch to Sessions tab", defaultCombo: "Mod+3" },
     { id: "view_indexes", label: "Indexes view", description: "Switch to Indexes tab", defaultCombo: "Mod+4" },
     { id: "view_topology", label: "Topology view", description: "Switch to Topology tab", defaultCombo: "Mod+5" },
+    { id: "view_git", label: "Git view", description: "Switch to Git tab", defaultCombo: "Mod+6" },
     { id: "view_ai", label: "AI chat", description: "Switch to AI chat tab", defaultCombo: "Mod+J" },
     { id: "disconnect", label: "Disconnect", description: "Disconnect from database", defaultCombo: "Mod+Shift+D" },
     { id: "query_history", label: "Query History", description: "Open Query History & Performance", defaultCombo: "Mod+Shift+H" },
     { id: "extensions", label: "Extensions", description: "Open Extensions & User Management", defaultCombo: "Mod+Shift+E" },
     { id: "bug_report", label: "Bug Report", description: "Submit feedback and bug reports", defaultCombo: "Mod+Shift+B" },
     { id: "connect", label: "Connect", description: "Connect to database (when disconnected)", defaultCombo: "Mod+K" },
+    { id: "new_window", label: "New Window", description: "Open a new pgStudio window", defaultCombo: "Mod+Shift+N" },
+    { id: "git_stage_all", label: "Git stage all", description: "Stage all changes (Git tab)", defaultCombo: "Mod+Shift+A" },
+    { id: "git_unstage_all", label: "Git unstage all", description: "Unstage all staged files (Git tab)", defaultCombo: "Mod+Shift+U" },
+    { id: "git_ai_message", label: "Git AI message", description: "Generate commit message with AI (Git tab)", defaultCombo: "Mod+Shift+M" },
+    { id: "git_ai_rewrite", label: "Git AI rewrite", description: "Rewrite commit message with AI (Git tab)", defaultCombo: "Mod+Shift+W" },
+    { id: "git_commit", label: "Git commit", description: "Commit staged changes (Git tab)", defaultCombo: "Mod+Enter" },
+    { id: "git_commit_push", label: "Git commit & push", description: "Commit and push (Git tab)", defaultCombo: "Mod+Shift+Enter" },
+    { id: "git_open_pr", label: "Git open PR", description: "Open Pull Request dialog (Git tab)", defaultCombo: "Mod+Shift+P" },
 ];
 
 const DEFAULT_COMBOS: Record<ShortcutActionId, string> = Object.fromEntries(

@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import Image from "next/image";
 import { useState, useEffect, useCallback } from "react";
 import { useTheme } from "next-themes";
 import {
@@ -11,6 +12,7 @@ import {
     type DefaultPageSize,
     type NullDisplay,
     type GeminiModelId,
+    type GitAiProvider,
 } from "@/stores/settings-store";
 import {
     useShortcutsStore,
@@ -537,6 +539,8 @@ const EDITOR_SHORTCUTS_REF = [
 function ShortcutsSection() {
     const { getCombo, setShortcut, resetShortcut, resetAllShortcuts, getActionByCombo } = useShortcutsStore();
     const [editingId, setEditingId] = useState<ShortcutActionId | null>(null);
+    const appShortcutDefs = SHORTCUT_DEFINITIONS.filter((def) => !def.id.startsWith("git_"));
+    const gitShortcutDefs = SHORTCUT_DEFINITIONS.filter((def) => def.id.startsWith("git_"));
 
     const handleKeyDown = useCallback(
         (e: KeyboardEvent) => {
@@ -566,72 +570,82 @@ function ShortcutsSection() {
         return () => window.removeEventListener("keydown", handleKeyDown, true);
     }, [editingId, handleKeyDown]);
 
+    const renderShortcutRows = (definitions: typeof SHORTCUT_DEFINITIONS) =>
+        definitions.map((def) => {
+            const combo = getCombo(def.id);
+            const keys = formatShortcutKeys(combo);
+            const isEditing = editingId === def.id;
+            return (
+                <div
+                    key={def.id}
+                    className={cn(
+                        "flex items-center justify-between gap-4 py-2.5",
+                        isEditing && "bg-primary/5 rounded-md -mx-2 px-2 border border-primary/20"
+                    )}
+                >
+                    <div className="min-w-0 flex-1">
+                        <p className="text-sm font-medium text-foreground/90">{def.label}</p>
+                        <p className="text-[11px] text-muted-foreground/60 truncate">{def.description}</p>
+                    </div>
+                    <div className="flex items-center gap-2 shrink-0">
+                        <div className="flex items-center gap-1 min-w-[80px] justify-end">
+                            {isEditing ? (
+                                <span className="text-[11px] text-muted-foreground italic">Press a key…</span>
+                            ) : (
+                                keys.map((key, ki) => (
+                                    <kbd
+                                        key={ki}
+                                        className="inline-flex h-6 min-w-6 items-center justify-center rounded border border-border/50 bg-muted/50 px-1.5 font-mono text-[11px] text-foreground/70"
+                                    >
+                                        {key}
+                                    </kbd>
+                                ))
+                            )}
+                        </div>
+                        <div className="flex items-center gap-0.5">
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                onClick={() => setEditingId(isEditing ? null : def.id)}
+                                title="Edit shortcut"
+                            >
+                                <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="icon"
+                                className="h-7 w-7 text-muted-foreground hover:text-foreground"
+                                onClick={() => {
+                                    resetShortcut(def.id);
+                                    toast.success("Reset to default");
+                                }}
+                                title="Reset to default"
+                            >
+                                <ResetIcon className="h-3.5 w-3.5" />
+                            </Button>
+                        </div>
+                    </div>
+                </div>
+            );
+        });
+
     return (
         <div className="space-y-5">
             <SettingSection title="App & header shortcuts">
                 <p className="text-xs text-muted-foreground/70 px-1 mb-2">
                     Click Edit, then press the new key combination. Press Escape to cancel.
                 </p>
-                {SHORTCUT_DEFINITIONS.map((def) => {
-                    const combo = getCombo(def.id);
-                    const keys = formatShortcutKeys(combo);
-                    const isEditing = editingId === def.id;
-                    return (
-                        <div
-                            key={def.id}
-                            className={cn(
-                                "flex items-center justify-between gap-4 py-2.5",
-                                isEditing && "bg-primary/5 rounded-md -mx-2 px-2 border border-primary/20"
-                            )}
-                        >
-                            <div className="min-w-0 flex-1">
-                                <p className="text-sm font-medium text-foreground/90">{def.label}</p>
-                                <p className="text-[11px] text-muted-foreground/60 truncate">{def.description}</p>
-                            </div>
-                            <div className="flex items-center gap-2 shrink-0">
-                                <div className="flex items-center gap-1 min-w-[80px] justify-end">
-                                    {isEditing ? (
-                                        <span className="text-[11px] text-muted-foreground italic">Press a key…</span>
-                                    ) : (
-                                        keys.map((key, ki) => (
-                                            <kbd
-                                                key={ki}
-                                                className="inline-flex h-6 min-w-6 items-center justify-center rounded border border-border/50 bg-muted/50 px-1.5 font-mono text-[11px] text-foreground/70"
-                                            >
-                                                {key}
-                                            </kbd>
-                                        ))
-                                    )}
-                                </div>
-                                <div className="flex items-center gap-0.5">
-                                    <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                                        onClick={() => setEditingId(isEditing ? null : def.id)}
-                                        title="Edit shortcut"
-                                    >
-                                        <Pencil className="h-3.5 w-3.5" />
-                                    </Button>
-                                    <Button
-                                        type="button"
-                                        variant="ghost"
-                                        size="icon"
-                                        className="h-7 w-7 text-muted-foreground hover:text-foreground"
-                                        onClick={() => {
-                                            resetShortcut(def.id);
-                                            toast.success("Reset to default");
-                                        }}
-                                        title="Reset to default"
-                                    >
-                                        <ResetIcon className="h-3.5 w-3.5" />
-                                    </Button>
-                                </div>
-                            </div>
-                        </div>
-                    );
-                })}
+                {renderShortcutRows(appShortcutDefs)}
+            </SettingSection>
+
+            <SettingSection title="Git shortcuts (contextual)">
+                <p className="text-xs text-muted-foreground/70 px-1 mb-2">
+                    Active while the Git tab is focused. Designed for fast stage → commit → push workflows.
+                </p>
+                {renderShortcutRows(gitShortcutDefs)}
                 <div className="flex justify-end pt-2 pb-1">
                     <Button
                         type="button"
@@ -685,6 +699,10 @@ function AISection() {
     const {
         geminiApiKey,
         defaultAiModel,
+        gitAiProvider,
+        cloudflareApiToken,
+        cloudflareAccountId,
+        cloudflareModel,
         aiAutocompleteEnabled,
         aiInlineSuggestions,
         aiDropdownSuggestions,
@@ -696,6 +714,7 @@ function AISection() {
         updateSettings,
     } = useSettingsStore();
     const [showKey, setShowKey] = useState(false);
+    const [showCloudflareKey, setShowCloudflareKey] = useState(false);
 
     const modelOptions: { value: GeminiModelId; label: string }[] = [
         { value: "gemini-2.5-flash", label: "Gemini Flash" },
@@ -705,6 +724,10 @@ function AISection() {
         { value: "gemma3-27b", label: "Gemma 3 27B" },
         { value: "gemini-2.5-flash-lite", label: "Gemini Flash Lite" },
         { value: "gemini-2.5-pro-lite", label: "Gemini Pro Lite" },
+    ];
+    const gitProviderOptions: { value: GitAiProvider; label: string }[] = [
+        { value: "cloudflare", label: "Cloudflare (Recommended)" },
+        { value: "gemini", label: "Gemini" },
     ];
 
     return (
@@ -742,6 +765,79 @@ function AISection() {
                     >
                         <ExternalLink className="h-3 w-3" />
                         Get your free API key from Google AI Studio
+                    </a>
+                </div>
+            </SettingSection>
+
+            <SettingSection title="Git AI (Commit / PR)">
+                <SettingRow
+                    label="Git AI provider"
+                    description="Provider used for AI commit messages, rewrites, and PR drafts."
+                >
+                    <SegmentedControl
+                        value={gitAiProvider}
+                        options={gitProviderOptions}
+                        onChange={(v) => updateSettings({ gitAiProvider: v as GitAiProvider })}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Cloudflare Account ID"
+                    description="Used when Git AI provider is Cloudflare."
+                >
+                    <input
+                        type="text"
+                        value={cloudflareAccountId}
+                        onChange={(e) => updateSettings({ cloudflareAccountId: e.target.value })}
+                        placeholder="Cloudflare account id"
+                        className="h-7 w-48 rounded-md border border-border/40 bg-muted/20 px-2 text-xs font-mono text-foreground/80 placeholder:text-muted-foreground/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label="Cloudflare account id"
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Cloudflare API token"
+                    description="Token with Workers AI permissions."
+                >
+                    <div className="flex items-center gap-1.5">
+                        <input
+                            type={showCloudflareKey ? "text" : "password"}
+                            value={cloudflareApiToken}
+                            onChange={(e) => updateSettings({ cloudflareApiToken: e.target.value })}
+                            placeholder="Cloudflare API token"
+                            className="h-7 w-48 rounded-md border border-border/40 bg-muted/20 px-2 text-xs font-mono text-foreground/80 placeholder:text-muted-foreground/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            aria-label="Cloudflare API token"
+                        />
+                        <button
+                            type="button"
+                            onClick={() => setShowCloudflareKey(!showCloudflareKey)}
+                            className="flex h-7 w-7 items-center justify-center rounded-md border border-border/40 bg-muted/20 text-muted-foreground/50 hover:text-foreground hover:bg-muted/40 transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                            aria-label={showCloudflareKey ? "Hide Cloudflare token" : "Show Cloudflare token"}
+                        >
+                            {showCloudflareKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
+                        </button>
+                    </div>
+                </SettingRow>
+                <SettingRow
+                    label="Cloudflare model"
+                    description="Workers AI model for Git assistant tasks."
+                >
+                    <input
+                        type="text"
+                        value={cloudflareModel}
+                        onChange={(e) => updateSettings({ cloudflareModel: e.target.value })}
+                        placeholder="@cf/meta/llama-3.1-8b-instruct"
+                        className="h-7 w-56 rounded-md border border-border/40 bg-muted/20 px-2 text-xs font-mono text-foreground/80 placeholder:text-muted-foreground/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label="Cloudflare model"
+                    />
+                </SettingRow>
+                <div className="py-2.5">
+                    <a
+                        href="https://developers.cloudflare.com/workers-ai/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="flex items-center gap-1.5 text-xs text-emerald-400/80 hover:text-emerald-400 transition-colors"
+                    >
+                        <ExternalLink className="h-3 w-3" />
+                        Cloudflare Workers AI setup guide
                     </a>
                 </div>
             </SettingSection>
@@ -869,7 +965,7 @@ function AboutSection() {
         <div className="space-y-5">
             <SettingSection title="Application">
                 <div className="py-4 flex items-start gap-4">
-                    <img src="/logo.png" alt="" className="h-10 w-10 rounded-xl object-contain shrink-0" />
+                    <Image src="/logo.png" alt="" width={40} height={40} className="h-10 w-10 rounded-xl object-contain shrink-0" />
                     <div>
                         <p className="font-semibold text-foreground">
                             {APP_NAME}

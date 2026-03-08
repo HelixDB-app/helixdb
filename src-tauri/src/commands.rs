@@ -398,14 +398,7 @@ pub async fn db_get_table_data_geojson(
     limit: u32,
 ) -> Result<QueryResult, String> {
     let pool = state.conn_manager.get_pool(&connection_id)?;
-    queries::get_table_data_geojson(
-        &pool,
-        &schema,
-        &table,
-        geometry_column_names,
-        limit,
-    )
-    .await
+    queries::get_table_data_geojson(&pool, &schema, &table, geometry_column_names, limit).await
 }
 
 /// Execute a raw SQL query
@@ -653,13 +646,8 @@ pub async fn db_grant_database_role_membership(
     with_admin_option: bool,
 ) -> Result<(), String> {
     let pool = state.conn_manager.get_pool(&connection_id)?;
-    queries::grant_database_role_membership(
-        &pool,
-        &role_name,
-        &member_name,
-        with_admin_option,
-    )
-    .await
+    queries::grant_database_role_membership(&pool, &role_name, &member_name, with_admin_option)
+        .await
 }
 
 /// Revoke role membership.
@@ -1758,7 +1746,9 @@ pub async fn query_history_export_csv(
 pub async fn open_path(path: String) -> Result<(), String> {
     let path = std::path::Path::new(&path);
     let to_open = if path.is_file() {
-        path.parent().map(|p| p.to_path_buf()).unwrap_or_else(|| path.to_path_buf())
+        path.parent()
+            .map(|p| p.to_path_buf())
+            .unwrap_or_else(|| path.to_path_buf())
     } else {
         path.to_path_buf()
     };
@@ -1787,5 +1777,50 @@ pub async fn app_log_write(app: AppHandle, message: String) -> Result<(), String
 #[tauri::command]
 pub async fn app_log_path(app: AppHandle) -> Result<String, String> {
     let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    Ok(app_data_dir.join("app-debug.log").to_string_lossy().to_string())
+    Ok(app_data_dir
+        .join("app-debug.log")
+        .to_string_lossy()
+        .to_string())
+}
+
+/// Spawn a new independent application window. Each window gets its own webview
+/// context (isolated frontend state) while sharing the single Rust AppState
+/// (connection pool, metadata cache, watchers) — zero duplicated resources.
+pub fn create_app_window(app: &AppHandle) {
+    let label = format!("window_{}", uuid::Uuid::new_v4().simple());
+    if let Err(e) = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("/".into()))
+        .title("pgStudio")
+        .inner_size(1400.0, 900.0)
+        .min_inner_size(900.0, 600.0)
+        .build()
+    {
+        log::error!("Failed to create new window: {e}");
+    }
+}
+
+#[tauri::command]
+pub async fn open_new_window(app: AppHandle) {
+    create_app_window(&app);
+}
+
+/// Import all DDL objects (tables, views, functions, indexes, triggers, sequences)
+/// from the connected database into a structured result.
+///
+/// `schemas` is an optional list of schema names to import; if empty all
+/// non-system schemas are included.
+#[tauri::command]
+pub async fn db_import_schema(
+    state: State<'_, AppState>,
+    connection_id: String,
+    schemas: Vec<String>,
+) -> Result<crate::db::types::DbImportResult, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    let pg_version = state.conn_manager.get_pg_version(&connection_id);
+
+    // Retrieve database name from server info (best-effort)
+    let (database, _) = queries::get_server_info(&pool)
+        .await
+        .unwrap_or_else(|_| ("unknown".to_string(), String::new()));
+
+    queries::import_schema_full(&pool, &database, &schemas, pg_version).await
 }

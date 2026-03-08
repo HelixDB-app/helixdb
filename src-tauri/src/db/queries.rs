@@ -3,11 +3,11 @@ use log::{debug, warn};
 use rust_decimal::Decimal;
 use std::collections::HashSet;
 use std::error::Error as StdError;
-use std::io::{Write, self as io};
+use std::io::{self as io, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio_postgres::types::Type;
-use tokio_postgres::Row;
+use tokio_postgres::{Error as PgError, Row};
 
 use super::types::*;
 
@@ -20,6 +20,23 @@ fn pg_error_message(e: &impl StdError) -> String {
         }
     }
     msg
+}
+
+/// Format a tokio_postgres::Error for display: message, detail, hint (no raw Debug).
+fn format_pg_error(e: &PgError) -> String {
+    if let Some(db) = e.as_db_error() {
+        let mut s = db.message().to_string();
+        if let Some(d) = db.detail() {
+            s.push_str("\n\nDetail: ");
+            s.push_str(d);
+        }
+        if let Some(h) = db.hint() {
+            s.push_str("\n\nHint: ");
+            s.push_str(h);
+        }
+        return s;
+    }
+    e.to_string()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -126,13 +143,19 @@ fn cell_value_to_sql_literal(c: &CellValue) -> String {
         CellValue::Float64(v) => v.to_string(),
         CellValue::String(s) => format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''")),
         CellValue::Json(j) => {
-            let escaped = serde_json::to_string(j).unwrap_or_default().replace('\\', "\\\\").replace('\'', "''");
+            let escaped = serde_json::to_string(j)
+                .unwrap_or_default()
+                .replace('\\', "\\\\")
+                .replace('\'', "''");
             format!("'{}'", escaped)
         }
         CellValue::DateTime(s) | CellValue::Date(s) | CellValue::Time(s) | CellValue::Uuid(s) => {
             format!("'{}'", s.replace('\\', "\\\\").replace('\'', "''"))
         }
-        CellValue::Bytes(b) => format!("'\\\\x{}'", b.iter().map(|x| format!("{:02x}", x)).collect::<String>()),
+        CellValue::Bytes(b) => format!(
+            "'\\\\x{}'",
+            b.iter().map(|x| format!("{:02x}", x)).collect::<String>()
+        ),
     }
 }
 
@@ -1151,21 +1174,22 @@ pub async fn get_table_data(
         .await
         .map_err(|e| format!("Query error: {}", e))?;
 
-    let (columns, data): (Vec<ResultColumn>, Vec<Vec<CellValue>>) = if columns.is_empty() && !rows.is_empty() {
-        let cols: Vec<ResultColumn> = rows[0]
-            .columns()
-            .iter()
-            .map(|col| ResultColumn {
-                name: col.name().to_string(),
-                data_type: pg_type_to_string(col.type_()),
-            })
-            .collect();
-        let data = rows.iter().map(|row| row_to_cells(row)).collect();
-        (cols, data)
-    } else {
-        let data = rows.iter().map(|row| row_to_cells(row)).collect();
-        (columns, data)
-    };
+    let (columns, data): (Vec<ResultColumn>, Vec<Vec<CellValue>>) =
+        if columns.is_empty() && !rows.is_empty() {
+            let cols: Vec<ResultColumn> = rows[0]
+                .columns()
+                .iter()
+                .map(|col| ResultColumn {
+                    name: col.name().to_string(),
+                    data_type: pg_type_to_string(col.type_()),
+                })
+                .collect();
+            let data = rows.iter().map(|row| row_to_cells(row)).collect();
+            (cols, data)
+        } else {
+            let data = rows.iter().map(|row| row_to_cells(row)).collect();
+            (columns, data)
+        };
 
     let row_count = data.len();
     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
@@ -1228,7 +1252,12 @@ pub async fn get_table_data_geojson(
             let lower = c.name.to_lowercase();
             matches!(
                 lower.as_str(),
-                "created_at" | "createdat" | "create_date" | "creation_date" | "date_created" | "created"
+                "created_at"
+                    | "createdat"
+                    | "create_date"
+                    | "creation_date"
+                    | "date_created"
+                    | "created"
             )
         })
         .map(|c| {
@@ -1279,20 +1308,6 @@ pub async fn get_table_data_geojson(
 // ──────────────────────────────────────────────────────────────────────────────
 // Query execution
 // ──────────────────────────────────────────────────────────────────────────────
-
-/// Format a database error for display. Uses Debug to get full PostgreSQL
-/// message, detail, hint, and code when Display only shows a short "db error".
-fn format_query_error(e: &(impl std::fmt::Display + std::fmt::Debug)) -> String {
-    let display = e.to_string();
-    let debug = format!("{:?}", e);
-    if display.is_empty() || display == "db error" || display.len() < 20 {
-        debug
-    } else if debug.len() > display.len() && debug.contains(&display) {
-        format!("{}\n\n[Debug]\n{}", display, debug)
-    } else {
-        display
-    }
-}
 
 /// Returns the maximum parameter index in SQL (e.g. $1, $2, $5 => 5). 0 if none.
 fn max_parameter_index(sql: &str) -> usize {
@@ -1472,7 +1487,7 @@ fn split_sql_statements(sql: &str) -> Vec<String> {
 
 pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, String> {
     let start = Instant::now();
-    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let mut client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
 
     let trimmed = sql.trim();
     let statements = split_sql_statements(trimmed);
@@ -1544,7 +1559,7 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
                         page_size: None,
                         query: trimmed.to_string(),
                         is_error: true,
-                        error_message: Some(format_query_error(&e)),
+                        error_message: Some(format_pg_error(&e)),
                     });
                 }
             }
@@ -1580,15 +1595,19 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
                         page_size: None,
                         query: trimmed.to_string(),
                         is_error: true,
-                        error_message: Some(format_query_error(&e)),
+                        error_message: Some(format_pg_error(&e)),
                     });
                 }
             }
         }
     }
 
-    // Multiple statements: execute each in order (no prepared statement; one command per execute/query).
+    // Multiple statements: run in a single transaction so failure rolls back (matches pgAdmin script behavior).
     let n = statements.len();
+    let txn = client
+        .transaction()
+        .await
+        .map_err(|e| format!("Transaction begin: {}", format_pg_error(&e)))?;
     let mut last_select_result: Option<QueryResult> = None;
     for (idx, stmt) in statements.iter().enumerate() {
         let stmt_trim = stmt.trim();
@@ -1604,7 +1623,7 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
             || upper.starts_with("EXPLAIN");
 
         if read_only {
-            match client.query(stmt_trim, &[]).await {
+            match txn.query(stmt_trim, &[]).await {
                 Ok(rows) => {
                     let columns: Vec<ResultColumn> = if !rows.is_empty() {
                         rows[0]
@@ -1636,6 +1655,7 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
                     });
                 }
                 Err(e) => {
+                    let _ = txn.rollback().await;
                     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
                     return Ok(QueryResult {
                         columns: Vec::new(),
@@ -1647,12 +1667,17 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
                         page_size: None,
                         query: trimmed.to_string(),
                         is_error: true,
-                        error_message: Some(format_query_error(&e)),
+                        error_message: Some(format!(
+                            "Statement {}: {}",
+                            idx + 1,
+                            format_pg_error(&e)
+                        )),
                     });
                 }
             }
         } else {
-            if let Err(e) = client.execute(stmt_trim, &[]).await {
+            if let Err(e) = txn.execute(stmt_trim, &[]).await {
+                let _ = txn.rollback().await;
                 let elapsed = start.elapsed().as_secs_f64() * 1000.0;
                 return Ok(QueryResult {
                     columns: Vec::new(),
@@ -1664,15 +1689,14 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
                     page_size: None,
                     query: trimmed.to_string(),
                     is_error: true,
-                    error_message: Some(format!(
-                        "Statement {}: {}",
-                        idx + 1,
-                        format_query_error(&e)
-                    )),
+                    error_message: Some(format!("Statement {}: {}", idx + 1, format_pg_error(&e))),
                 });
             }
         }
     }
+    txn.commit()
+        .await
+        .map_err(|e| format!("Commit: {}", format_pg_error(&e)))?;
 
     let elapsed = start.elapsed().as_secs_f64() * 1000.0;
     if let Some(res) = last_select_result {
@@ -2772,7 +2796,12 @@ pub async fn get_database_role_detail(
             &[&role_name],
         )
         .await
-        .map_err(|e| format!("Failed to load parent memberships for '{}': {}", role_name, e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to load parent memberships for '{}': {}",
+                role_name, e
+            )
+        })?;
     let member_of: Vec<String> = member_of_rows
         .into_iter()
         .map(|item| item.get::<_, String>(0))
@@ -3057,7 +3086,11 @@ pub async fn delete_database_user(
 /// Handles types with precision/length e.g. "numeric(10,2)", "character varying(255)".
 fn pg_cast_type(data_type: &str) -> &'static str {
     let lower = data_type.trim().to_lowercase();
-    let base: &str = lower.split('(').next().map(|s| s.trim()).unwrap_or(lower.as_str());
+    let base: &str = lower
+        .split('(')
+        .next()
+        .map(|s| s.trim())
+        .unwrap_or(lower.as_str());
     if base.is_empty() {
         return "text";
     }
@@ -3247,7 +3280,8 @@ pub async fn insert_table_rows_bulk(
             .iter()
             .enumerate()
             .map(|(i, (col, _))| {
-                let cast = pg_cast_type(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
+                let cast =
+                    pg_cast_type(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
                 format!("${}::{}", i + 1, cast)
             })
             .collect();
@@ -3757,7 +3791,10 @@ pub fn build_ddl_from_table_details(details: &TableDetails) -> String {
         let safe_name = sanitize_identifier(&tc.name);
         match tc.constraint_type.as_str() {
             "PRIMARY KEY" if pk_cols.len() > 1 => {
-                table_constraints.push(format!("  CONSTRAINT \"{}\" PRIMARY KEY ({})", safe_name, cols));
+                table_constraints.push(format!(
+                    "  CONSTRAINT \"{}\" PRIMARY KEY ({})",
+                    safe_name, cols
+                ));
             }
             "UNIQUE" => {
                 table_constraints.push(format!("  CONSTRAINT \"{}\" UNIQUE ({})", safe_name, cols));
@@ -3765,7 +3802,11 @@ pub fn build_ddl_from_table_details(details: &TableDetails) -> String {
             "CHECK" => {
                 if let Some(ref chk) = tc.check_clause {
                     if !chk.trim().is_empty() {
-                        table_constraints.push(format!("  CONSTRAINT \"{}\" CHECK ({})", safe_name, chk.trim()));
+                        table_constraints.push(format!(
+                            "  CONSTRAINT \"{}\" CHECK ({})",
+                            safe_name,
+                            chk.trim()
+                        ));
                     }
                 }
             }
@@ -3874,7 +3915,9 @@ where
         .filter(|t| allowed_tables.contains(&(t.schema.clone(), t.table.clone())))
         .collect();
     if tables.is_empty() {
-        return Err("No tables to export (none selected or none exist in selected schemas)".to_string());
+        return Err(
+            "No tables to export (none selected or none exist in selected schemas)".to_string(),
+        );
     }
 
     let ext = if request.compress { "sql.gz" } else { "sql" };
@@ -3891,7 +3934,9 @@ where
     });
     if let Some(ref user_path) = request.output_path {
         if request.compress && !user_path.ends_with(".sql.gz") {
-            return Err("Output path must end with .sql.gz when compression is enabled".to_string());
+            return Err(
+                "Output path must end with .sql.gz when compression is enabled".to_string(),
+            );
         }
         if !request.compress && !user_path.ends_with(".sql") {
             return Err("Output path must end with .sql when compression is disabled".to_string());
@@ -3901,7 +3946,10 @@ where
     let file = std::fs::File::create(&output_path)
         .map_err(|e| format!("Failed to create export file: {}", e))?;
     let mut writer: ExportWriter = if request.compress {
-        ExportWriter::Gzip(flate2::write::GzEncoder::new(file, flate2::Compression::default()))
+        ExportWriter::Gzip(flate2::write::GzEncoder::new(
+            file,
+            flate2::Compression::default(),
+        ))
     } else {
         ExportWriter::Plain(file)
     };
@@ -3934,9 +3982,11 @@ where
 
         if include_structure {
             let ddl = build_ddl_from_table_details(&details);
-            writer.write_all(ddl.as_bytes())
+            writer
+                .write_all(ddl.as_bytes())
                 .map_err(|e| format!("Write error: {}", e))?;
-            writer.write_all(b"\n")
+            writer
+                .write_all(b"\n")
                 .map_err(|e| format!("Write error: {}", e))?;
             bytes_written += ddl.len() as u64 + 1;
         }
@@ -3945,8 +3995,13 @@ where
             let columns: Vec<&str> = match &request.columns {
                 Some(cols) => {
                     if let Some(names) = cols.get(&table_key) {
-                        let allowed: HashSet<&str> = details.columns.iter().map(|c| c.name.as_str()).collect();
-                        names.iter().filter(|n| allowed.contains(n.as_str())).map(String::as_str).collect()
+                        let allowed: HashSet<&str> =
+                            details.columns.iter().map(|c| c.name.as_str()).collect();
+                        names
+                            .iter()
+                            .filter(|n| allowed.contains(n.as_str()))
+                            .map(String::as_str)
+                            .collect()
                     } else {
                         details.columns.iter().map(|c| c.name.as_str()).collect()
                     }
@@ -3986,7 +4041,8 @@ where
                     .iter()
                     .map(|row| {
                         let cells = row_to_cells(row);
-                        let literals: Vec<String> = cells.iter().map(cell_value_to_sql_literal).collect();
+                        let literals: Vec<String> =
+                            cells.iter().map(cell_value_to_sql_literal).collect();
                         format!("({})", literals.join(", "))
                     })
                     .collect();
@@ -3997,7 +4053,8 @@ where
                     col_list,
                     values.join(",\n")
                 );
-                writer.write_all(insert_sql.as_bytes())
+                writer
+                    .write_all(insert_sql.as_bytes())
                     .map_err(|e| format!("Write error: {}", e))?;
                 bytes_written += insert_sql.len() as u64;
                 total_rows += rows.len() as u64;
@@ -4017,7 +4074,8 @@ where
 
     writer.flush().map_err(|e| format!("Flush error: {}", e))?;
     if let ExportWriter::Gzip(ref mut gz) = writer {
-        gz.try_finish().map_err(|e| format!("Gzip finish error: {}", e))?;
+        gz.try_finish()
+            .map_err(|e| format!("Gzip finish error: {}", e))?;
     }
     Ok(ExportResult {
         output_path,
@@ -5576,4 +5634,389 @@ pub async fn get_schema_topology(pool: &Arc<Pool>, schema: &str) -> Result<Topol
 /// Simple identifier quoting for SQL safety
 fn quote_ident(s: &str) -> String {
     format!("\"{}\"", s.replace('"', "\"\""))
+}
+
+// ──────────────────────────────────────────────────────────────────────────────
+// Schema import — full DDL extraction
+// ──────────────────────────────────────────────────────────────────────────────
+
+use super::types::{
+    DbImportResult, ImportedFunction, ImportedIndex, ImportedSequence, ImportedTable,
+    ImportedTrigger, ImportedView, SchemaImportResult,
+};
+
+/// Build a CREATE TABLE DDL string from column + constraint data.
+fn build_create_table_ddl(
+    schema: &str,
+    table_name: &str,
+    col_rows: &[tokio_postgres::Row],
+    con_rows: &[tokio_postgres::Row],
+) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    // Column definitions
+    for row in col_rows {
+        let col_name: String = row.get(0);
+        let data_type: String = row.get(1);
+        let is_nullable: bool = row.get(2);
+        let default_val: Option<String> = row.get(3);
+
+        let mut col_def = format!("    {} {}", quote_ident(&col_name), data_type);
+        if !is_nullable {
+            col_def.push_str(" NOT NULL");
+        }
+        if let Some(def) = default_val {
+            col_def.push_str(&format!(" DEFAULT {}", def));
+        }
+        parts.push(col_def);
+    }
+
+    // Constraints: pg_get_constraintdef returns the constraint body (e.g. "PRIMARY KEY (id)")
+    for row in con_rows {
+        let con_name: String = row.get(0);
+        let con_def: Option<String> = row.get(2);
+        if let Some(def) = con_def {
+            parts.push(format!("    CONSTRAINT {} {}", quote_ident(&con_name), def));
+        }
+    }
+
+    format!(
+        "CREATE TABLE {}.{} (\n{}\n);",
+        quote_ident(schema),
+        quote_ident(table_name),
+        parts.join(",\n")
+    )
+}
+
+/// Import the full schema DDL from a connected database.
+/// Runs all object queries in parallel per schema for high performance.
+pub async fn import_schema_full(
+    pool: &Arc<Pool>,
+    database: &str,
+    schemas_filter: &[String],
+    pg_version: u32,
+) -> Result<DbImportResult, String> {
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+
+    // 1. Resolve which schemas to import
+    let schema_list: Vec<String> = if schemas_filter.is_empty() {
+        let rows = client
+            .query(
+                "SELECT nspname FROM pg_namespace
+                 WHERE nspname NOT IN ('pg_catalog','information_schema','pg_toast')
+                   AND nspname NOT LIKE 'pg_%'
+                 ORDER BY nspname",
+                &[],
+            )
+            .await
+            .map_err(|e| format!("Schema list error: {}", e))?;
+        rows.iter().map(|r| r.get::<_, String>(0)).collect()
+    } else {
+        schemas_filter.to_vec()
+    };
+
+    drop(client); // release back to pool before per-schema queries
+
+    let mut all_schemas: Vec<SchemaImportResult> = Vec::with_capacity(schema_list.len());
+    let mut total_tables = 0usize;
+    let mut total_views = 0usize;
+    let mut total_functions = 0usize;
+    let mut total_indexes = 0usize;
+    let mut total_triggers = 0usize;
+    let mut total_sequences = 0usize;
+
+    for schema in &schema_list {
+        let result = import_single_schema(pool, schema, pg_version).await?;
+        total_tables += result.tables.len();
+        total_views += result.views.len();
+        total_functions += result.functions.len();
+        total_indexes += result.indexes.len();
+        total_triggers += result.triggers.len();
+        total_sequences += result.sequences.len();
+        all_schemas.push(result);
+    }
+
+    Ok(DbImportResult {
+        database: database.to_string(),
+        schemas: all_schemas,
+        total_tables,
+        total_views,
+        total_functions,
+        total_indexes,
+        total_triggers,
+        total_sequences,
+    })
+}
+
+async fn import_single_schema(
+    pool: &Arc<Pool>,
+    schema: &str,
+    pg_version: u32,
+) -> Result<SchemaImportResult, String> {
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+    let schema_param: &str = schema;
+
+    // ── Fetch all top-level objects sequentially (single client, no borrow conflicts) ──
+
+    let func_sql = if pg_version >= 110000 {
+        "SELECT p.proname, p.prokind::text,
+                COALESCE(pg_get_function_arguments(p.oid),''),
+                COALESCE(pg_get_function_result(p.oid),''),
+                pg_get_functiondef(p.oid)
+         FROM pg_proc p
+         JOIN pg_namespace n ON p.pronamespace = n.oid
+         WHERE n.nspname = $1 AND p.prokind IN ('f','p','a','w')
+         ORDER BY p.proname"
+    } else {
+        "SELECT p.proname, 'f'::text,
+                COALESCE(pg_get_function_arguments(p.oid),''),
+                COALESCE(pg_get_function_result(p.oid),''),
+                pg_get_functiondef(p.oid)
+         FROM pg_proc p
+         JOIN pg_namespace n ON p.pronamespace = n.oid
+         WHERE n.nspname = $1
+         ORDER BY p.proname"
+    };
+
+    let table_rows = client
+        .query(
+            "SELECT c.relname, COALESCE(c.reltuples::bigint, 0), d.description
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             LEFT JOIN pg_description d ON d.objoid = c.oid AND d.objsubid = 0
+             WHERE n.nspname = $1 AND c.relkind IN ('r','p')
+             ORDER BY c.relname",
+            &[&schema_param],
+        )
+        .await
+        .map_err(|e| format!("Tables query error for '{}': {}", schema, e))?;
+
+    let view_rows = client
+        .query(
+            "SELECT c.relname, c.relkind = 'm', pg_get_viewdef(c.oid, true)
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1 AND c.relkind IN ('v','m')
+             ORDER BY c.relname",
+            &[&schema_param],
+        )
+        .await
+        .map_err(|e| format!("Views query error for '{}': {}", schema, e))?;
+
+    let func_rows = client
+        .query(func_sql, &[&schema_param])
+        .await
+        .map_err(|e| format!("Functions query error for '{}': {}", schema, e))?;
+
+    let idx_rows = client
+        .query(
+            "SELECT i.relname, c.relname, ix.indisunique, ix.indisprimary,
+                    pg_get_indexdef(i.oid)
+             FROM pg_index ix
+             JOIN pg_class c ON c.oid = ix.indrelid
+             JOIN pg_class i ON i.oid = ix.indexrelid
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1
+             ORDER BY c.relname, i.relname",
+            &[&schema_param],
+        )
+        .await
+        .map_err(|e| format!("Indexes query error for '{}': {}", schema, e))?;
+
+    let trig_rows = client
+        .query(
+            "SELECT tg.tgname, c.relname, pg_get_triggerdef(tg.oid)
+             FROM pg_trigger tg
+             JOIN pg_class c ON c.oid = tg.tgrelid
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             WHERE n.nspname = $1 AND NOT tg.tgisinternal
+             ORDER BY c.relname, tg.tgname",
+            &[&schema_param],
+        )
+        .await
+        .map_err(|e| format!("Triggers query error for '{}': {}", schema, e))?;
+
+    let seq_rows = client
+        .query(
+            "SELECT s.relname
+             FROM pg_class s
+             JOIN pg_namespace n ON n.oid = s.relnamespace
+             WHERE n.nspname = $1 AND s.relkind = 'S'
+             ORDER BY s.relname",
+            &[&schema_param],
+        )
+        .await
+        .map_err(|e| format!("Sequences query error for '{}': {}", schema, e))?;
+
+    // ── Tables: build CREATE TABLE DDL for each ────────────────────────────────
+    let mut tables: Vec<ImportedTable> = Vec::with_capacity(table_rows.len());
+    for row in &table_rows {
+        let table_name: String = row.get(0);
+        let estimated_rows: i64 = row.get(1);
+        let comment: Option<String> = row.get(2);
+
+        let t_name: &str = &table_name;
+        let col_rows = client
+            .query(
+                "SELECT a.attname,
+                        pg_catalog.format_type(a.atttypid, a.atttypmod),
+                        NOT a.attnotnull AS is_nullable,
+                        pg_get_expr(ad.adbin, ad.adrelid),
+                        EXISTS (
+                            SELECT 1 FROM pg_index i
+                            WHERE i.indrelid = c.oid AND i.indisprimary
+                              AND a.attnum = ANY(i.indkey)
+                        )
+                 FROM pg_class c
+                 JOIN pg_namespace n ON n.oid = c.relnamespace
+                 JOIN pg_attribute a ON a.attrelid = c.oid
+                 LEFT JOIN pg_attrdef ad ON ad.adrelid = c.oid AND ad.adnum = a.attnum
+                 WHERE n.nspname = $1 AND c.relname = $2
+                   AND a.attnum > 0 AND NOT a.attisdropped
+                 ORDER BY a.attnum",
+                &[&schema_param, &t_name],
+            )
+            .await
+            .map_err(|e| format!("Columns query error for {}.{}: {}", schema, table_name, e))?;
+
+        let con_rows = client
+            .query(
+                "SELECT con.conname, con.contype, pg_get_constraintdef(con.oid, true)
+                 FROM pg_constraint con
+                 JOIN pg_class c ON c.oid = con.conrelid
+                 JOIN pg_namespace n ON n.oid = c.relnamespace
+                 WHERE n.nspname = $1 AND c.relname = $2
+                 ORDER BY con.contype, con.conname",
+                &[&schema_param, &t_name],
+            )
+            .await
+            .map_err(|e| {
+                format!(
+                    "Constraints query error for {}.{}: {}",
+                    schema, table_name, e
+                )
+            })?;
+
+        let ddl = build_create_table_ddl(schema, &table_name, &col_rows, &con_rows);
+        tables.push(ImportedTable {
+            name: table_name,
+            estimated_rows,
+            comment,
+            ddl,
+        });
+    }
+
+    // ── Views ─────────────────────────────────────────────────────────────────
+    let views: Vec<ImportedView> = view_rows
+        .iter()
+        .map(|row| {
+            let name: String = row.get(0);
+            let is_materialized: bool = row.get(1);
+            let body: Option<String> = row.get(2);
+            let kw = if is_materialized {
+                "MATERIALIZED VIEW"
+            } else {
+                "VIEW"
+            };
+            let ddl = format!(
+                "CREATE OR REPLACE {} {}.{} AS\n{}",
+                kw,
+                quote_ident(schema),
+                quote_ident(&name),
+                body.unwrap_or_default()
+            );
+            ImportedView {
+                name,
+                is_materialized,
+                ddl,
+            }
+        })
+        .collect();
+
+    // ── Functions ─────────────────────────────────────────────────────────────
+    let kind_label = |k: &str| -> String {
+        match k {
+            "f" => "function".to_string(),
+            "p" => "procedure".to_string(),
+            "a" => "aggregate".to_string(),
+            "w" => "window".to_string(),
+            other => other.to_string(),
+        }
+    };
+
+    let functions: Vec<ImportedFunction> = func_rows
+        .iter()
+        .map(|row| {
+            let name: String = row.get(0);
+            let kind_raw: String = row.get(1);
+            let arguments: String = row.get(2);
+            let return_type: String = row.get(3);
+            let def: Option<String> = row.get(4);
+            ImportedFunction {
+                name,
+                kind: kind_label(&kind_raw).to_string(),
+                arguments,
+                return_type,
+                ddl: def.unwrap_or_default(),
+            }
+        })
+        .collect();
+
+    // ── Indexes ───────────────────────────────────────────────────────────────
+    let indexes: Vec<ImportedIndex> = idx_rows
+        .iter()
+        .map(|row| {
+            let name: String = row.get(0);
+            let table_name: String = row.get(1);
+            let is_unique: bool = row.get(2);
+            let is_primary: bool = row.get(3);
+            let ddl: Option<String> = row.get(4);
+            ImportedIndex {
+                name,
+                table_name,
+                is_unique,
+                is_primary,
+                ddl: ddl.unwrap_or_default(),
+            }
+        })
+        .collect();
+
+    // ── Triggers ──────────────────────────────────────────────────────────────
+    let triggers: Vec<ImportedTrigger> = trig_rows
+        .iter()
+        .map(|row| {
+            let name: String = row.get(0);
+            let table_name: String = row.get(1);
+            let def: Option<String> = row.get(2);
+            ImportedTrigger {
+                name,
+                table_name,
+                ddl: def.map(|d| format!("{};", d)).unwrap_or_default(),
+            }
+        })
+        .collect();
+
+    // ── Sequences ─────────────────────────────────────────────────────────────
+    let sequences: Vec<ImportedSequence> = seq_rows
+        .iter()
+        .map(|row| {
+            let name: String = row.get(0);
+            let ddl = format!(
+                "CREATE SEQUENCE {}.{};",
+                quote_ident(schema),
+                quote_ident(&name)
+            );
+            ImportedSequence { name, ddl }
+        })
+        .collect();
+
+    Ok(SchemaImportResult {
+        schema: schema.to_string(),
+        tables,
+        views,
+        indexes,
+        functions,
+        triggers,
+        sequences,
+    })
 }

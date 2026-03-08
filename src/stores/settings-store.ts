@@ -9,6 +9,7 @@ export type NullDisplay = "NULL" | "–" | "";
 export type EditorFontFamily = "jetbrains" | "fira" | "mono";
 
 export type GeminiModelId = "gemini-2.5-pro" | "gemini-2.5-flash" | "gemma3-4b" | "gemma3-12b" | "gemma3-27b" | "gemini-2.5-flash-lite" | "gemini-2.5-pro-lite";
+export type GitAiProvider = "cloudflare" | "gemini";
 
 export interface AppSettings {
     // Appearance
@@ -58,6 +59,12 @@ export interface AppSettings {
     aiSuggestionThrottleMs: number;
     aiSuggestionContextWindowChars: number;
     aiShowSuggestionLatency: boolean;
+
+    // Git AI
+    gitAiProvider: GitAiProvider;
+    cloudflareApiToken: string;
+    cloudflareAccountId: string;
+    cloudflareModel: string;
 }
 
 const DEFAULT_SETTINGS: AppSettings = {
@@ -95,6 +102,10 @@ const DEFAULT_SETTINGS: AppSettings = {
     aiSuggestionThrottleMs: 220,
     aiSuggestionContextWindowChars: 1200,
     aiShowSuggestionLatency: true,
+    gitAiProvider: "cloudflare",
+    cloudflareApiToken: "",
+    cloudflareAccountId: "",
+    cloudflareModel: "@cf/meta/llama-3.1-8b-instruct",
 };
 
 interface SettingsStore extends AppSettings {

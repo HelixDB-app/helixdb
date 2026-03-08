@@ -4,6 +4,9 @@ mod commands;
 mod connections_storage;
 mod db;
 mod device_fingerprint;
+mod git;
+mod git_storage;
+mod github;
 mod local_postgres;
 mod notes_storage;
 mod query_history_storage;
@@ -11,40 +14,80 @@ mod schema_designer_storage;
 mod trial;
 
 use commands::AppState;
-use tauri::{Emitter, Listener};
+use git::GitState;
+use tauri::{
+    menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
+    Emitter, Listener,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Load .env: project root (dev), then app data dir (installed/TestFlight).
+    // This makes GITHUB_CLIENT_ID / GITHUB_CLIENT_SECRET available at runtime.
+    dotenvy::dotenv().ok();
+    let app_env = git_storage::pgstudio_data_dir().join(".env");
+    if app_env.exists() {
+        dotenvy::from_path(&app_env).ok();
+    }
+
     tauri::Builder::default()
         .manage(AppState::new())
+        .manage(GitState::new())
         .plugin(tauri_plugin_log::Builder::default().build())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_deep_link::init())
+        .plugin(tauri_plugin_dialog::init())
         .setup(|app| {
-            // Listen for deep-link events and re-emit as a friendly event for the frontend.
-            // The web app sends:  pgstudio://auth/callback?token=JWT&state=NONCE
+            // Listen for deep-link events and re-emit as friendly events for the frontend.
             let handle = app.handle().clone();
-            app.handle().listen("deep-link://new-url", move |event: tauri::Event| {
-                log::debug!("[deep-link] received payload: {}", event.payload());
-                match serde_json::from_str::<Vec<String>>(event.payload()) {
-                    Ok(urls) => {
-                        for url in urls {
-                            if url.starts_with("pgstudio://auth/callback") {
-                                log::info!("[deep-link] emitting pgstudio-auth-callback");
-                                if let Err(e) = handle.emit("pgstudio-auth-callback", &url) {
-                                    log::error!("[deep-link] failed to emit event: {e}");
+            app.handle()
+                .listen("deep-link://new-url", move |event: tauri::Event| {
+                    log::debug!("[deep-link] received payload: {}", event.payload());
+                    match serde_json::from_str::<Vec<String>>(event.payload()) {
+                        Ok(urls) => {
+                            for url in urls {
+                                if url.starts_with("pgstudio://auth/callback") {
+                                    log::info!("[deep-link] emitting pgstudio-auth-callback");
+                                    if let Err(e) = handle.emit("pgstudio-auth-callback", &url) {
+                                        log::error!("[deep-link] failed to emit auth event: {e}");
+                                    }
+                                } else if url.starts_with("pgstudio://git/callback") {
+                                    log::info!("[deep-link] emitting pgstudio-git-callback");
+                                    if let Err(e) = handle.emit("pgstudio-git-callback", &url) {
+                                        log::error!("[deep-link] failed to emit git event: {e}");
+                                    }
+                                } else {
+                                    log::debug!("[deep-link] ignored url: {url}");
                                 }
-                            } else {
-                                log::debug!("[deep-link] ignored url: {url}");
                             }
                         }
+                        Err(e) => {
+                            log::warn!(
+                                "[deep-link] failed to parse payload as Vec<String>: {e} — raw: {}",
+                                event.payload()
+                            );
+                        }
                     }
-                    Err(e) => {
-                        log::warn!("[deep-link] failed to parse payload as Vec<String>: {e} — raw: {}", event.payload());
-                    }
+                });
+
+            // Native macOS menu with File > New Window
+            let new_window_item = MenuItemBuilder::with_id("new_window", "New Window")
+                .accelerator("CmdOrCtrl+Shift+N")
+                .build(app)?;
+            let file_menu = SubmenuBuilder::new(app, "File")
+                .item(&new_window_item)
+                .separator()
+                .close_window()
+                .build()?;
+            let menu = MenuBuilder::new(app).item(&file_menu).build()?;
+            app.set_menu(menu)?;
+            app.on_menu_event(|app, event| {
+                if event.id() == "new_window" {
+                    commands::create_app_window(app);
                 }
             });
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -157,6 +200,8 @@ pub fn run() {
             commands::open_path,
             commands::app_log_write,
             commands::app_log_path,
+            commands::open_new_window,
+            commands::db_import_schema,
             // Auth commands
             auth::auth_open_login,
             auth::auth_open_url,
@@ -174,6 +219,48 @@ pub fn run() {
             trial::trial_get_status,
             trial::trial_associate_user,
             trial::trial_get_device_id,
+            // Git workspace commands
+            git::git_open_workspace,
+            git::git_ensure_workspace_for_connection,
+            git::git_set_workspace,
+            git::git_get_status,
+            git::git_get_diff,
+            git::git_stage_files,
+            git::git_stage_all,
+            git::git_unstage_files,
+            git::git_commit,
+            git::git_push,
+            git::git_fetch_remote,
+            git::git_set_remote,
+            git::git_list_branches,
+            git::git_create_branch,
+            git::git_checkout_branch,
+            git::git_delete_branch,
+            git::git_get_log,
+            git::git_get_remote_info,
+            git::git_get_diff_summary,
+            git::git_discard_changes,
+            git::write_workspace_file,
+            git::delete_workspace_file,
+            git::sync_ide_files_to_workspace,
+            // Git storage commands
+            git_storage::git_storage_list_workspaces,
+            git_storage::git_storage_save_workspace,
+            git_storage::git_storage_delete_workspace,
+            git_storage::git_storage_update_remote,
+            git_storage::git_storage_update_author,
+            git_storage::git_storage_get_github_token,
+            // GitHub OAuth & API commands
+            github::github_start_oauth,
+            github::github_exchange_code,
+            github::github_get_current_user,
+            github::github_get_token,
+            github::github_revoke_token,
+            github::github_list_repos,
+            github::github_create_repo,
+            github::github_create_pr,
+            github::github_list_collaborators,
+            github::github_list_remote_branches,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
