@@ -11,6 +11,7 @@ mod local_postgres;
 mod notes_storage;
 mod query_history_storage;
 mod schema_designer_storage;
+mod sql_lint;
 mod trial;
 
 use commands::AppState;
@@ -110,6 +111,7 @@ pub fn run() {
             commands::db_get_table_data_geojson,
             commands::db_export_sql,
             commands::db_execute_query,
+            sql_lint::db_lint_sql,
             commands::db_refresh_cache,
             commands::db_list_databases,
             commands::db_get_access_profile,

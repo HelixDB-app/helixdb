@@ -206,6 +206,46 @@ export async function dbExecuteQuery(
     });
 }
 
+export interface DbSqlLintSchemaContext {
+    tables: string[];
+    columns: Record<string, string[]>;
+}
+
+export interface DbSqlLintQuickFix {
+    id: string;
+    label: string;
+    startLineNumber: number;
+    startColumn: number;
+    endLineNumber: number;
+    endColumn: number;
+    replacement: string;
+    isPreferred: boolean;
+}
+
+export interface DbSqlLintDiagnostic {
+    id: string;
+    ruleId: string;
+    severity: "error" | "warning" | "info";
+    message: string;
+    source: string;
+    startLineNumber: number;
+    startColumn: number;
+    endLineNumber: number;
+    endColumn: number;
+    quickFixes: DbSqlLintQuickFix[];
+}
+
+/** Run Rust-backed SQL lint checks and return diagnostics with optional quick fixes. */
+export async function dbLintSql(
+    sql: string,
+    schemaContext?: DbSqlLintSchemaContext | null
+): Promise<DbSqlLintDiagnostic[]> {
+    return invoke<DbSqlLintDiagnostic[]>("db_lint_sql", {
+        sql,
+        schemaContext: schemaContext ?? null,
+    });
+}
+
 /** Export database to SQL file. Progress via "db-export-progress" event. */
 export async function dbExportSql(
     request: ExportRequest

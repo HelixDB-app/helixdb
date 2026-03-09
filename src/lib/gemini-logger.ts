@@ -18,6 +18,7 @@ export type ApiFeatureType =
     | "schema-designer"
     | "sql-to-schema"
     | "query-error"
+    | "query-explain"
     | "git"
     | "other";
 
@@ -40,7 +41,7 @@ const FLUSH_INTERVAL_MS = 30_000; // 30 s
 
 const WEB_BASE_URL =
     (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_WEB_APP_URL) ??
-    `${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "http://localhost:3001"}`;
+    `${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app"}`;
 
 class GeminiLoggerSingleton {
     private buffer: GeminiLogEntry[] = [];
@@ -139,7 +140,7 @@ class GeminiLoggerSingleton {
                     },
                     body: JSON.stringify(entry),
                     keepalive: true,
-                }).catch(() => {})
+                }).catch(() => { })
             )
         );
     }

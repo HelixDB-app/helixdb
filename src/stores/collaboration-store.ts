@@ -36,7 +36,7 @@ const HEARTBEAT_MS = 12_000;
 const MEDIA_STAGE_LIMIT = 12;
 const QUERY_RESULT_PREVIEW_ROWS = 200;
 const QUERY_RESULT_PREVIEW_COLUMNS = 60;
-const DEFAULT_WEB_BASE = process.env.NEXT_PUBLIC_WEB_APP_URL ?? "http://localhost:3001";
+const DEFAULT_WEB_BASE = process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app";
 const GUEST_ID_KEY = "pgstudio_collab_guest_id";
 const INSTANCE_ID_KEY = "pgstudio_collab_instance_id";
 

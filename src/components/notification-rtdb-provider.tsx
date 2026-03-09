@@ -25,7 +25,7 @@ const TOAST_DURATION_MS = 7000;
 
 /** Web app base URL — used to resolve relative image URLs from the server */
 const WEB_BASE_URL =
-    process.env.NEXT_PUBLIC_WEB_APP_URL ?? "http://localhost:3001";
+    process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app";
 
 /** Detect Tauri 2.x runtime (checks both v1 and v2 globals) */
 function isTauri(): boolean {

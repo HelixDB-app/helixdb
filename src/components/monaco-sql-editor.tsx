@@ -11,6 +11,13 @@ import { useSettingsStore } from "@/stores/settings-store";
 import type { SqlReviewIssue } from "@/lib/sql-review";
 import type { CollaborationSelection } from "@/lib/collaboration/types";
 import { Loader2, Sparkles, Zap } from "lucide-react";
+import { explainSql, explainSelection } from "@/lib/sql-explain-ai";
+import type { SqlExplanation } from "@/lib/sql-explain-ai";
+import { InlineExplainWidget } from "@/components/inline-explain-widget";
+import {
+    registerLintProvider,
+    type RegisteredLintProvider,
+} from "@/lib/sql-linter";
 
 const EDITOR_HEIGHT = 200;
 
@@ -68,6 +75,8 @@ export interface MonacoSqlEditorProps {
         column: number;
         selection?: CollaborationSelection | null;
     }) => void;
+    /** Called once on mount with a function that can trigger any Monaco editor action by ID. */
+    onRegisterActionTrigger?: (trigger: (actionId: string) => void) => void;
 }
 
 interface MutableCollaboratorWidget extends editor.IContentWidget {
@@ -97,6 +106,7 @@ export function MonacoSqlEditor({
     hideNextActionSuggestions = false,
     collaborators = [],
     onCursorActivity,
+    onRegisterActionTrigger,
 }: MonacoSqlEditorProps) {
     const { resolvedTheme } = useTheme();
     const {
@@ -124,8 +134,10 @@ export function MonacoSqlEditor({
     const onFormatSqlRef = useRef<typeof onFormatSql>(onFormatSql);
     const onNextActionRef = useRef<typeof onNextAction>(onNextAction);
     const onCursorActivityRef = useRef<typeof onCursorActivity>(onCursorActivity);
+    const onRegisterActionTriggerRef = useRef<typeof onRegisterActionTrigger>(onRegisterActionTrigger);
     const onChangeRef = useRef(onChange);
     const disposablesRef = useRef<IDisposable[]>([]);
+    const lintProviderRef = useRef<RegisteredLintProvider | null>(null);
     const collaboratorDecorationsRef = useRef<string[]>([]);
     const collaboratorWidgetsRef = useRef<Record<string, MutableCollaboratorWidget>>({});
     const lastDropdownRequestRef = useRef<number>(0);
@@ -157,6 +169,22 @@ export function MonacoSqlEditor({
     });
     const [aiRequestInFlight, setAiRequestInFlight] = useState(false);
 
+    // ── Inline Explain Widget state ──────────────────────────────────────────
+    const [explainState, setExplainState] = useState<{
+        isOpen: boolean;
+        isLoading: boolean;
+        error: string | null;
+        explanation: SqlExplanation | null;
+        anchorRect: DOMRect | null;
+    }>({
+        isOpen: false,
+        isLoading: false,
+        error: null,
+        explanation: null,
+        anchorRect: null,
+    });
+    const explainAbortRef = useRef<AbortController | null>(null);
+
     const beginAiRequest = useCallback(() => {
         aiPendingCountRef.current += 1;
         setAiRequestInFlight(true);
@@ -167,13 +195,89 @@ export function MonacoSqlEditor({
         setAiRequestInFlight(aiPendingCountRef.current > 0);
     }, []);
 
+    /** Get the screen-space rect for the cursor position in the editor. */
+    const getAnchorRect = useCallback((): DOMRect | null => {
+        const editorInstance = editorRef.current;
+        if (!editorInstance) return null;
+        const position = editorInstance.getPosition();
+        if (!position) return null;
+        const domNode = editorInstance.getDomNode();
+        if (!domNode) return null;
+        const scrolledPos = editorInstance.getScrolledVisiblePosition(position);
+        if (!scrolledPos) return null;
+        const editorBounds = domNode.getBoundingClientRect();
+        return new DOMRect(
+            editorBounds.left + scrolledPos.left,
+            editorBounds.top + scrolledPos.top,
+            0,
+            scrolledPos.height
+        );
+    }, []);
+
+    const dismissExplanation = useCallback(() => {
+        explainAbortRef.current?.abort();
+        explainAbortRef.current = null;
+        setExplainState({
+            isOpen: false,
+            isLoading: false,
+            error: null,
+            explanation: null,
+            anchorRect: null,
+        });
+    }, []);
+
+    const triggerExplain = useCallback(
+        async (sql: string, selectedText?: string) => {
+            if (!sql.trim()) return;
+            explainAbortRef.current?.abort();
+            const abort = new AbortController();
+            explainAbortRef.current = abort;
+
+            const anchorRect = getAnchorRect();
+            setExplainState({
+                isOpen: true,
+                isLoading: true,
+                error: null,
+                explanation: null,
+                anchorRect,
+            });
+
+            try {
+                const result = selectedText
+                    ? await explainSelection(sql, selectedText, schemaContextRef.current, {
+                        signal: abort.signal,
+                    })
+                    : await explainSql(sql, schemaContextRef.current, { signal: abort.signal });
+
+                if (abort.signal.aborted) return;
+                setExplainState((prev) => ({
+                    ...prev,
+                    isLoading: false,
+                    explanation: result,
+                }));
+            } catch (err) {
+                if (abort.signal.aborted) return;
+                const msg =
+                    err instanceof Error
+                        ? err.message
+                        : "An unexpected error occurred. Check your Gemini API key in Settings → AI.";
+                setExplainState((prev) => ({ ...prev, isLoading: false, error: msg }));
+            }
+        },
+        [getAnchorRect]
+    );
+
     // Keep refs current
-    useEffect(() => { schemaContextRef.current = schemaContext; }, [schemaContext]);
+    useEffect(() => {
+        schemaContextRef.current = schemaContext;
+        lintProviderRef.current?.trigger();
+    }, [schemaContext]);
     useEffect(() => { disabledRef.current = !!disabled; }, [disabled]);
     useEffect(() => { onFetchColumnsRef.current = onFetchColumns; }, [onFetchColumns]);
     useEffect(() => { onFormatSqlRef.current = onFormatSql; }, [onFormatSql]);
     useEffect(() => { onNextActionRef.current = onNextAction; }, [onNextAction]);
     useEffect(() => { onCursorActivityRef.current = onCursorActivity; }, [onCursorActivity]);
+    useEffect(() => { onRegisterActionTriggerRef.current = onRegisterActionTrigger; }, [onRegisterActionTrigger]);
     useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
     useEffect(() => {
         aiConfigRef.current = {
@@ -202,6 +306,7 @@ export function MonacoSqlEditor({
         return () => {
             disposablesRef.current.forEach((d) => d.dispose());
             disposablesRef.current = [];
+            lintProviderRef.current = null;
             dropdownAbortRef.current?.abort();
             const editorInstance = editorRef.current;
             if (editorInstance) {
@@ -750,6 +855,21 @@ export function MonacoSqlEditor({
             editorRef.current = editorInstance;
             monacoRef.current = monacoInstance;
 
+            const lintProvider = registerLintProvider(monacoInstance, editorInstance, {
+                delayMs: 220,
+                getSchemaContext: () => schemaContextRef.current,
+                enableRustCore: true,
+            });
+            lintProviderRef.current = lintProvider;
+            disposablesRef.current.push({
+                dispose: () => {
+                    lintProvider.dispose();
+                    if (lintProviderRef.current === lintProvider) {
+                        lintProviderRef.current = null;
+                    }
+                },
+            });
+
             editorInstance.addAction({
                 id: "run-query",
                 label: "Run Query",
@@ -779,6 +899,15 @@ export function MonacoSqlEditor({
             });
 
             editorInstance.addAction({
+                id: "show-sql-quick-fixes",
+                label: "Show SQL Quick Fixes",
+                keybindings: [monacoInstance.KeyMod.Alt | monacoInstance.KeyCode.Enter],
+                run: () => {
+                    editorInstance.trigger("keyboard", "editor.action.quickFix", {});
+                },
+            });
+
+            editorInstance.addAction({
                 id: "accept-next-ai-word",
                 label: "Accept Next AI Word",
                 keybindings: [monacoInstance.KeyMod.Alt | monacoInstance.KeyCode.RightArrow],
@@ -793,6 +922,40 @@ export function MonacoSqlEditor({
                 keybindings: [monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.Period],
                 run: () => {
                     editorInstance.trigger("keyboard", "editor.action.inlineSuggest.trigger", {});
+                },
+            });
+
+            // ── AI Explain Query actions ─────────────────────────────────────
+            editorInstance.addAction({
+                id: "explain-query",
+                label: "✦ Explain Query (Nova AI)",
+                keybindings: [
+                    monacoInstance.KeyMod.CtrlCmd |
+                    monacoInstance.KeyMod.Shift |
+                    monacoInstance.KeyCode.KeyE,
+                ],
+                contextMenuGroupId: "1_modification",
+                contextMenuOrder: 1.5,
+                run: () => {
+                    const sql = editorInstance.getValue();
+                    triggerExplain(sql);
+                },
+            });
+
+            editorInstance.addAction({
+                id: "explain-selection",
+                label: "✦ Explain Selection (Nova AI)",
+                // Visible in context menu only when there is a non-empty selection
+                precondition: "editorHasSelection",
+                contextMenuGroupId: "1_modification",
+                contextMenuOrder: 1.6,
+                run: () => {
+                    const sql = editorInstance.getValue();
+                    const selection = editorInstance.getSelection();
+                    const selectedText = selection
+                        ? editorInstance.getModel()?.getValueInRange(selection) ?? ""
+                        : "";
+                    triggerExplain(sql, selectedText || undefined);
                 },
             });
 
@@ -884,12 +1047,28 @@ export function MonacoSqlEditor({
             emitCursorActivity();
 
             editorInstance.focus();
+
+            // Register action trigger for external callers (e.g. toolbar button)
+            onRegisterActionTriggerRef.current?.((actionId) => {
+                editorInstance.trigger("external", actionId, null);
+            });
         },
-        [onExecute, onReview]
+        [onExecute, onReview, triggerExplain]
     );
 
     return (
         <div className={cn("flex flex-col", className)}>
+            {/* ── Inline Explain Widget (portal → document.body) ──────────── */}
+            {explainState.isOpen && (
+                <InlineExplainWidget
+                    explanation={explainState.explanation}
+                    isLoading={explainState.isLoading}
+                    error={explainState.error}
+                    anchorRect={explainState.anchorRect}
+                    onDismiss={dismissExplanation}
+                />
+            )}
+
             {/* ── Editor ──────────────────────────────────────────────────────── */}
             <div
                 className={cn(

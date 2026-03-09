@@ -1,13 +1,42 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 import { MapContainer, TileLayer, GeoJSON, useMap } from "react-leaflet";
 import L from "leaflet";
 import "leaflet/dist/leaflet.css";
 
-const POLYLINE_STROKE = "#10b981";
-const POLYGON_FILL = "#10b981";
-const POLYGON_STROKE = "#10b981";
+const POLYLINE_STROKE = "#0ea5e9";
+const POLYLINE_HOVER = "#38bdf8";
+const POLYGON_FILL = "#0ea5e9";
+const POLYGON_STROKE = "#0ea5e9";
+
+const TILE_LAYERS: Record<"roadmap" | "satellite" | "dark", { url: string; attribution: string }> = {
+    roadmap: {
+        url: "https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png",
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    },
+    satellite: {
+        url: "https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}",
+        attribution: "&copy; Esri",
+    },
+    dark: {
+        url: "https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png",
+        attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/attributions">CARTO</a>',
+    },
+};
+
+function createPinIcon() {
+    const size = 28;
+    return L.divIcon({
+        html: `<svg width="${size}" height="${size}" viewBox="0 0 24 36" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <path d="M12 0C5.37 0 0 5.37 0 12c0 9 12 24 12 24s12-15 12-24C24 5.37 18.63 0 12 0z" fill="#0ea5e9" stroke="white" stroke-width="2"/>
+          <circle cx="12" cy="12" r="5" fill="white"/>
+        </svg>`,
+        className: "!bg-transparent !border-0",
+        iconSize: [size, size],
+        iconAnchor: [size / 2, size],
+    });
+}
 
 type GeoJSONGeometry =
     | { type: "Point"; coordinates: [number, number] }
@@ -62,6 +91,8 @@ export interface LeafletMapViewProps {
     onHoverRowIndex: (index: number | null) => void;
     onCoords: (lat: number, lng: number) => void;
     containerRef: React.RefObject<HTMLDivElement | null>;
+    mapType?: "roadmap" | "satellite" | "dark";
+    onMapReady?: (map: L.Map) => void;
 }
 
 export function LeafletMapView({
@@ -74,7 +105,11 @@ export function LeafletMapView({
     onHoverRowIndex,
     onCoords,
     containerRef,
+    mapType = "roadmap",
+    onMapReady,
 }: LeafletMapViewProps) {
+    const tiles = useMemo(() => TILE_LAYERS[mapType], [mapType]);
+
     const handleEachFeature = useCallback(
         (feature: GeoJSON.Feature, layer: L.Layer) => {
             const rowIndex = feature.properties?.rowIndex as number | undefined;
@@ -98,15 +133,8 @@ export function LeafletMapView({
         [onSelectRowIndex, onHoverRowIndex]
     );
 
-    const pointToLayer = useCallback((feature: GeoJSON.Feature, latlng: L.LatLngExpression) => {
-        return L.circleMarker(latlng, {
-            radius: 6,
-            fillColor: POLYLINE_STROKE,
-            color: "#fff",
-            weight: 1,
-            opacity: 1,
-            fillOpacity: 0.8,
-        });
+    const pointToLayer = useCallback((_feature: GeoJSON.Feature, latlng: L.LatLngExpression) => {
+        return L.marker(latlng, { icon: createPinIcon() });
     }, []);
 
     const style = useCallback(
@@ -114,28 +142,26 @@ export function LeafletMapView({
             const rowIndex = feature?.properties?.rowIndex as number | undefined;
             const isHighlight = rowIndex != null && (rowIndex === selectedRowIndex || rowIndex === hoverRowIndex);
             return {
-                color: POLYLINE_STROKE,
+                color: isHighlight ? POLYLINE_HOVER : POLYLINE_STROKE,
                 weight: isHighlight ? 3 : 2,
                 fillColor: POLYGON_FILL,
-                fillOpacity: 0.25,
+                fillOpacity: 0.28,
             };
         },
         [selectedRowIndex, hoverRowIndex]
     );
 
     return (
-        <div ref={containerRef} className="h-full w-full relative z-0 [&_.leaflet-container]:rounded-none">
+        <div ref={containerRef} className="h-full w-full relative z-0 [&_.leaflet-container]:rounded-none [&_.leaflet-control-zoom]:border-border/30 [&_.leaflet-control-attribution]:text-[10px]">
             <MapContainer
                 center={focusPoint ?? [20, 0]}
                 zoom={focusPoint ? 14 : 2}
                 className="h-full w-full"
                 zoomControl={true}
             >
-                <TileLayer
-                    attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
-                    url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-                />
+                <TileLayer attribution={tiles.attribution} url={tiles.url} />
                 <FitBounds bounds={bounds} focusPoint={focusPoint} />
+                {onMapReady && <MapReadyCallback onMapReady={onMapReady} />}
                 {geometriesByRow.map((geom, rowIndex) => {
                     if (!geom) return null;
                     const feature = geomToFeature(geom) as GeoJSON.Feature & { properties: { rowIndex: number } };
@@ -154,6 +180,14 @@ export function LeafletMapView({
             </MapContainer>
         </div>
     );
+}
+
+function MapReadyCallback({ onMapReady }: { onMapReady: (map: L.Map) => void }) {
+    const map = useMap();
+    useEffect(() => {
+        onMapReady(map);
+    }, [map, onMapReady]);
+    return null;
 }
 
 function MapMouseHandler({ onCoords }: { onCoords: (lat: number, lng: number) => void }) {

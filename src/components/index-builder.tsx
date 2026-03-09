@@ -1531,7 +1531,7 @@ export function IndexBuilder() {
 
             <ResizablePanelGroup orientation="horizontal" className="h-full">
                 {/* Left: current indexes */}
-                <ResizablePanel defaultSize={28} minSize={22} maxSize={400}>
+                {/* <ResizablePanel defaultSize={28} minSize={22} maxSize={400}>
                     <LeftPanel
                         schemas={schemaList}
                         selectedSchema={activeSchema}
@@ -1546,7 +1546,7 @@ export function IndexBuilder() {
                         searchQuery={searchQuery}
                         onSearchChange={setSearchQuery}
                     />
-                </ResizablePanel>
+                </ResizablePanel> */}
 
                 <ResizableHandle className="w-px bg-border/20 hover:bg-emerald-500/40 transition-colors data-[resize-handle-active]:bg-emerald-500/60" />
 

@@ -51,6 +51,7 @@ import {
     ExternalLink,
     Pencil,
     RotateCcw as ResetIcon,
+    MessageSquareText,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -951,7 +952,7 @@ function AISection() {
     );
 }
 
-function AboutSection() {
+function AboutSection({ onOpenSurvey }: { onOpenSurvey?: () => void }) {
     const [copied, setCopied] = useState(false);
 
     const info = [
@@ -1029,6 +1030,23 @@ function AboutSection() {
                         <ExternalLink className="h-3 w-3" />
                     </Link>
                 </SettingRow>
+                {onOpenSurvey && (
+                    <SettingRow
+                        label="Share your feedback"
+                        description="Help us improve by answering a short survey about how you discovered the app and what you expect."
+                    >
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="gap-1.5"
+                            onClick={onOpenSurvey}
+                        >
+                            <MessageSquareText className="h-3.5 w-3.5" />
+                            Take survey
+                        </Button>
+                    </SettingRow>
+                )}
             </SettingSection>
 
             <SettingSection title="Performance">
@@ -1060,9 +1078,11 @@ function AboutSection() {
 interface SettingsDialogProps {
     open: boolean;
     onOpenChange: (open: boolean) => void;
+    /** When provided, shows a "Take survey" button in About that closes settings and opens the survey modal. */
+    onOpenSurvey?: () => void;
 }
 
-export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
+export function SettingsDialog({ open, onOpenChange, onOpenSurvey }: SettingsDialogProps) {
     const [activeSection, setActiveSection] = useState<SettingsSection>("appearance");
     const { resetSettings } = useSettingsStore();
     const { setTheme } = useTheme();
@@ -1081,14 +1101,14 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             case "query": return <QuerySection />;
             case "ai": return <AISection />;
             case "shortcuts": return <ShortcutsSection />;
-            case "about": return <AboutSection />;
+            case "about": return <AboutSection onOpenSurvey={onOpenSurvey} />;
         }
     };
 
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent className={cn(
-                "max-w-[65vw] sm:max-w-7xl w-full h-[83vh] flex flex-col p-0 gap-0 overflow-hidden",
+                "max-w-[65vw] sm:max-w-7xl w-full h-[60vh] flex flex-col p-0 gap-0 overflow-hidden",
                 "rounded-xl border-border/40 shadow-2xl"
             )}>
                 <DialogTitle className="sr-only">Settings</DialogTitle>

@@ -3,7 +3,7 @@
  * Lazy-loaded via dynamic import; no Firebase code in main bundle.
  */
 
-import { APP_NAME, APP_VERSION } from "@/lib/app-config";
+import { APP_NAME, APP_VERSION, APP_CHANNEL } from "@/lib/app-config";
 
 const MAX_DESCRIPTION_LENGTH = 500;
 
@@ -55,6 +55,7 @@ export async function logException(
       description: truncate(description, MAX_DESCRIPTION_LENGTH),
       fatal,
       app_version: APP_VERSION,
+      channel: APP_CHANNEL,
     });
   } catch {
     // Avoid breaking app if Analytics fails
@@ -119,9 +120,10 @@ export async function initFirebase(): Promise<void> {
     setUserProperties(analytics, {
       app_version: APP_VERSION,
       app_name: APP_NAME,
+      channel: APP_CHANNEL,
     });
 
-    logEvent(analytics, "session_start", { app_version: APP_VERSION });
+    logEvent(analytics, "session_start", { app_version: APP_VERSION, channel: APP_CHANNEL });
     registerGlobalErrorHandlers();
   } catch {
     analyticsInstance = null;

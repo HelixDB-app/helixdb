@@ -82,7 +82,12 @@ ${downSql}
                                         const targetTable = project.tables.find(tt => tt.id === c.foreign_key!.target_table_id);
                                         const targetCol = targetTable?.columns.find(cc => cc.id === c.foreign_key!.target_column_id);
                                         return targetTable && targetCol
-                                            ? { table: targetTable.name, column: targetCol.name }
+                                            ? {
+                                                table: targetTable.name,
+                                                column: targetCol.name,
+                                                on_delete: c.foreign_key?.on_delete ?? "CASCADE",
+                                                on_update: c.foreign_key?.on_update ?? "CASCADE",
+                                            }
                                             : null;
                                     })()
                                     : null,

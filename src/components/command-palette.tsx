@@ -1124,10 +1124,11 @@ export function CommandPalette({
             <DialogContent className="overflow-hidden p-0 shadow-2xl border-border/30 max-w-[920px] w-[96vw] bg-gradient-to-b from-card via-card/95 to-muted/30 backdrop-blur-xl">
                 <Command
                     shouldFilter={false}
-                    className="rounded-lg border-0 [&_[data-slot=command-input-wrapper]]:border-b-0"
+                    className="rounded-lg border-0 [&_[data-slot=command-input-wrapper]]:border-b-0 [&_[data-slot=command-input-wrapper]]:flex-1 [&_[data-slot=command-input-wrapper]]:min-w-0"
                 >
                     <div className="border-b border-border/20 bg-gradient-to-r from-emerald-500/[0.04] via-transparent to-blue-500/[0.04]">
-                        <div className="flex items-center px-1">
+                        {/* Search row */}
+                        <div className="flex items-center gap-2 px-4 pt-3 pb-2">
                             <CommandInput
                                 value={input}
                                 onValueChange={setInput}
@@ -1136,94 +1137,92 @@ export function CommandPalette({
                                         ? "Search everything: tables, columns, functions, types, triggers... or run SQL"
                                         : "Connect to a database first"
                                 }
-                                className="h-12 text-sm"
+                                className="h-11 text-sm border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
                                 disabled={!isConnected || isExecuting}
                             />
-
                             {isHydratingCatalog && (
                                 <Badge
                                     variant="outline"
-                                    className="mr-1.5 h-6 border-emerald-500/30 bg-emerald-500/5 text-[10px] text-emerald-400"
+                                    className="shrink-0 h-7 border-emerald-500/30 bg-emerald-500/5 text-[11px] text-emerald-400 px-2"
                                 >
-                                    <Loader2 className="mr-1 h-3 w-3 animate-spin" />
+                                    <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
                                     {catalogStage || "Indexing"}
                                 </Badge>
                             )}
-
                             <button
                                 type="button"
                                 onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
-                                className="mr-1.5 inline-flex h-8 w-8 items-center justify-center rounded-md border border-border/40 bg-muted/20 text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                                className="shrink-0 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border/40 bg-muted/20 text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
                                 aria-label="Toggle light and dark mode"
                                 title="Toggle light/dark mode"
                             >
                                 {resolvedTheme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
                             </button>
-
                             {isExecuting && (
-                                <Loader2 className="mr-2 h-4 w-4 animate-spin text-muted-foreground/60 shrink-0" />
+                                <Loader2 className="shrink-0 h-4 w-4 animate-spin text-muted-foreground/60" />
                             )}
                         </div>
 
+                        {/* Filters: categories + refinement */}
                         {isConnected && (parsed.type === "init" || parsed.type === "table") && (
-                            <div className="flex flex-wrap items-center gap-1.5 px-3 pb-2">
-                                <button
-                                    type="button"
-                                    onClick={() => setActiveCategories(ALL_CATEGORIES)}
-                                    className={cn(
-                                        "h-6 rounded-md border px-2 text-[11px] transition-colors",
-                                        allCategoriesSelected
-                                            ? "border-emerald-500/35 bg-emerald-500/10 text-emerald-400"
-                                            : "border-border/30 bg-background/40 text-muted-foreground hover:text-foreground"
-                                    )}
-                                >
-                                    All
-                                </button>
-
-                                {[
-                                    { key: "table", label: "Tables" },
-                                    { key: "view", label: "Views" },
-                                    { key: "column", label: "Columns" },
-                                    { key: "function", label: "Functions" },
-                                    { key: "type", label: "Types" },
-                                    { key: "event_trigger", label: "Triggers" },
-                                    { key: "saved", label: "Saved" },
-                                    { key: "recent", label: "Recent" },
-                                ].map((cat) => {
-                                    const category = cat.key as SearchCategory;
-                                    const active = activeCategorySet.has(category);
-                                    return (
-                                        <button
-                                            key={cat.key}
-                                            type="button"
-                                            onClick={() => {
-                                                setActiveCategories((prev) => {
-                                                    if (prev.includes(category)) {
-                                                        if (prev.length === 1) return prev;
-                                                        return prev.filter((item) => item !== category);
-                                                    }
-                                                    return [...prev, category];
-                                                });
-                                            }}
-                                            className={cn(
-                                                "h-6 rounded-md border px-2 text-[11px] transition-colors",
-                                                active
-                                                    ? "border-primary/35 bg-primary/10 text-foreground"
-                                                    : "border-border/30 bg-background/30 text-muted-foreground hover:text-foreground"
-                                            )}
-                                        >
-                                            {cat.label}
-                                            <span className="ml-1 text-[10px] text-muted-foreground/60">
-                                                {categoryCounts[category]}
-                                            </span>
-                                        </button>
-                                    );
-                                })}
-
-                                <div className="ml-auto flex items-center gap-1.5">
+                            <div className="px-4 pb-3 space-y-2.5">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <button
+                                        type="button"
+                                        onClick={() => setActiveCategories(ALL_CATEGORIES)}
+                                        className={cn(
+                                            "h-7 rounded-lg border px-2.5 text-xs font-medium transition-colors shrink-0",
+                                            allCategoriesSelected
+                                                ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+                                                : "border-border/40 bg-background/50 text-muted-foreground hover:text-foreground hover:border-border/60"
+                                        )}
+                                    >
+                                        All
+                                    </button>
+                                    {[
+                                        { key: "table", label: "Tables" },
+                                        { key: "view", label: "Views" },
+                                        { key: "column", label: "Columns" },
+                                        { key: "function", label: "Functions" },
+                                        { key: "type", label: "Types" },
+                                        { key: "event_trigger", label: "Triggers" },
+                                        { key: "saved", label: "Saved" },
+                                        { key: "recent", label: "Recent" },
+                                    ].map((cat) => {
+                                        const category = cat.key as SearchCategory;
+                                        const active = activeCategorySet.has(category);
+                                        return (
+                                            <button
+                                                key={cat.key}
+                                                type="button"
+                                                onClick={() => {
+                                                    setActiveCategories((prev) => {
+                                                        if (prev.includes(category)) {
+                                                            if (prev.length === 1) return prev;
+                                                            return prev.filter((item) => item !== category);
+                                                        }
+                                                        return [...prev, category];
+                                                    });
+                                                }}
+                                                className={cn(
+                                                    "h-7 rounded-lg border px-2.5 text-xs font-medium transition-colors shrink-0 inline-flex items-center",
+                                                    active
+                                                        ? "border-primary/40 bg-primary/10 text-foreground"
+                                                        : "border-border/40 bg-background/50 text-muted-foreground hover:text-foreground hover:border-border/60"
+                                                )}
+                                            >
+                                                {cat.label}
+                                                <span className="ml-1.5 text-[11px] text-muted-foreground/70 tabular-nums">
+                                                    {categoryCounts[category]}
+                                                </span>
+                                            </button>
+                                        );
+                                    })}
+                                </div>
+                                <div className="flex items-center gap-2 pt-2 border-t border-border/20">
                                     <Select value={schemaFilter} onValueChange={setSchemaFilter}>
-                                        <SelectTrigger className="h-7 w-[150px] rounded-md border-border/30 bg-background/40 text-xs">
-                                            <SlidersHorizontal className="mr-1.5 h-3 w-3 text-muted-foreground/60" />
+                                        <SelectTrigger className="h-8 w-[140px] rounded-lg border-border/40 bg-background/60 text-xs font-medium">
+                                            <SlidersHorizontal className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
                                             <SelectValue placeholder="Schema" />
                                         </SelectTrigger>
                                         <SelectContent>
@@ -1235,15 +1234,14 @@ export function CommandPalette({
                                             ))}
                                         </SelectContent>
                                     </Select>
-
                                     <Select value={sortMode} onValueChange={(value) => setSortMode(value as SortMode)}>
-                                        <SelectTrigger className="h-7 w-[128px] rounded-md border-border/30 bg-background/40 text-xs">
+                                        <SelectTrigger className="h-8 w-[130px] rounded-lg border-border/40 bg-background/60 text-xs font-medium">
                                             {sortMode === "name" ? (
-                                                <ArrowUpAZ className="mr-1.5 h-3 w-3 text-muted-foreground/60" />
+                                                <ArrowUpAZ className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
                                             ) : sortMode === "rows" ? (
-                                                <Rows3 className="mr-1.5 h-3 w-3 text-muted-foreground/60" />
+                                                <Rows3 className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
                                             ) : (
-                                                <ArrowUpDown className="mr-1.5 h-3 w-3 text-muted-foreground/60" />
+                                                <ArrowUpDown className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
                                             )}
                                             <SelectValue placeholder="Sort" />
                                         </SelectTrigger>
@@ -1254,10 +1252,9 @@ export function CommandPalette({
                                             <SelectItem value="recent">Recent</SelectItem>
                                         </SelectContent>
                                     </Select>
-
                                     <Select value={rowFilter} onValueChange={(value) => setRowFilter(value as RowFilter)}>
-                                        <SelectTrigger className="h-7 w-[128px] rounded-md border-border/30 bg-background/40 text-xs">
-                                            <Rows3 className="mr-1.5 h-3 w-3 text-muted-foreground/60" />
+                                        <SelectTrigger className="h-8 w-[120px] rounded-lg border-border/40 bg-background/60 text-xs font-medium">
+                                            <Rows3 className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
                                             <SelectValue placeholder="Rows" />
                                         </SelectTrigger>
                                         <SelectContent>

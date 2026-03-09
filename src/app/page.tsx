@@ -9,7 +9,7 @@ import { useShortcutsStore } from "@/stores/shortcuts-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useTrialStore } from "@/stores/trial-store";
 import { useCollaborationStore } from "@/stores/collaboration-store";
-import { authFetchProfile } from "@/lib/tauri";
+import { authFetchProfile, authGetToken } from "@/lib/tauri";
 import { eventMatchesCombo, formatShortcut } from "@/lib/shortcut-keys";
 import { APP_NAME } from "@/lib/app-config";
 import { invoke } from "@tauri-apps/api/core";
@@ -24,6 +24,8 @@ import { CommandPalette } from "@/components/command-palette";
 import { SettingsDialog } from "@/components/settings-dialog";
 import { ProfilePanel } from "@/components/profile-panel";
 import { LoginPrompt } from "@/components/login-prompt";
+import { SurveyModal } from "@/components/survey-modal";
+import { getSurveyStatus } from "@/lib/survey";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 // Heavy components loaded lazily to reduce initial bundle size
@@ -33,6 +35,7 @@ const QueryEditor = dynamic(() => import("@/components/query-editor").then((m) =
 const SessionMonitor = dynamic(() => import("@/components/session-monitor").then((m) => ({ default: m.SessionMonitor })), { ssr: false });
 const IndexBuilder = dynamic(() => import("@/components/index-builder").then((m) => ({ default: m.IndexBuilder })), { ssr: false });
 const SchemaTopology = dynamic(() => import("@/components/schema-topology").then((m) => ({ default: m.SchemaTopology })), { ssr: false });
+const SqlUnitTestRunner = dynamic(() => import("@/components/sql-unit-test-runner").then((m) => ({ default: m.SqlUnitTestRunner })), { ssr: false });
 const AIChatPanel = dynamic(() => import("@/components/ai-chat-panel").then((m) => ({ default: m.AIChatPanel })), { ssr: false });
 const GitPanel = dynamic(() => import("@/components/git-panel").then((m) => ({ default: m.GitPanel })), { ssr: false });
 import {
@@ -68,6 +71,7 @@ import {
     Table2,
     Terminal,
     Unplug,
+    FlaskConical,
 } from "lucide-react";
 
 export default function Home() {
@@ -93,9 +97,10 @@ export default function Home() {
         && trialResult !== null
         && !isTrialActive();
     const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-    const [activeView, setActiveView] = useState<"data" | "query" | "sessions" | "indexes" | "topology" | "ai" | "git">("data");
+    const [activeView, setActiveView] = useState<"data" | "query" | "tests" | "sessions" | "indexes" | "topology" | "ai" | "git">("data");
     const [searchOpen, setSearchOpen] = useState(false);
     const [showWelcome, setShowWelcome] = useState(false);
+    const [showSurveyModal, setShowSurveyModal] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [showProfile, setShowProfile] = useState(false);
 
@@ -104,6 +109,21 @@ export default function Home() {
         const rafId = window.requestAnimationFrame(() => setShowWelcome(true));
         return () => window.cancelAnimationFrame(rafId);
     }, []);
+
+    // Survey: after welcome is dismissed and user is logged in, check if survey is completed; if not, show modal after short delay
+    useEffect(() => {
+        if (showWelcome || !user) return;
+        let cancelled = false;
+        const timeoutId = setTimeout(() => {
+            getSurveyStatus({ getToken: authGetToken }).then(({ completed }) => {
+                if (!cancelled && !completed) setShowSurveyModal(true);
+            });
+        }, 500);
+        return () => {
+            cancelled = true;
+            clearTimeout(timeoutId);
+        };
+    }, [user, showWelcome]);
 
     // Restore session on startup — try to load an existing cached profile from the keychain.
     // - null return means "not logged in" (normal, no error)
@@ -258,6 +278,14 @@ export default function Home() {
                 {trialExpired && <TrialExpiredGate />}
                 {showWelcome && <WelcomeScreen onDismiss={handleWelcomeDismiss} />}
                 <LandingConnections />
+                {showSurveyModal && (
+                    <SurveyModal
+                        open={showSurveyModal}
+                        onClose={() => setShowSurveyModal(false)}
+                        onSubmitted={() => setShowSurveyModal(false)}
+                        getToken={authGetToken}
+                    />
+                )}
             </>
         );
     }
@@ -266,6 +294,14 @@ export default function Home() {
         <div className="flex h-screen flex-col bg-background">
             {/* Block access when trial has expired and user isn't logged in */}
             {trialExpired && <TrialExpiredGate />}
+            {showSurveyModal && (
+                <SurveyModal
+                    open={showSurveyModal}
+                    onClose={() => setShowSurveyModal(false)}
+                    onSubmitted={() => setShowSurveyModal(false)}
+                    getToken={authGetToken}
+                />
+            )}
             {/* Top bar — 3-zone grid: left | center | right */}
             <header className="grid h-12 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-b border-border/30 bg-card/70 px-3 backdrop-blur-sm shrink-0">
                 {/* Left: Logo + connection indicator */}
@@ -361,14 +397,6 @@ export default function Home() {
                                 >
                                     <Sparkles className="h-3 w-3" />
                                     <span>AI</span>
-                                </TabsTrigger>
-                                <TabsTrigger
-                                    value="git"
-                                    className="h-6 gap-1.5 px-2 text-[10.5px]"
-                                    title={sc("view_git") ? `Git (${sc("view_git")})` : "Git"}
-                                >
-                                    <GitBranch className="h-3 w-3" />
-                                    <span className="hidden sm:inline">Git</span>
                                 </TabsTrigger>
                             </TabsList>
                         </Tabs>
@@ -502,7 +530,7 @@ export default function Home() {
                         </TooltipContent>
                     </Tooltip>
 
-                    <Tooltip>
+                    {/* <Tooltip>
                         <TooltipTrigger asChild>
                             <Button
                                 variant="ghost"
@@ -518,7 +546,7 @@ export default function Home() {
                         <TooltipContent>
                             New Window{sc("new_window") && ` (${sc("new_window")})`}
                         </TooltipContent>
-                    </Tooltip>
+                    </Tooltip> */}
 
                     <div className="h-4 w-px bg-border/30 mx-0.5" />
 
@@ -621,6 +649,7 @@ export default function Home() {
                             <div className="h-full min-h-0" role="tabpanel" tabIndex={0} aria-label="Active view content">
                                 {activeView === "data" && <DataTable />}
                                 {activeView === "query" && <QueryEditor />}
+                                {activeView === "tests" && <SqlUnitTestRunner />}
                                 {activeView === "sessions" && <SessionMonitor />}
                                 {activeView === "indexes" && <IndexBuilder />}
                                 {activeView === "topology" && (
@@ -652,7 +681,11 @@ export default function Home() {
                 }}
             />
 
-            <SettingsDialog open={settingsOpen} onOpenChange={setSettingsOpen} />
+            <SettingsDialog
+                open={settingsOpen}
+                onOpenChange={setSettingsOpen}
+                onOpenSurvey={user ? () => { setSettingsOpen(false); setShowSurveyModal(true); } : undefined}
+            />
 
             <ProfilePanel open={showProfile} onClose={() => setShowProfile(false)} />
         </div>

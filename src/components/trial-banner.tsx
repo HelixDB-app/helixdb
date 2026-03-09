@@ -37,14 +37,14 @@ export function TrialExpiredGate() {
                 {/* CTA */}
                 <div className="space-y-3">
                     <button
-                        onClick={() => authOpenBrowser(`${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "http://localhost:3001"}/login`)}
+                        onClick={() => authOpenBrowser(`${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app"}/login`)}
                         className="w-full h-11 rounded-xl bg-primary text-primary-foreground font-semibold text-sm hover:bg-primary/90 transition-colors flex items-center justify-center gap-2"
                     >
                         <Zap className="h-4 w-4" />
                         Sign In &amp; Upgrade
                     </button>
                     <button
-                        onClick={() => authOpenBrowser(`${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "http://localhost:3001"}/pricing`)}
+                        onClick={() => authOpenBrowser(`${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app"}/pricing`)}
                         className="w-full h-11 rounded-xl border border-border/60 text-muted-foreground text-sm hover:border-border hover:text-foreground transition-colors"
                     >
                         View Pricing Plans
@@ -129,7 +129,7 @@ export function TrialBanner() {
             {/* Right: CTA + dismiss */}
             <div className="flex items-center gap-2 shrink-0">
                 <button
-                    onClick={() => authOpenBrowser(`${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "http://localhost:3001"}/pricing`)}
+                    onClick={() => authOpenBrowser(`${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app"}/pricing`)}
                     className="
                         hidden sm:flex items-center gap-1.5 rounded-lg border border-current/30
                         px-2.5 py-1 text-[11px] font-semibold

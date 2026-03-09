@@ -3185,7 +3185,7 @@ pub async fn update_table_row(
     Ok(count)
 }
 
-/// Insert one table row. `values`: (column, value); None means NULL. Columns not in `values` are omitted (DEFAULT).
+/// Insert one table row. `values`: (column, value); None means NULL. Use literal "DEFAULT" to omit column (DB default).
 /// Returns number of rows affected (1 on success).
 pub async fn insert_table_row(
     pool: &Arc<Pool>,
@@ -3193,6 +3193,16 @@ pub async fn insert_table_row(
     table: &str,
     values: &[(String, Option<String>)],
 ) -> Result<u64, String> {
+    // Omit columns with value "DEFAULT" so the database uses its default (avoids serialization error).
+    let values: Vec<(String, Option<String>)> = values
+        .iter()
+        .filter(|(_, v)| {
+            !v.as_deref()
+                .map(|s| s.trim().eq_ignore_ascii_case("DEFAULT"))
+                .unwrap_or(false)
+        })
+        .cloned()
+        .collect();
     if values.is_empty() {
         return Err("At least one column required for insert".to_string());
     }
@@ -3266,7 +3276,16 @@ pub async fn insert_table_rows_bulk(
     let safe_schema = sanitize_identifier(schema);
     let safe_table = sanitize_identifier(table);
     let mut total = 0u64;
-    for values in rows {
+    for row in rows {
+        let values: Vec<(String, Option<String>)> = row
+            .iter()
+            .filter(|(_, v)| {
+                !v.as_deref()
+                    .map(|s| s.trim().eq_ignore_ascii_case("DEFAULT"))
+                    .unwrap_or(false)
+            })
+            .cloned()
+            .collect();
         if values.is_empty() {
             continue;
         }

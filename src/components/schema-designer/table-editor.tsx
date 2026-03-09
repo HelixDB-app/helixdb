@@ -21,7 +21,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import { Table2, Plus, Trash2, Pencil, Key, Link } from "lucide-react";
 import { toast } from "sonner";
-import type { SchemaDesignerColumn, SchemaDesignerTable } from "@/lib/types";
+import type { ForeignKeyAction, SchemaDesignerColumn } from "@/lib/types";
 
 const PG_TYPES = [
     "UUID", "TEXT", "VARCHAR(255)", "VARCHAR(100)", "VARCHAR(50)",
@@ -33,6 +33,21 @@ const PG_TYPES = [
     "TEXT[]", "INTEGER[]", "UUID[]",
 ];
 
+const FK_ACTION_OPTIONS: ForeignKeyAction[] = [
+    "CASCADE",
+    "RESTRICT",
+    "NO ACTION",
+    "SET NULL",
+    "SET DEFAULT",
+];
+
+const FK_ACTION_SET = new Set<ForeignKeyAction>(FK_ACTION_OPTIONS);
+
+function normalizeFkAction(action: string | null | undefined): ForeignKeyAction {
+    const normalized = (action ?? "").toUpperCase().replace(/\s+/g, " ").trim() as ForeignKeyAction;
+    return FK_ACTION_SET.has(normalized) ? normalized : "CASCADE";
+}
+
 interface TableEditorProps {
     selectedTableId: string | null;
     onSelectTable: (id: string | null) => void;
@@ -43,7 +58,6 @@ export function TableEditor({ selectedTableId, onSelectTable }: TableEditorProps
         getActiveProject,
         addTable,
         deleteTable,
-        updateTable,
         addColumn,
         updateColumn,
         deleteColumn,
@@ -116,25 +130,19 @@ export function TableEditor({ selectedTableId, onSelectTable }: TableEditorProps
 
     const handleSaveColumnEdit = useCallback(() => {
         if (!editingColumn) return;
+        const nextEditForm: Partial<SchemaDesignerColumn> = { ...editForm };
+        if (nextEditForm.foreign_key) {
+            nextEditForm.foreign_key = {
+                ...nextEditForm.foreign_key,
+                on_delete: normalizeFkAction(nextEditForm.foreign_key.on_delete),
+                on_update: normalizeFkAction(nextEditForm.foreign_key.on_update),
+            };
+        }
         pushUndo("Edit column");
-        updateColumn(editingColumn.tableId, editingColumn.columnId, editForm);
+        updateColumn(editingColumn.tableId, editingColumn.columnId, nextEditForm);
         setEditingColumn(null);
         setEditForm({});
     }, [editingColumn, editForm, pushUndo, updateColumn]);
-
-    const handleSetForeignKey = useCallback((tableId: string, columnId: string, targetTableId: string, targetColumnId: string) => {
-        pushUndo("Set foreign key");
-        updateColumn(tableId, columnId, {
-            foreign_key: { target_table_id: targetTableId, target_column_id: targetColumnId },
-        });
-        toast.success("Foreign key set!");
-    }, [pushUndo, updateColumn]);
-
-    const handleRemoveForeignKey = useCallback((tableId: string, columnId: string) => {
-        pushUndo("Remove foreign key");
-        updateColumn(tableId, columnId, { foreign_key: null });
-        toast.success("Foreign key removed");
-    }, [pushUndo, updateColumn]);
 
     if (!project) return null;
 
@@ -273,6 +281,15 @@ export function TableEditor({ selectedTableId, onSelectTable }: TableEditorProps
                                                                         nullable: col.nullable,
                                                                         default_value: col.default_value,
                                                                         is_primary_key: col.is_primary_key,
+                                                                        unique: col.unique,
+                                                                        foreign_key: col.foreign_key
+                                                                            ? {
+                                                                                target_table_id: col.foreign_key.target_table_id,
+                                                                                target_column_id: col.foreign_key.target_column_id,
+                                                                                on_delete: normalizeFkAction(col.foreign_key.on_delete),
+                                                                                on_update: normalizeFkAction(col.foreign_key.on_update),
+                                                                            }
+                                                                            : null,
                                                                     });
                                                                 }}
                                                                 className="h-6 w-6 rounded flex items-center justify-center text-muted-foreground hover:text-foreground"
@@ -460,7 +477,7 @@ export function TableEditor({ selectedTableId, onSelectTable }: TableEditorProps
 
                         {/* Foreign Key */}
                         {editingColumn && (
-                            <div>
+                            <div className="space-y-2">
                                 <label className="text-xs font-medium text-muted-foreground mb-1 block">
                                     Foreign Key (optional)
                                 </label>
@@ -474,7 +491,12 @@ export function TableEditor({ selectedTableId, onSelectTable }: TableEditorProps
                                                 const [tableId, colId] = v.split("::");
                                                 setEditForm(f => ({
                                                     ...f,
-                                                    foreign_key: { target_table_id: tableId, target_column_id: colId },
+                                                    foreign_key: {
+                                                        target_table_id: tableId,
+                                                        target_column_id: colId,
+                                                        on_delete: normalizeFkAction(f.foreign_key?.on_delete),
+                                                        on_update: normalizeFkAction(f.foreign_key?.on_update),
+                                                    },
                                                 }));
                                             }
                                         }}
@@ -488,20 +510,85 @@ export function TableEditor({ selectedTableId, onSelectTable }: TableEditorProps
                                                 .filter(t => t.id !== editingColumn.tableId)
                                                 .flatMap(t =>
                                                     t.columns
-                                                        .filter(c => c.is_primary_key)
+                                                        .filter(c => c.is_primary_key || c.unique)
                                                         .map(c => (
                                                             <SelectItem
                                                                 key={`${t.id}::${c.id}`}
                                                                 value={`${t.id}::${c.id}`}
                                                                 className="font-mono text-xs"
                                                             >
-                                                                {t.name}.{c.name}
+                                                                {t.name}.{c.name}{c.is_primary_key ? " (PK)" : " (UQ)"}
                                                             </SelectItem>
                                                         ))
                                                 )}
                                         </SelectContent>
                                     </Select>
                                 </div>
+
+                                {editForm.foreign_key && (
+                                    <div className="grid grid-cols-2 gap-2">
+                                        <div>
+                                            <label className="text-[10px] font-medium text-muted-foreground mb-1 block uppercase tracking-wider">
+                                                On delete
+                                            </label>
+                                            <Select
+                                                value={normalizeFkAction(editForm.foreign_key.on_delete)}
+                                                onValueChange={(value) =>
+                                                    setEditForm(f => ({
+                                                        ...f,
+                                                        foreign_key: f.foreign_key
+                                                            ? {
+                                                                ...f.foreign_key,
+                                                                on_delete: value as ForeignKeyAction,
+                                                            }
+                                                            : null,
+                                                    }))
+                                                }
+                                            >
+                                                <SelectTrigger className="bg-muted/30 text-xs font-mono">
+                                                    <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {FK_ACTION_OPTIONS.map((action) => (
+                                                        <SelectItem key={`fk-delete-${action}`} value={action} className="text-xs">
+                                                            {action}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                        <div>
+                                            <label className="text-[10px] font-medium text-muted-foreground mb-1 block uppercase tracking-wider">
+                                                On update
+                                            </label>
+                                            <Select
+                                                value={normalizeFkAction(editForm.foreign_key.on_update)}
+                                                onValueChange={(value) =>
+                                                    setEditForm(f => ({
+                                                        ...f,
+                                                        foreign_key: f.foreign_key
+                                                            ? {
+                                                                ...f.foreign_key,
+                                                                on_update: value as ForeignKeyAction,
+                                                            }
+                                                            : null,
+                                                    }))
+                                                }
+                                            >
+                                                <SelectTrigger className="bg-muted/30 text-xs font-mono">
+                                                    <SelectValue />
+                                                </SelectTrigger>
+                                                <SelectContent>
+                                                    {FK_ACTION_OPTIONS.map((action) => (
+                                                        <SelectItem key={`fk-update-${action}`} value={action} className="text-xs">
+                                                            {action}
+                                                        </SelectItem>
+                                                    ))}
+                                                </SelectContent>
+                                            </Select>
+                                        </div>
+                                    </div>
+                                )}
                             </div>
                         )}
                     </div>

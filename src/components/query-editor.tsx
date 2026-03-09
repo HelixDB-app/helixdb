@@ -26,6 +26,7 @@ import { format as formatSQL } from "sql-formatter";
 import { MonacoSqlEditor } from "@/components/monaco-sql-editor";
 import { DocumentBlockEditor } from "@/components/document-block-editor";
 import { aiSuggestionEngine } from "@/lib/ai-suggestions";
+import { explainSql } from "@/lib/sql-explain-ai";
 import { getSqlReviewIntent, runSqlSafetyReview, type SqlReviewReport } from "@/lib/sql-review";
 import { isDocFileName } from "@/lib/doc-editor";
 import {
@@ -1317,6 +1318,22 @@ export function QueryEditor() {
         }
     }, [connectionId, activeTabId, activeTab?.sql, isDocTab]);
 
+    // ── AI Explain (Nova inline widget) ───────────────────────────────────
+    // This triggers the same flow as pressing ⌘⇧E in the editor.
+    // We use the Monaco action trigger via a shared ref on the editor component.
+    const monacoEditorActionRef = useRef<((actionId: string) => void) | null>(null);
+    const handleAiExplain = useCallback(() => {
+        // Try to fire the Monaco action (handled inside MonacoSqlEditor)
+        if (monacoEditorActionRef.current) {
+            monacoEditorActionRef.current("explain-query");
+            return;
+        }
+        // Fallback: call explainSql directly (no anchor rect; widget will position at top of viewport)
+        const sql = activeTab?.sql.trim();
+        if (!sql) return;
+        explainSql(sql, schemaContext).catch(() => { });
+    }, [activeTab?.sql, schemaContext]);
+
     const handleApplyFix = useCallback(async (fixSql: string) => {
         if (!connectionId || !activeTabId) return;
         try {
@@ -1586,6 +1603,7 @@ export function QueryEditor() {
                     hideNextActionSuggestions
                     editorHeight={options.editorHeight}
                     fillHeight={options.fillHeight}
+                    onRegisterActionTrigger={(trigger) => { monacoEditorActionRef.current = trigger; }}
                 />
             );
         },
@@ -2014,6 +2032,7 @@ export function QueryEditor() {
                                     onReview={handleManualReview}
                                     onFormat={() => activeTab.sql && handleFormatSql(activeTab.sql)}
                                     onExplain={() => handleExplain()}
+                                    onAiExplain={handleAiExplain}
                                     onRunFile={() => setRunSqlFileOpen(true)}
                                     onSaveNote={() => { setSaveNoteTitle(""); setSaveNoteOpen(true); }}
                                     onToggleFullScreen={() => setEditorFullScreen((v) => !v)}

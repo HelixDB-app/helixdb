@@ -14,6 +14,10 @@ const SUBDIR: &str = "pgstudio";
 pub struct ForeignKeyRef {
     pub target_table_id: String,
     pub target_column_id: String,
+    #[serde(default)]
+    pub on_delete: Option<String>,
+    #[serde(default)]
+    pub on_update: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

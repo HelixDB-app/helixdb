@@ -3,13 +3,97 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from "react";
 import { useSchemaDesignerStore } from "@/stores/schema-designer-store";
 import { Button } from "@/components/ui/button";
-import { ZoomIn, ZoomOut, Maximize2, LayoutGrid } from "lucide-react";
-import type { SchemaDesignerTable } from "@/lib/types";
+import {
+    Dialog,
+    DialogContent,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
+import { ZoomIn, ZoomOut, Maximize2, LayoutGrid, Trash2 } from "lucide-react";
+import { toast } from "sonner";
+import type { ForeignKeyAction, SchemaDesignerTable } from "@/lib/types";
 
 interface SchemaDiagramProps {
     onSelectTable: (id: string | null) => void;
     /** Call with runAutoLayout so parent can trigger layout (e.g. toolbar button). */
     onRequestLayout?: (run: () => void) => void;
+}
+
+type RelationMode = "many_to_one" | "one_to_one" | "one_to_many";
+
+interface ColumnAnchor {
+    tableId: string;
+    tableName: string;
+    tableX: number;
+    tableY: number;
+    columnId: string;
+    columnName: string;
+    columnIndex: number;
+    dataType: string;
+    nullable: boolean;
+    isPrimaryKey: boolean;
+    isUnique: boolean;
+    rowX: number;
+    rowY: number;
+    cy: number;
+    leftX: number;
+    rightX: number;
+}
+
+interface ConnectorHit extends ColumnAnchor {
+    side: "left" | "right";
+    connectorX: number;
+}
+
+interface FkEdge {
+    id: string;
+    referencingTableId: string;
+    referencingColumnId: string;
+    referencingTableName: string;
+    referencingColName: string;
+    referencedTableId: string;
+    referencedColumnId: string;
+    referencedTableName: string;
+    referencedColName: string;
+    onDelete: ForeignKeyAction;
+    onUpdate: ForeignKeyAction;
+    cardinality: "N:1" | "1:1";
+    sx: number;
+    sy: number;
+    tx: number;
+    ty: number;
+    midX: number;
+    midY: number;
+}
+
+interface LinkDraft {
+    start: ConnectorHit;
+    pointerX: number;
+    pointerY: number;
+    target: ColumnAnchor | null;
+}
+
+interface PendingRelation {
+    source: ColumnAnchor;
+    target: ColumnAnchor;
+    mode: RelationMode;
+    onDelete: ForeignKeyAction;
+    onUpdate: ForeignKeyAction;
+}
+
+interface ResolvedRelation {
+    owner: ColumnAnchor;
+    referenced: ColumnAnchor;
+    makeUnique: boolean;
+    cardinalityLabel: "N:1" | "1:1" | "1:N";
 }
 
 // ── Drawing constants (aligned, ref-style) ─────────────────────────────────────
@@ -30,6 +114,16 @@ const LAYOUT_GAP_X = 56;
 const LAYOUT_GAP_Y = 40;
 const ORTHO_STEP = 48;
 
+const FK_ACTION_OPTIONS: ForeignKeyAction[] = [
+    "CASCADE",
+    "RESTRICT",
+    "NO ACTION",
+    "SET NULL",
+    "SET DEFAULT",
+];
+
+const FK_ACTION_SET = new Set<ForeignKeyAction>(FK_ACTION_OPTIONS);
+
 const COLORS = {
     bg: "#0d0d12",
     nodeBg: "#16161e",
@@ -43,6 +137,7 @@ const COLORS = {
     fkLine: "#475569",
     fkLineHover: "#10b981",
     fkLineDefault: "rgba(71,85,105,0.85)",
+    fkLineSelected: "#f59e0b",
     selectedBorder: "#10b981",
     gridDot: "rgba(255,255,255,0.025)",
     connectorDot: "#3b82f6",
@@ -74,17 +169,140 @@ function distanceToOrtho(wx: number, wy: number, sx: number, sy: number, tx: num
     return min;
 }
 
-interface FkEdge {
-    fromTableName: string;
-    fromColName: string;
-    toTableName: string;
-    toColName: string;
-    sx: number;
-    sy: number;
-    tx: number;
-    ty: number;
-    midX: number;
-    midY: number;
+function normalizeForeignKeyAction(action: string | null | undefined): ForeignKeyAction {
+    const normalized = (action ?? "").toUpperCase().replace(/\s+/g, " ").trim() as ForeignKeyAction;
+    return FK_ACTION_SET.has(normalized) ? normalized : "CASCADE";
+}
+
+function normalizeTypeForComparison(raw: string): string {
+    let t = raw.toUpperCase().replace(/\s+/g, " ").trim();
+    const isArray = t.endsWith("[]");
+    if (isArray) t = t.slice(0, -2).trim();
+    t = t.replace(/\([^)]*\)/g, "").trim();
+
+    const aliases: Record<string, string> = {
+        INT: "INTEGER",
+        INT4: "INTEGER",
+        SERIAL: "INTEGER",
+        BIGSERIAL: "BIGINT",
+        INT8: "BIGINT",
+        SMALLSERIAL: "SMALLINT",
+        INT2: "SMALLINT",
+        DECIMAL: "NUMERIC",
+        CHARACTER: "TEXT",
+        CHAR: "TEXT",
+        VARCHAR: "TEXT",
+        "CHARACTER VARYING": "TEXT",
+        "DOUBLE PRECISION": "FLOAT8",
+        REAL: "FLOAT4",
+        BOOL: "BOOLEAN",
+    };
+
+    const base = aliases[t] ?? t;
+    return isArray ? `${base}[]` : base;
+}
+
+function areTypesCompatible(sourceType: string, targetType: string): boolean {
+    return normalizeTypeForComparison(sourceType) === normalizeTypeForComparison(targetType);
+}
+
+function inferDefaultRelationMode(source: ColumnAnchor, target: ColumnAnchor): RelationMode {
+    const sourceLooksLikeFk = /_id$/i.test(source.columnName) && !source.isPrimaryKey;
+    const targetLooksLikeKey = target.isPrimaryKey || target.isUnique || target.columnName.toLowerCase() === "id";
+    const reverseLooksLikeFk = /_id$/i.test(target.columnName) && !target.isPrimaryKey;
+
+    if (sourceLooksLikeFk && targetLooksLikeKey) return "many_to_one";
+    if (source.isPrimaryKey && reverseLooksLikeFk) return "one_to_many";
+    return "many_to_one";
+}
+
+function resolvePendingRelation(relation: PendingRelation): ResolvedRelation {
+    if (relation.mode === "one_to_many") {
+        return {
+            owner: relation.target,
+            referenced: relation.source,
+            makeUnique: false,
+            cardinalityLabel: "1:N",
+        };
+    }
+    if (relation.mode === "one_to_one") {
+        return {
+            owner: relation.source,
+            referenced: relation.target,
+            makeUnique: true,
+            cardinalityLabel: "1:1",
+        };
+    }
+    return {
+        owner: relation.source,
+        referenced: relation.target,
+        makeUnique: false,
+        cardinalityLabel: "N:1",
+    };
+}
+
+function validatePendingRelation(relation: PendingRelation): string | null {
+    const resolved = resolvePendingRelation(relation);
+    const { owner, referenced } = resolved;
+
+    if (owner.tableId === referenced.tableId && owner.columnId === referenced.columnId) {
+        return "A column cannot reference itself.";
+    }
+    if (!areTypesCompatible(owner.dataType, referenced.dataType)) {
+        return `Type mismatch: ${owner.tableName}.${owner.columnName} (${owner.dataType}) is not compatible with ${referenced.tableName}.${referenced.columnName} (${referenced.dataType}).`;
+    }
+    if (!referenced.isPrimaryKey && !referenced.isUnique) {
+        return `Referenced column must be PRIMARY KEY or UNIQUE: ${referenced.tableName}.${referenced.columnName}.`;
+    }
+    if ((relation.onDelete === "SET NULL" || relation.onUpdate === "SET NULL") && !owner.nullable) {
+        return `SET NULL requires nullable FK column: ${owner.tableName}.${owner.columnName}.`;
+    }
+    return null;
+}
+
+function sanitizeConstraintName(input: string): string {
+    const cleaned = input
+        .toLowerCase()
+        .replace(/[^a-z0-9_]+/g, "_")
+        .replace(/_+/g, "_")
+        .replace(/^_+|_+$/g, "");
+    const normalized = cleaned || "fk_relation";
+    return normalized.length > 63 ? normalized.slice(0, 63) : normalized;
+}
+
+function buildRelationSqlPreview(relation: PendingRelation): string {
+    const resolved = resolvePendingRelation(relation);
+    const fkName = sanitizeConstraintName(`fk_${resolved.owner.tableName}_${resolved.owner.columnName}`);
+    const uqName = sanitizeConstraintName(`uq_${resolved.owner.tableName}_${resolved.owner.columnName}`);
+
+    const fkSql =
+        `ALTER TABLE "${resolved.owner.tableName}"\n` +
+        `  ADD CONSTRAINT "${fkName}"\n` +
+        `  FOREIGN KEY ("${resolved.owner.columnName}")\n` +
+        `  REFERENCES "${resolved.referenced.tableName}" ("${resolved.referenced.columnName}")\n` +
+        `  ON DELETE ${relation.onDelete}\n` +
+        `  ON UPDATE ${relation.onUpdate};`;
+
+    if (!resolved.makeUnique) return fkSql;
+
+    const uniqueSql =
+        `ALTER TABLE "${resolved.owner.tableName}"\n` +
+        `  ADD CONSTRAINT "${uqName}" UNIQUE ("${resolved.owner.columnName}");`;
+
+    return `${fkSql}\n\n${uniqueSql}`;
+}
+
+function relationModeLabel(mode: RelationMode, source: ColumnAnchor, target: ColumnAnchor): string {
+    switch (mode) {
+        case "many_to_one":
+            return `${source.tableName} (many) -> ${target.tableName} (one)`;
+        case "one_to_one":
+            return `${source.tableName} (one) <-> ${target.tableName} (one)`;
+        case "one_to_many":
+            return `${source.tableName} (one) -> ${target.tableName} (many)`;
+        default:
+            return mode;
+    }
 }
 
 /** Hierarchical layout: referenced tables left (col 0), dependents to the right. */
@@ -147,7 +365,7 @@ function computeAutoLayout(
 export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramProps) {
     const canvasRef = useRef<HTMLCanvasElement>(null);
     const containerRef = useRef<HTMLDivElement>(null);
-    const { getActiveProject, updateTablePosition, updateTablePositions } = useSchemaDesignerStore();
+    const { getActiveProject, updateTablePosition, updateTablePositions, updateColumn, pushUndo } = useSchemaDesignerStore();
     const project = getActiveProject();
 
     const [zoom, setZoom] = useState(1);
@@ -161,14 +379,49 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
         nodeStartY?: number;
     } | null>(null);
     const [selectedId, setSelectedId] = useState<string | null>(null);
-    const [hoveredEdge, setHoveredEdge] = useState<FkEdge | null>(null);
+    const [hoveredEdgeId, setHoveredEdgeId] = useState<string | null>(null);
+    const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
     const [tooltipPos, setTooltipPos] = useState<{ x: number; y: number } | null>(null);
+    const [linkDraft, setLinkDraft] = useState<LinkDraft | null>(null);
+    const [pendingRelation, setPendingRelation] = useState<PendingRelation | null>(null);
 
     const dragRafRef = useRef<number | null>(null);
     const dragPendingRef = useRef<{ nodeId: string; x: number; y: number } | null>(null);
     const defaultLayoutDoneRef = useRef<string | null>(null);
 
-    const tables = project?.tables ?? [];
+    const tables = useMemo(() => project?.tables ?? [], [project?.tables]);
+
+    const columnAnchors = useMemo((): ColumnAnchor[] => {
+        const anchors: ColumnAnchor[] = [];
+        for (const table of tables) {
+            const tableX = table.position?.x ?? 0;
+            const tableY = table.position?.y ?? 0;
+            for (let i = 0; i < table.columns.length; i++) {
+                const col = table.columns[i];
+                const rowY = tableY + HEADER_H + i * ROW_H;
+                const cy = rowY + ROW_H / 2;
+                anchors.push({
+                    tableId: table.id,
+                    tableName: table.name,
+                    tableX,
+                    tableY,
+                    columnId: col.id,
+                    columnName: col.name,
+                    columnIndex: i,
+                    dataType: col.data_type,
+                    nullable: col.nullable,
+                    isPrimaryKey: col.is_primary_key,
+                    isUnique: !!col.unique,
+                    rowX: tableX,
+                    rowY,
+                    cy,
+                    leftX: tableX + CONNECTOR_R,
+                    rightX: tableX + NODE_W - CONNECTOR_R,
+                });
+            }
+        }
+        return anchors;
+    }, [tables]);
 
     const edges = useMemo((): FkEdge[] => {
         const out: FkEdge[] = [];
@@ -178,25 +431,61 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
                 const targetTable = tables.find(t => t.id === col.foreign_key!.target_table_id);
                 if (!targetTable) continue;
                 const targetCol = targetTable.columns.find(c => c.id === col.foreign_key!.target_column_id);
+                if (!targetCol) continue;
+
                 const colIdx = table.columns.indexOf(col);
-                const targetColIdx = targetCol ? targetTable.columns.indexOf(targetCol) : 0;
+                const targetColIdx = targetTable.columns.indexOf(targetCol);
                 const sx = (table.position?.x ?? 0) + NODE_W;
                 const sy = (table.position?.y ?? 0) + HEADER_H + colIdx * ROW_H + ROW_H / 2;
                 const tx = targetTable.position?.x ?? 0;
                 const ty = (targetTable.position?.y ?? 0) + HEADER_H + targetColIdx * ROW_H + ROW_H / 2;
                 const midX = (sx + tx) / 2;
                 const midY = (sy + ty) / 2;
+
                 out.push({
-                    fromTableName: targetTable.name,
-                    fromColName: targetCol?.name ?? "id",
-                    toTableName: table.name,
-                    toColName: col.name,
-                    sx, sy, tx, ty, midX, midY,
+                    id: `${table.id}:${col.id}->${targetTable.id}:${targetCol.id}`,
+                    referencingTableId: table.id,
+                    referencingColumnId: col.id,
+                    referencingTableName: table.name,
+                    referencingColName: col.name,
+                    referencedTableId: targetTable.id,
+                    referencedColumnId: targetCol.id,
+                    referencedTableName: targetTable.name,
+                    referencedColName: targetCol.name,
+                    onDelete: normalizeForeignKeyAction(col.foreign_key.on_delete),
+                    onUpdate: normalizeForeignKeyAction(col.foreign_key.on_update),
+                    cardinality: col.unique || col.is_primary_key ? "1:1" : "N:1",
+                    sx,
+                    sy,
+                    tx,
+                    ty,
+                    midX,
+                    midY,
                 });
             }
         }
         return out;
     }, [tables]);
+
+    const hoveredEdge = useMemo(
+        () => edges.find((edge) => edge.id === hoveredEdgeId) ?? null,
+        [edges, hoveredEdgeId]
+    );
+
+    const selectedEdge = useMemo(
+        () => edges.find((edge) => edge.id === selectedEdgeId) ?? null,
+        [edges, selectedEdgeId]
+    );
+
+    const relationValidationError = useMemo(
+        () => (pendingRelation ? validatePendingRelation(pendingRelation) : null),
+        [pendingRelation]
+    );
+
+    const relationPreviewSql = useMemo(
+        () => (pendingRelation ? buildRelationSqlPreview(pendingRelation) : ""),
+        [pendingRelation]
+    );
 
     // ── Hit test ─────────────────────────────────────────────────────────────
 
@@ -205,11 +494,9 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
     }, []);
 
     const hitTest = useCallback((mx: number, my: number): SchemaDesignerTable | null => {
-        // Convert screen coords to world coords
         const wx = (mx - pan.x) / zoom;
         const wy = (my - pan.y) / zoom;
 
-        // Iterate in reverse so top-rendered nodes are hit first
         for (let i = tables.length - 1; i >= 0; i--) {
             const t = tables[i];
             const x = t.position?.x ?? 0;
@@ -221,6 +508,48 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
         }
         return null;
     }, [tables, pan, zoom, getNodeHeight]);
+
+    const hitColumnAt = useCallback((wx: number, wy: number): ColumnAnchor | null => {
+        for (let i = columnAnchors.length - 1; i >= 0; i--) {
+            const anchor = columnAnchors[i];
+            if (
+                wx >= anchor.rowX &&
+                wx <= anchor.rowX + NODE_W &&
+                wy >= anchor.rowY &&
+                wy <= anchor.rowY + ROW_H
+            ) {
+                return anchor;
+            }
+        }
+        return null;
+    }, [columnAnchors]);
+
+    const hitConnectorAt = useCallback((wx: number, wy: number): ConnectorHit | null => {
+        const radius = (CONNECTOR_R + 5) / zoom;
+        for (let i = columnAnchors.length - 1; i >= 0; i--) {
+            const anchor = columnAnchors[i];
+            const leftDist = Math.hypot(wx - anchor.leftX, wy - anchor.cy);
+            const rightDist = Math.hypot(wx - anchor.rightX, wy - anchor.cy);
+            if (leftDist <= radius || rightDist <= radius) {
+                if (leftDist <= rightDist) {
+                    return { ...anchor, side: "left", connectorX: anchor.leftX };
+                }
+                return { ...anchor, side: "right", connectorX: anchor.rightX };
+            }
+        }
+        return null;
+    }, [columnAnchors, zoom]);
+
+    const hitEdgeAt = useCallback((wx: number, wy: number): FkEdge | null => {
+        const threshold = FK_HIT_THRESHOLD / zoom;
+        for (let i = edges.length - 1; i >= 0; i--) {
+            const edge = edges[i];
+            if (distanceToOrtho(wx, wy, edge.sx, edge.sy, edge.tx, edge.ty, ORTHO_STEP) < threshold) {
+                return edge;
+            }
+        }
+        return null;
+    }, [edges, zoom]);
 
     // ── Draw ─────────────────────────────────────────────────────────────────
 
@@ -295,8 +624,23 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
             const typeLeft = x + NODE_W - TYPE_COLUMN_WIDTH;
             for (let i = 0; i < table.columns.length; i++) {
                 const col = table.columns[i];
-                const cy = y + HEADER_H + i * ROW_H + ROW_H / 2;
+                const rowY = y + HEADER_H + i * ROW_H;
+                const cy = rowY + ROW_H / 2;
                 let nameX = x + NAME_LEFT;
+
+                const isLinkStart =
+                    !!linkDraft &&
+                    linkDraft.start.tableId === table.id &&
+                    linkDraft.start.columnId === col.id;
+                const isLinkTarget =
+                    !!linkDraft?.target &&
+                    linkDraft.target.tableId === table.id &&
+                    linkDraft.target.columnId === col.id;
+
+                if (isLinkStart || isLinkTarget) {
+                    ctx.fillStyle = isLinkTarget ? "rgba(16,185,129,0.18)" : "rgba(59,130,246,0.2)";
+                    ctx.fillRect(x + 1, rowY, NODE_W - 2, ROW_H);
+                }
 
                 // PK badge
                 if (col.is_primary_key) {
@@ -324,8 +668,11 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
                 const typeW = ctx.measureText(col.data_type).width;
                 ctx.fillText(col.data_type, x + NODE_W - TYPE_COLUMN_WIDTH - typeW - CONNECTOR_R * 2, cy);
 
-                // Connection point (blue dot on right edge)
-                ctx.fillStyle = COLORS.connectorDot;
+                // Connection points (left + right)
+                ctx.fillStyle = isLinkStart || isLinkTarget ? "#10b981" : COLORS.connectorDot;
+                ctx.beginPath();
+                ctx.arc(x + CONNECTOR_R, cy, CONNECTOR_R, 0, Math.PI * 2);
+                ctx.fill();
                 ctx.beginPath();
                 ctx.arc(x + NODE_W - CONNECTOR_R, cy, CONNECTOR_R, 0, Math.PI * 2);
                 ctx.fill();
@@ -339,20 +686,18 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
             }
         }
 
-        // Orthogonal FK lines (ref-style); hovered edge last
-        const toDraw = hoveredEdge
-            ? [edges.filter(e => e !== hoveredEdge), [hoveredEdge]]
-            : [edges];
-        const step = ORTHO_STEP;
-        for (const edgeList of toDraw) {
-            const isHovered = edgeList === toDraw[1];
-            ctx.lineWidth = isHovered ? 2.5 : 1.5;
-            ctx.strokeStyle = isHovered ? COLORS.fkLineHover : COLORS.fkLineDefault;
-            ctx.setLineDash([]);
+        const drawEdgeList = (
+            edgeList: FkEdge[],
+            options: { lineWidth: number; strokeStyle: string; fillStyle: string; dashed?: boolean }
+        ) => {
+            if (edgeList.length === 0) return;
+            ctx.lineWidth = options.lineWidth;
+            ctx.strokeStyle = options.strokeStyle;
+            ctx.setLineDash(options.dashed ? [4, 3] : []);
             for (const e of edgeList) {
                 const midY = (e.sy + e.ty) / 2;
-                const p1x = e.sx + step;
-                const p2x = e.tx - step;
+                const p1x = e.sx + ORTHO_STEP;
+                const p2x = e.tx - ORTHO_STEP;
                 ctx.beginPath();
                 ctx.moveTo(e.sx, e.sy);
                 ctx.lineTo(p1x, e.sy);
@@ -361,7 +706,7 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
                 ctx.lineTo(p2x, e.ty);
                 ctx.lineTo(e.tx, e.ty);
                 ctx.stroke();
-                ctx.fillStyle = isHovered ? COLORS.fkLineHover : COLORS.fkLine;
+                ctx.fillStyle = options.fillStyle;
                 ctx.beginPath();
                 ctx.moveTo(e.tx, e.ty);
                 ctx.lineTo(e.tx - 6, e.ty - 4);
@@ -369,10 +714,71 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
                 ctx.closePath();
                 ctx.fill();
             }
+            ctx.setLineDash([]);
+        };
+
+        const baseEdges = edges.filter(
+            (edge) => edge.id !== hoveredEdge?.id && edge.id !== selectedEdge?.id
+        );
+        drawEdgeList(baseEdges, {
+            lineWidth: 1.5,
+            strokeStyle: COLORS.fkLineDefault,
+            fillStyle: COLORS.fkLine,
+        });
+
+        if (hoveredEdge && hoveredEdge.id !== selectedEdge?.id) {
+            drawEdgeList([hoveredEdge], {
+                lineWidth: 2.5,
+                strokeStyle: COLORS.fkLineHover,
+                fillStyle: COLORS.fkLineHover,
+            });
+        }
+
+        if (selectedEdge) {
+            drawEdgeList([selectedEdge], {
+                lineWidth: 2.8,
+                strokeStyle: COLORS.fkLineSelected,
+                fillStyle: COLORS.fkLineSelected,
+            });
+        }
+
+        // Relationship drag preview line
+        if (linkDraft) {
+            const sx = linkDraft.start.connectorX;
+            const sy = linkDraft.start.cy;
+            const endX = linkDraft.target
+                ? (Math.abs(sx - linkDraft.target.leftX) <= Math.abs(sx - linkDraft.target.rightX)
+                    ? linkDraft.target.leftX
+                    : linkDraft.target.rightX)
+                : linkDraft.pointerX;
+            const endY = linkDraft.target ? linkDraft.target.cy : linkDraft.pointerY;
+            const targetCompatible =
+                !linkDraft.target || areTypesCompatible(linkDraft.start.dataType, linkDraft.target.dataType);
+
+            ctx.lineWidth = 2;
+            ctx.strokeStyle = linkDraft.target
+                ? (targetCompatible ? "#10b981" : "#ef4444")
+                : "#3b82f6";
+            ctx.setLineDash([6, 4]);
+            ctx.beginPath();
+            ctx.moveTo(sx, sy);
+            ctx.lineTo(endX, endY);
+            ctx.stroke();
+            ctx.setLineDash([]);
         }
 
         ctx.restore();
-    }, [tables, pan, zoom, selectedId, hoveredEdge, edges, getNodeHeight]);
+    }, [
+        tables,
+        pan,
+        zoom,
+        selectedId,
+        hoveredEdge,
+        selectedEdge,
+        edges,
+        getNodeHeight,
+        linkDraft,
+    ]);
 
     // ── Resize & redraw ──────────────────────────────────────────────────────
 
@@ -384,22 +790,18 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
         return () => observer.disconnect();
     }, [draw]);
 
-    // ── Refs for window listeners (avoid stale closure) ────────────────────────
-
-    const updateTablePositionRef = useRef(updateTablePosition);
-    updateTablePositionRef.current = updateTablePosition;
-
+    // ── Drag helpers ───────────────────────────────────────────────────────────
     const flushDragPosition = useCallback(() => {
         const p = dragPendingRef.current;
         if (p) {
-            updateTablePositionRef.current(p.nodeId, p.x, p.y);
+            updateTablePosition(p.nodeId, p.x, p.y);
             dragPendingRef.current = null;
         }
         if (dragRafRef.current) {
             cancelAnimationFrame(dragRafRef.current);
             dragRafRef.current = null;
         }
-    }, []);
+    }, [updateTablePosition]);
 
     const applyDragMove = useCallback((mx: number, my: number) => {
         if (!dragging) return;
@@ -415,17 +817,14 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
                 dragRafRef.current = requestAnimationFrame(() => {
                     const p = dragPendingRef.current;
                     if (p) {
-                        updateTablePositionRef.current(p.nodeId, p.x, p.y);
+                        updateTablePosition(p.nodeId, p.x, p.y);
                         dragPendingRef.current = null;
                     }
                     dragRafRef.current = null;
                 });
             }
         }
-    }, [dragging, zoom, flushDragPosition]);
-
-    const onDragMoveRef = useRef(applyDragMove);
-    onDragMoveRef.current = applyDragMove;
+    }, [dragging, zoom, updateTablePosition]);
 
     const endDrag = useCallback(() => {
         flushDragPosition();
@@ -440,7 +839,7 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
             if (!rect) return;
             const mx = e.clientX - rect.left;
             const my = e.clientY - rect.top;
-            onDragMoveRef.current(mx, my);
+            applyDragMove(mx, my);
         };
         const onWindowUp = () => endDrag();
         window.addEventListener("mousemove", onWindowMove, { capture: true });
@@ -449,7 +848,12 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
             window.removeEventListener("mousemove", onWindowMove, { capture: true });
             window.removeEventListener("mouseup", onWindowUp, { capture: true });
         };
-    }, [dragging, endDrag]);
+    }, [dragging, applyDragMove, endDrag]);
+
+    const clearEdgeHover = useCallback(() => {
+        setHoveredEdgeId(null);
+        setTooltipPos(null);
+    }, []);
 
     // ── Mouse handlers ───────────────────────────────────────────────────────
 
@@ -458,7 +862,38 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
         if (!rect) return;
         const mx = e.clientX - rect.left;
         const my = e.clientY - rect.top;
+        const wx = (mx - pan.x) / zoom;
+        const wy = (my - pan.y) / zoom;
 
+        const connectorHit = hitConnectorAt(wx, wy);
+        if (connectorHit) {
+            setSelectedEdgeId(null);
+            setSelectedId(connectorHit.tableId);
+            onSelectTable(connectorHit.tableId);
+            setLinkDraft({
+                start: connectorHit,
+                pointerX: wx,
+                pointerY: wy,
+                target: null,
+            });
+            clearEdgeHover();
+            return;
+        }
+
+        const edgeHit = hitEdgeAt(wx, wy);
+        if (edgeHit) {
+            setSelectedEdgeId(edgeHit.id);
+            setSelectedId(null);
+            onSelectTable(null);
+            setHoveredEdgeId(edgeHit.id);
+            setTooltipPos({
+                x: rect.left + pan.x + edgeHit.midX * zoom,
+                y: rect.top + pan.y + edgeHit.midY * zoom,
+            });
+            return;
+        }
+
+        setSelectedEdgeId(null);
         const hit = hitTest(mx, my);
         if (hit) {
             setSelectedId(hit.id);
@@ -476,51 +911,156 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
             onSelectTable(null);
             setDragging({ type: "pan", startX: mx - pan.x, startY: my - pan.y });
         }
-    }, [hitTest, pan, onSelectTable]);
+        clearEdgeHover();
+    }, [hitTest, pan, onSelectTable, zoom, hitConnectorAt, hitEdgeAt, clearEdgeHover]);
 
     const handleMouseMove = useCallback((e: React.MouseEvent) => {
         const rect = canvasRef.current?.getBoundingClientRect();
         if (!rect) return;
         const mx = e.clientX - rect.left;
         const my = e.clientY - rect.top;
+        const wx = (mx - pan.x) / zoom;
+        const wy = (my - pan.y) / zoom;
 
-        if (dragging) {
-            onDragMoveRef.current(mx, my);
-            setHoveredEdge(null);
-            setTooltipPos(null);
+        if (linkDraft) {
+            const maybeTarget = hitColumnAt(wx, wy);
+            const validTarget =
+                maybeTarget &&
+                !(
+                    maybeTarget.tableId === linkDraft.start.tableId &&
+                    maybeTarget.columnId === linkDraft.start.columnId
+                )
+                    ? maybeTarget
+                    : null;
+
+            setLinkDraft((prev) => {
+                if (!prev) return prev;
+                return {
+                    ...prev,
+                    pointerX: wx,
+                    pointerY: wy,
+                    target: validTarget,
+                };
+            });
+            clearEdgeHover();
             return;
         }
 
-        const wx = (mx - pan.x) / zoom;
-        const wy = (my - pan.y) / zoom;
-        const threshold = FK_HIT_THRESHOLD / zoom;
-        let found: FkEdge | null = null;
-        for (const edge of edges) {
-            if (distanceToOrtho(wx, wy, edge.sx, edge.sy, edge.tx, edge.ty, ORTHO_STEP) < threshold) {
-                found = edge;
-                break;
-            }
+        if (dragging) {
+            applyDragMove(mx, my);
+            clearEdgeHover();
+            return;
         }
-        if (found !== hoveredEdge) {
-            setHoveredEdge(found);
-            setTooltipPos(found
-                ? {
+
+        const found = hitEdgeAt(wx, wy);
+        if (found?.id !== hoveredEdgeId) {
+            if (found) {
+                setHoveredEdgeId(found.id);
+                setTooltipPos({
                     x: rect.left + pan.x + found.midX * zoom,
                     y: rect.top + pan.y + found.midY * zoom,
-                }
-                : null);
+                });
+            } else {
+                clearEdgeHover();
+            }
         }
-    }, [dragging, zoom, pan, edges, hoveredEdge]);
+    }, [
+        dragging,
+        zoom,
+        pan,
+        hoveredEdgeId,
+        linkDraft,
+        hitColumnAt,
+        hitEdgeAt,
+        clearEdgeHover,
+        applyDragMove,
+    ]);
 
-    const handleMouseUp = useCallback(() => endDrag(), [endDrag]);
+    const handleMouseUp = useCallback(() => {
+        if (linkDraft) {
+            if (linkDraft.target) {
+                setPendingRelation({
+                    source: linkDraft.start,
+                    target: linkDraft.target,
+                    mode: inferDefaultRelationMode(linkDraft.start, linkDraft.target),
+                    onDelete: "CASCADE",
+                    onUpdate: "CASCADE",
+                });
+            }
+            setLinkDraft(null);
+            return;
+        }
+        endDrag();
+    }, [endDrag, linkDraft]);
 
     const handleMouseLeave = useCallback(() => {
-        if (!dragging) {
-            setHoveredEdge(null);
-            setTooltipPos(null);
+        if (!dragging && !linkDraft) {
+            clearEdgeHover();
         }
-    }, [dragging]);
+    }, [dragging, linkDraft, clearEdgeHover]);
 
+    const handleDeleteSelectedEdge = useCallback(() => {
+        if (!selectedEdge) return;
+        pushUndo("Remove relationship");
+        updateColumn(selectedEdge.referencingTableId, selectedEdge.referencingColumnId, { foreign_key: null });
+        setSelectedEdgeId(null);
+        toast.success("Relationship removed.");
+    }, [selectedEdge, pushUndo, updateColumn]);
+
+    useEffect(() => {
+        if (!selectedEdge) return;
+        const onKeyDown = (e: KeyboardEvent) => {
+            if (pendingRelation) return;
+            if (e.key === "Backspace" || e.key === "Delete") {
+                e.preventDefault();
+                handleDeleteSelectedEdge();
+            }
+        };
+        window.addEventListener("keydown", onKeyDown);
+        return () => window.removeEventListener("keydown", onKeyDown);
+    }, [selectedEdge, pendingRelation, handleDeleteSelectedEdge]);
+
+    const applyPendingRelation = useCallback(() => {
+        if (!pendingRelation) return;
+        const validationError = validatePendingRelation(pendingRelation);
+        if (validationError) {
+            toast.error(validationError);
+            return;
+        }
+
+        const resolved = resolvePendingRelation(pendingRelation);
+        const updates: {
+            foreign_key: {
+                target_table_id: string;
+                target_column_id: string;
+                on_delete: ForeignKeyAction;
+                on_update: ForeignKeyAction;
+            };
+            unique?: boolean;
+        } = {
+            foreign_key: {
+                target_table_id: resolved.referenced.tableId,
+                target_column_id: resolved.referenced.columnId,
+                on_delete: pendingRelation.onDelete,
+                on_update: pendingRelation.onUpdate,
+            },
+        };
+
+        if (resolved.makeUnique) {
+            updates.unique = true;
+        }
+
+        pushUndo("Create relationship");
+        updateColumn(resolved.owner.tableId, resolved.owner.columnId, updates);
+
+        setPendingRelation(null);
+        setSelectedEdgeId(
+            `${resolved.owner.tableId}:${resolved.owner.columnId}->${resolved.referenced.tableId}:${resolved.referenced.columnId}`
+        );
+        toast.success(
+            `Relationship created: ${resolved.owner.tableName}.${resolved.owner.columnName} -> ${resolved.referenced.tableName}.${resolved.referenced.columnName}`
+        );
+    }, [pendingRelation, pushUndo, updateColumn]);
 
     const handleWheel = useCallback((e: React.WheelEvent) => {
         e.preventDefault();
@@ -594,21 +1134,51 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
             const positions = computeAutoLayout(tables, getNodeHeight);
             updateTablePositions(positions);
         }
-    }, [project?.id, tables, getNodeHeight, updateTablePositions]);
+    }, [project, tables, getNodeHeight, updateTablePositions]);
 
     return (
         <div ref={containerRef} className="h-full relative overflow-hidden">
             <canvas
                 ref={canvasRef}
                 className="w-full h-full select-none"
-                style={{ cursor: dragging ? "grabbing" : "grab" }}
-                title="Drag tables to move · Drag background to pan · Scroll to zoom"
+                style={{ cursor: linkDraft ? "crosshair" : dragging ? "grabbing" : "grab" }}
+                title="Drag column connectors to create relationships · Drag tables to move · Drag background to pan · Scroll to zoom"
                 onMouseDown={handleMouseDown}
                 onMouseMove={handleMouseMove}
                 onMouseUp={handleMouseUp}
                 onMouseLeave={() => { handleMouseUp(); handleMouseLeave(); }}
                 onWheel={handleWheel}
             />
+
+            {/* Diagram hint */}
+            <div className="absolute top-3 left-3 px-2 py-1 rounded-md border border-border/30 bg-card/70 backdrop-blur text-[10px] text-muted-foreground">
+                Drag a blue connector from one column to another to create FK
+            </div>
+
+            {/* Selected edge quick actions */}
+            {selectedEdge && !pendingRelation && (
+                <div className="absolute top-3 right-3 max-w-[360px] rounded-md border border-amber-500/30 bg-card/90 backdrop-blur px-2.5 py-2 shadow-lg">
+                    <div className="text-[11px] font-mono text-foreground leading-snug">
+                        {selectedEdge.referencingTableName}.{selectedEdge.referencingColName}
+                        <span className="mx-1 text-amber-400">-&gt;</span>
+                        {selectedEdge.referencedTableName}.{selectedEdge.referencedColName}
+                    </div>
+                    <div className="mt-1 flex items-center justify-between gap-2">
+                        <span className="text-[10px] text-muted-foreground font-mono">
+                            {selectedEdge.cardinality} · DELETE {selectedEdge.onDelete} · UPDATE {selectedEdge.onUpdate}
+                        </span>
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-6 px-2 text-[10px] text-red-400 hover:text-red-300"
+                            onClick={handleDeleteSelectedEdge}
+                        >
+                            <Trash2 className="h-3 w-3 mr-1" />
+                            Remove
+                        </Button>
+                    </div>
+                </div>
+            )}
 
             {/* Zoom + layout controls */}
             <div className="absolute bottom-3 right-3 flex items-center gap-1 bg-card/80 backdrop-blur-sm rounded-lg border border-border/20 p-1">
@@ -648,17 +1218,150 @@ export function SchemaDiagram({ onSelectTable, onRequestLayout }: SchemaDiagramP
                     }}
                 >
                     <span className="font-mono">
-                        {hoveredEdge.fromTableName}.{hoveredEdge.fromColName}
+                        {hoveredEdge.referencingTableName}.{hoveredEdge.referencingColName}
                     </span>
                     <span className="mx-1.5 text-emerald-200">→</span>
                     <span className="font-mono">
-                        {hoveredEdge.toTableName}.{hoveredEdge.toColName}
+                        {hoveredEdge.referencedTableName}.{hoveredEdge.referencedColName}
                     </span>
                     <div className="text-[10px] text-emerald-100/90 mt-0.5 font-mono">
-                        {hoveredEdge.fromColName} &rarr; {hoveredEdge.toColName}
+                        {hoveredEdge.cardinality} · DELETE {hoveredEdge.onDelete} · UPDATE {hoveredEdge.onUpdate}
                     </div>
                 </div>
             )}
+
+            {/* Relationship creation dialog */}
+            <Dialog open={!!pendingRelation} onOpenChange={(open) => { if (!open) setPendingRelation(null); }}>
+                <DialogContent className="sm:max-w-lg">
+                    <DialogHeader>
+                        <DialogTitle>Create relationship</DialogTitle>
+                    </DialogHeader>
+
+                    {pendingRelation && (
+                        <div className="space-y-3">
+                            <div className="rounded-md border border-border/30 bg-muted/20 px-3 py-2 text-xs font-mono">
+                                {pendingRelation.source.tableName}.{pendingRelation.source.columnName}
+                                <span className="mx-1.5 text-emerald-500">→</span>
+                                {pendingRelation.target.tableName}.{pendingRelation.target.columnName}
+                            </div>
+
+                            <div>
+                                <label className="text-xs font-medium text-muted-foreground mb-1 block">
+                                    Relationship
+                                </label>
+                                <Select
+                                    value={pendingRelation.mode}
+                                    onValueChange={(value) =>
+                                        setPendingRelation((prev) =>
+                                            prev
+                                                ? { ...prev, mode: value as RelationMode }
+                                                : prev
+                                        )
+                                    }
+                                >
+                                    <SelectTrigger className="text-xs">
+                                        <SelectValue />
+                                    </SelectTrigger>
+                                    <SelectContent>
+                                        <SelectItem value="many_to_one" className="text-xs">
+                                            {relationModeLabel("many_to_one", pendingRelation.source, pendingRelation.target)}
+                                        </SelectItem>
+                                        <SelectItem value="one_to_one" className="text-xs">
+                                            {relationModeLabel("one_to_one", pendingRelation.source, pendingRelation.target)}
+                                        </SelectItem>
+                                        <SelectItem value="one_to_many" className="text-xs">
+                                            {relationModeLabel("one_to_many", pendingRelation.source, pendingRelation.target)}
+                                        </SelectItem>
+                                    </SelectContent>
+                                </Select>
+                            </div>
+
+                            <div className="grid grid-cols-2 gap-2">
+                                <div>
+                                    <label className="text-xs font-medium text-muted-foreground mb-1 block">
+                                        ON DELETE
+                                    </label>
+                                    <Select
+                                        value={pendingRelation.onDelete}
+                                        onValueChange={(value) =>
+                                            setPendingRelation((prev) =>
+                                                prev
+                                                    ? { ...prev, onDelete: value as ForeignKeyAction }
+                                                    : prev
+                                            )
+                                        }
+                                    >
+                                        <SelectTrigger className="text-xs">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {FK_ACTION_OPTIONS.map((action) => (
+                                                <SelectItem key={`delete-${action}`} value={action} className="text-xs">
+                                                    {action}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                                <div>
+                                    <label className="text-xs font-medium text-muted-foreground mb-1 block">
+                                        ON UPDATE
+                                    </label>
+                                    <Select
+                                        value={pendingRelation.onUpdate}
+                                        onValueChange={(value) =>
+                                            setPendingRelation((prev) =>
+                                                prev
+                                                    ? { ...prev, onUpdate: value as ForeignKeyAction }
+                                                    : prev
+                                            )
+                                        }
+                                    >
+                                        <SelectTrigger className="text-xs">
+                                            <SelectValue />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {FK_ACTION_OPTIONS.map((action) => (
+                                                <SelectItem key={`update-${action}`} value={action} className="text-xs">
+                                                    {action}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                </div>
+                            </div>
+
+                            {relationValidationError ? (
+                                <div className="rounded-md border border-red-500/40 bg-red-500/10 px-2.5 py-2 text-xs text-red-300">
+                                    {relationValidationError}
+                                </div>
+                            ) : (
+                                <div className="rounded-md border border-emerald-500/30 bg-emerald-500/10 px-2.5 py-2 text-xs text-emerald-200">
+                                    Relation is valid.
+                                </div>
+                            )}
+
+                            <div>
+                                <div className="text-[11px] font-medium text-muted-foreground mb-1">SQL preview</div>
+                                <pre className="rounded-md border border-border/30 bg-muted/20 p-2 text-[11px] font-mono text-muted-foreground whitespace-pre-wrap">
+                                    {relationPreviewSql}
+                                </pre>
+                            </div>
+                        </div>
+                    )}
+
+                    <DialogFooter>
+                        <Button variant="outline" onClick={() => setPendingRelation(null)}>Cancel</Button>
+                        <Button
+                            onClick={applyPendingRelation}
+                            disabled={!!relationValidationError}
+                            className="bg-emerald-600 hover:bg-emerald-700 text-white"
+                        >
+                            Create relationship
+                        </Button>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
 
             {/* Empty state */}
             {tables.length === 0 && (

@@ -1,5 +1,5 @@
 const WEB_BASE_URL =
-    process.env.NEXT_PUBLIC_WEB_APP_URL ?? "http://localhost:3001";
+    process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app";
 
 export interface ReleaseNote {
     id: string;

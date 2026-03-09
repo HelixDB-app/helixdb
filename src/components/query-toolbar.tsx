@@ -10,6 +10,7 @@ import {
     Play,
     Shield,
     ShieldCheck,
+    Sparkles,
     StickyNote,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -32,6 +33,7 @@ export interface QueryToolbarProps {
     onReview: () => void;
     onFormat: () => void;
     onExplain: () => void;
+    onAiExplain: () => void;
     onRunFile: () => void;
     onSaveNote: () => void;
     onToggleFullScreen: () => void;
@@ -53,6 +55,7 @@ export function QueryToolbar({
     onReview,
     onFormat,
     onExplain,
+    onAiExplain,
     onRunFile,
     onSaveNote,
     onToggleFullScreen,
@@ -127,6 +130,23 @@ export function QueryToolbar({
                         </Button>
                     </TooltipTrigger>
                     <TooltipContent>EXPLAIN ANALYZE — visualise query plan</TooltipContent>
+                </Tooltip>
+
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 gap-1.5 text-xs px-2 text-purple-400/80 hover:text-purple-400 hover:bg-purple-500/10"
+                            onClick={onAiExplain}
+                            disabled={isExecuting || !hasSql}
+                        >
+                            <Sparkles className="h-3.5 w-3.5" />
+                            AI Explain
+                            <kbd className="text-[9px] font-mono opacity-50 ml-0.5">⌘⇧E</kbd>
+                        </Button>
+                    </TooltipTrigger>
+                    <TooltipContent>Nova AI — explain this query in plain English (⌘⇧E)</TooltipContent>
                 </Tooltip>
 
                 <Separator orientation="vertical" className="h-4 mx-0.5" />

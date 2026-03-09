@@ -3,7 +3,7 @@
  * Handles typical CREATE TABLE forms: columns, PRIMARY KEY, REFERENCES, CONSTRAINT FKs.
  */
 
-import type { SchemaDesignerTable, SchemaDesignerColumn } from "./types";
+import type { ForeignKeyAction, SchemaDesignerTable, SchemaDesignerColumn } from "./types";
 
 function genId(): string {
     return crypto.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
@@ -60,26 +60,56 @@ function stripQuotes(s: string): string {
     return s.replace(/^["']|["']$/g, "").trim();
 }
 
+const FK_ACTIONS = new Set<ForeignKeyAction>([
+    "NO ACTION",
+    "RESTRICT",
+    "CASCADE",
+    "SET NULL",
+    "SET DEFAULT",
+]);
+
+function normalizeFkAction(raw: string | undefined): ForeignKeyAction | undefined {
+    const normalized = (raw ?? "").toUpperCase().replace(/\s+/g, " ").trim();
+    return FK_ACTIONS.has(normalized as ForeignKeyAction) ? (normalized as ForeignKeyAction) : undefined;
+}
+
+function parseForeignKeyActions(line: string): { on_delete?: ForeignKeyAction; on_update?: ForeignKeyAction } {
+    const onDeleteMatch = line.match(/\bON\s+DELETE\s+(NO\s+ACTION|RESTRICT|CASCADE|SET\s+NULL|SET\s+DEFAULT)\b/i);
+    const onUpdateMatch = line.match(/\bON\s+UPDATE\s+(NO\s+ACTION|RESTRICT|CASCADE|SET\s+NULL|SET\s+DEFAULT)\b/i);
+    return {
+        on_delete: normalizeFkAction(onDeleteMatch?.[1]),
+        on_update: normalizeFkAction(onUpdateMatch?.[1]),
+    };
+}
+
+interface ParsedReference {
+    table: string;
+    column: string;
+    on_delete?: ForeignKeyAction;
+    on_update?: ForeignKeyAction;
+}
+
 /** Parse REFERENCES table(col) or REFERENCES table from line; returns null if not found. */
-function parseReferences(line: string): { table: string; column: string } | null {
+function parseReferences(line: string): ParsedReference | null {
     const refIdx = line.toUpperCase().indexOf("REFERENCES");
     if (refIdx === -1) return null;
     const afterRef = line.slice(refIdx + 10).trim();
+    const actions = parseForeignKeyActions(line);
     // REFERENCES "tbl" ("col") or REFERENCES "tbl"(col) or REFERENCES tbl (id) or REFERENCES tbl(id) [ON DELETE ...]
     const quotedTbl = afterRef.match(/^"([^"]+)"\s*\(\s*["']?([^"')]+)["']?\s*\)/i);
-    if (quotedTbl) return { table: stripQuotes(quotedTbl[1]), column: stripQuotes(quotedTbl[2]) };
+    if (quotedTbl) return { table: stripQuotes(quotedTbl[1]), column: stripQuotes(quotedTbl[2]), ...actions };
     const unquotedTbl = afterRef.match(/^(\w+)\s*\(\s*["']?([^"')]+)["']?\s*\)/i);
-    if (unquotedTbl) return { table: stripQuotes(unquotedTbl[1]), column: stripQuotes(unquotedTbl[2]) };
+    if (unquotedTbl) return { table: stripQuotes(unquotedTbl[1]), column: stripQuotes(unquotedTbl[2]), ...actions };
     // REFERENCES "tbl" or REFERENCES tbl (no column — default "id")
     const quotedOnly = afterRef.match(/^"([^"]+)"/i);
-    if (quotedOnly) return { table: stripQuotes(quotedOnly[1]), column: "id" };
+    if (quotedOnly) return { table: stripQuotes(quotedOnly[1]), column: "id", ...actions };
     const unquotedOnly = afterRef.match(/^(\w+)/);
-    if (unquotedOnly) return { table: stripQuotes(unquotedOnly[1]), column: "id" };
+    if (unquotedOnly) return { table: stripQuotes(unquotedOnly[1]), column: "id", ...actions };
     return null;
 }
 
 /** Parse FOREIGN KEY (col) REFERENCES table (col) from line. */
-function parseFkConstraint(line: string): { col: string; refTable: string; refCol: string } | null {
+function parseFkConstraint(line: string): { col: string; refTable: string; refCol: string; on_delete?: ForeignKeyAction; on_update?: ForeignKeyAction } | null {
     const fkIdx = line.toUpperCase().indexOf("FOREIGN");
     if (fkIdx === -1) return null;
     const fromFk = line.slice(fkIdx);
@@ -87,10 +117,12 @@ function parseFkConstraint(line: string): { col: string; refTable: string; refCo
         fromFk.match(/FOREIGN\s+KEY\s*\(\s*["']?([^"')]+)["']?\s*\)\s*REFERENCES\s+"([^"]+)"\s*\(\s*["']?([^"')]+)["']?\s*\)/i) ??
         fromFk.match(/FOREIGN\s+KEY\s*\(\s*["']?([^"')]+)["']?\s*\)\s*REFERENCES\s+(\w+)\s*\(\s*["']?([^"')]+)["']?\s*\)/i);
     if (match) {
+        const actions = parseForeignKeyActions(fromFk);
         return {
             col: stripQuotes(match[1]),
             refTable: stripQuotes(match[2]),
             refCol: stripQuotes(match[3]),
+            ...actions,
         };
     }
     return null;
@@ -104,7 +136,7 @@ export interface ParsedTable {
         nullable: boolean;
         default_value: string | null;
         is_primary_key: boolean;
-        references: { table: string; column: string } | null;
+        references: ParsedReference | null;
         unique: boolean;
     }[];
 }
@@ -175,7 +207,7 @@ function tableBodyToLines(body: string): string[] {
 function parseTableBody(tableName: string, body: string): ParsedTable {
     const columns: ParsedTable["columns"] = [];
     const pkColumns = new Set<string>();
-    const fkColumns: { col: string; refTable: string; refCol: string }[] = [];
+    const fkColumns: { col: string; refTable: string; refCol: string; on_delete?: ForeignKeyAction; on_update?: ForeignKeyAction }[] = [];
 
     const lines = tableBodyToLines(body);
 
@@ -196,6 +228,8 @@ function parseTableBody(tableName: string, body: string): ParsedTable {
                 col: fkConstraintMatch.col,
                 refTable: fkConstraintMatch.refTable,
                 refCol: fkConstraintMatch.refCol,
+                on_delete: fkConstraintMatch.on_delete,
+                on_update: fkConstraintMatch.on_update,
             });
             continue;
         }
@@ -235,7 +269,15 @@ function parseTableBody(tableName: string, body: string): ParsedTable {
         });
 
         if (isPk) pkColumns.add(colName);
-        if (references) fkColumns.push({ col: colName, refTable: references.table, refCol: references.column });
+        if (references) {
+            fkColumns.push({
+                col: colName,
+                refTable: references.table,
+                refCol: references.column,
+                on_delete: references.on_delete,
+                on_update: references.on_update,
+            });
+        }
     }
 
     // Apply every table-level PRIMARY KEY (CONSTRAINT "pk_..." PRIMARY KEY ("col") or PRIMARY KEY (...))
@@ -250,7 +292,14 @@ function parseTableBody(tableName: string, body: string): ParsedTable {
     // Apply table-level FOREIGN KEY (CONSTRAINT ... FOREIGN KEY (col) REFERENCES ...) to columns
     for (const fk of fkColumns) {
         const col = columns.find((c) => c.name === fk.col);
-        if (col) col.references = { table: fk.refTable, column: fk.refCol };
+        if (col) {
+            col.references = {
+                table: fk.refTable,
+                column: fk.refCol,
+                on_delete: fk.on_delete,
+                on_update: fk.on_update,
+            };
+        }
     }
 
     return { name: stripQuotes(tableName), columns };
@@ -301,6 +350,8 @@ export function parsedTablesToDesigner(parsed: ParsedTable[]): SchemaDesignerTab
                 table.columns[j].foreign_key = {
                     target_table_id: targetTable.id,
                     target_column_id: targetCol.id,
+                    on_delete: ref.on_delete,
+                    on_update: ref.on_update,
                 };
             }
         }

@@ -98,14 +98,20 @@ export function InsertRowDialog({
         for (const col of columns) {
             const raw = values[col.name] ?? "";
             const trimmed = raw.trim();
-            if (trimmed === "") {
-                if (col.is_nullable) {
-                    insertValues.push({ column: col.name, value: null });
-                } else if (hasDefault(col)) {
-                    // omit
-                } else {
-                    fieldErrors[col.name] = "Required";
+            const useDefault = trimmed.toLowerCase() === "default";
+            if (trimmed === "" || (useDefault && hasDefault(col))) {
+                if (trimmed === "" && !useDefault) {
+                    if (col.is_nullable) {
+                        insertValues.push({ column: col.name, value: null });
+                    } else if (hasDefault(col)) {
+                        // omit
+                    } else {
+                        fieldErrors[col.name] = "Required";
+                    }
                 }
+                // useDefault && hasDefault: omit column so DB uses default
+            } else if (useDefault && !hasDefault(col)) {
+                fieldErrors[col.name] = "DEFAULT only for columns with a default";
             } else {
                 const err = validateCellValue(trimmed, col.data_type, col.is_nullable);
                 if (err) {

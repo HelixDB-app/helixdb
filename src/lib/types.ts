@@ -940,7 +940,16 @@ export interface ReplicaHealthEvent {
 export interface ForeignKeyRef {
     target_table_id: string;
     target_column_id: string;
+    on_delete?: ForeignKeyAction;
+    on_update?: ForeignKeyAction;
 }
+
+export type ForeignKeyAction =
+    | "NO ACTION"
+    | "RESTRICT"
+    | "CASCADE"
+    | "SET NULL"
+    | "SET DEFAULT";
 
 export interface SchemaDesignerColumn {
     id: string;

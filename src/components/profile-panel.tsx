@@ -190,7 +190,7 @@ export function ProfilePanel({ open, onClose }: ProfilePanelProps) {
     }
 
     async function handleEditProfile() {
-        await authOpenBrowser(`${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "http://localhost:3001"}/profile`);
+        await authOpenBrowser(`${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app"}/profile`);
     }
 
     const discordAccess = subscription?.discordAccess;

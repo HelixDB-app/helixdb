@@ -11,7 +11,7 @@
 import { callGeminiStream, callGeminiSync, type GeminiModelId } from "./ai-chat-engine";
 export { GEMINI_MODELS } from "./ai-chat-engine";
 export type { GeminiModelId } from "./ai-chat-engine";
-import type { SchemaDesignerTable, SchemaDesignerColumn, AISchemaReport } from "./types";
+import type { SchemaDesignerTable, AISchemaReport } from "./types";
 import { useSettingsStore } from "@/stores/settings-store";
 import { withGeminiLogging } from "@/lib/gemini-logger";
 
@@ -335,9 +335,16 @@ export async function generatePostgresScript(
     return fullText.replace(/^```sql\n?|^```\n?|\n?```$/g, "").trim();
 }
 
+const FK_ACTIONS = new Set(["NO ACTION", "RESTRICT", "CASCADE", "SET NULL", "SET DEFAULT"]);
+
+function normalizeFkAction(action: string | null | undefined): string {
+    const normalized = (action ?? "").toUpperCase().replace(/\s+/g, " ").trim();
+    return FK_ACTIONS.has(normalized) ? normalized : "CASCADE";
+}
+
 /**
  * Generate SQL DDL for the given schema tables.
- * Output is formatted for readability: multi-line FKs with ON DELETE/UPDATE CASCADE.
+ * Output is formatted for readability with explicit FK actions.
  */
 export function generateSQL(tables: SchemaDesignerTable[]): string {
     const lines: string[] = [];
@@ -359,8 +366,10 @@ export function generateSQL(tables: SchemaDesignerTable[]): string {
                 const targetTable = tables.find(t => t.id === col.foreign_key!.target_table_id);
                 const targetCol = targetTable?.columns.find(c => c.id === col.foreign_key!.target_column_id);
                 if (targetTable && targetCol) {
+                    const onDelete = normalizeFkAction(col.foreign_key.on_delete);
+                    const onUpdate = normalizeFkAction(col.foreign_key.on_update);
                     fkBlocks.push(
-                        `    CONSTRAINT "fk_${table.name}_${col.name}"\n        FOREIGN KEY ("${col.name}")\n        REFERENCES "${targetTable.name}" ("${targetCol.name}")\n        ON DELETE CASCADE\n        ON UPDATE CASCADE`
+                        `    CONSTRAINT "fk_${table.name}_${col.name}"\n        FOREIGN KEY ("${col.name}")\n        REFERENCES "${targetTable.name}" ("${targetCol.name}")\n        ON DELETE ${onDelete}\n        ON UPDATE ${onUpdate}`
                     );
                 }
             }

@@ -4,14 +4,6 @@ import dynamic from "next/dynamic";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
-import {
-    GoogleMap,
-    useJsApiLoader,
-    Polyline,
-    Polygon,
-    Marker,
-    InfoWindow,
-} from "@react-google-maps/api";
 import html2canvas from "html2canvas";
 import { useConnectionStore } from "@/stores/connection-store";
 import { LeafletMapView } from "@/components/map-leaflet-view";
@@ -36,6 +28,7 @@ import {
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { ArrowLeft, Download, Loader2, MapPin, Satellite, Layers } from "lucide-react";
 import { toast } from "sonner";
+import type L from "leaflet";
 
 const LeafletMapViewDynamic = dynamic(
     () => Promise.resolve(LeafletMapView),
@@ -43,12 +36,9 @@ const LeafletMapViewDynamic = dynamic(
 );
 
 const MAP_LIMIT = 2000;
-const DEFAULT_CENTER = { lat: 20, lng: 0 };
-const DEFAULT_ZOOM = 2;
-const POLYLINE_STROKE = "#10b981";
-const POLYLINE_HOVER_STROKE = "#34d399";
-const POLYGON_FILL = "rgba(16, 185, 129, 0.15)";
-const POLYGON_STROKE = "#10b981";
+const POLYLINE_STROKE = "#0ea5e9";
+const POLYGON_FILL = "rgba(14, 165, 233, 0.2)";
+const POLYGON_STROKE = "#0ea5e9";
 
 type GeoJSONGeometry =
     | { type: "Point"; coordinates: [number, number] }
@@ -111,214 +101,11 @@ function getCellString(cell: CellValue): string | null {
     return formatCellValue(cell);
 }
 
-const FOCUS_ZOOM = 14;
-
 interface BoundsBox {
     north: number;
     south: number;
     east: number;
     west: number;
-}
-
-function GoogleMapSection({
-    apiKey,
-    bounds,
-    focusPoint,
-    geometriesByRow,
-    result,
-    selectedRowIndex,
-    setSelectedRowIndex,
-    hoverRowIndex,
-    setHoverRowIndex,
-    setCoords,
-    mapRef,
-    mapType,
-}: {
-    apiKey: string;
-    bounds: BoundsBox | null;
-    focusPoint: { lat: number; lng: number } | null;
-    geometriesByRow: (GeoJSONGeometry | null)[];
-    result: QueryResult;
-    selectedRowIndex: number | null;
-    setSelectedRowIndex: (v: number | null) => void;
-    hoverRowIndex: number | null;
-    setHoverRowIndex: (v: number | null) => void;
-    setCoords: (c: { lat: number; lng: number } | null) => void;
-    mapRef: React.RefObject<google.maps.Map | null>;
-    mapType: "roadmap" | "satellite" | "hybrid";
-}) {
-    const { isLoaded, loadError } = useJsApiLoader({
-        id: "google-map-script",
-        googleMapsApiKey: apiKey,
-    });
-    const onMapLoad = useCallback(
-        (map: google.maps.Map) => {
-            (mapRef as React.MutableRefObject<google.maps.Map | null>).current = map;
-            if (focusPoint) {
-                map.setCenter(focusPoint);
-                map.setZoom(FOCUS_ZOOM);
-            } else if (bounds) {
-                const latLngBounds = new google.maps.LatLngBounds(
-                    { lat: bounds.south, lng: bounds.west },
-                    { lat: bounds.north, lng: bounds.east }
-                );
-                map.fitBounds(latLngBounds, 32);
-            }
-        },
-        [bounds, focusPoint, mapRef]
-    );
-    const onMapUnmount = useCallback(() => {
-        (mapRef as React.MutableRefObject<google.maps.Map | null>).current = null;
-    }, [mapRef]);
-    const onMapMouseMove = useCallback(
-        (e: google.maps.MapMouseEvent) => {
-            if (e.latLng) setCoords({ lat: e.latLng.lat(), lng: e.latLng.lng() });
-        },
-        [setCoords]
-    );
-    if (loadError) {
-        return (
-            <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/90">
-                <p className="text-sm text-destructive">Failed to load Google Maps. Check your API key.</p>
-            </div>
-        );
-    }
-    if (!isLoaded) {
-        return (
-            <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/80">
-                <Loader2 className="h-8 w-8 animate-spin text-emerald-500" />
-            </div>
-        );
-    }
-    return (
-        <GoogleMap
-            mapContainerStyle={{ width: "100%", height: "100%" }}
-            center={focusPoint ?? DEFAULT_CENTER}
-            zoom={focusPoint ? FOCUS_ZOOM : DEFAULT_ZOOM}
-            onLoad={onMapLoad}
-            onUnmount={onMapUnmount}
-            onMouseMove={onMapMouseMove}
-            options={{
-                zoomControl: true,
-                mapTypeControl: false,
-                streetViewControl: false,
-                fullscreenControl: true,
-                mapTypeId: mapType,
-            }}
-        >
-            {geometriesByRow.map((geom, rowIndex) => {
-                if (!geom) return null;
-                const isHover = hoverRowIndex === rowIndex;
-                const isSelected = selectedRowIndex === rowIndex;
-                const stroke = isHover || isSelected ? POLYLINE_HOVER_STROKE : POLYLINE_STROKE;
-                const strokeWeight = isHover || isSelected ? 3 : 2;
-                const zIndex = isSelected ? 10 : isHover ? 5 : 1;
-                if (geom.type === "Point") {
-                    const pos = coordToLatLng(geom.coordinates);
-                    return (
-                        <Marker
-                            key={rowIndex}
-                            position={pos}
-                            zIndex={zIndex}
-                            onClick={() => setSelectedRowIndex(rowIndex)}
-                            onMouseOver={() => setHoverRowIndex(rowIndex)}
-                            onMouseOut={() => setHoverRowIndex(null)}
-                        />
-                    );
-                }
-                if (geom.type === "LineString") {
-                    const path = geom.coordinates.map((c) => coordToLatLng(c));
-                    return (
-                        <Polyline
-                            key={rowIndex}
-                            path={path}
-                            options={{ strokeColor: stroke, strokeWeight, zIndex }}
-                            onClick={() => setSelectedRowIndex(rowIndex)}
-                            onMouseOver={() => setHoverRowIndex(rowIndex)}
-                            onMouseOut={() => setHoverRowIndex(null)}
-                        />
-                    );
-                }
-                if (geom.type === "Polygon" && geom.coordinates[0]) {
-                    const path = geom.coordinates[0].map((c) => coordToLatLng(c));
-                    return (
-                        <Polygon
-                            key={rowIndex}
-                            paths={path}
-                            options={{ fillColor: POLYGON_FILL, fillOpacity: 0.4, strokeColor: stroke, strokeWeight, zIndex }}
-                            onClick={() => setSelectedRowIndex(rowIndex)}
-                            onMouseOver={() => setHoverRowIndex(rowIndex)}
-                            onMouseOut={() => setHoverRowIndex(null)}
-                        />
-                    );
-                }
-                if (geom.type === "MultiLineString") {
-                    return (
-                        <span key={rowIndex}>
-                            {geom.coordinates.map((line, i) => {
-                                const path = line.map((c) => coordToLatLng(c));
-                                return (
-                                    <Polyline
-                                        key={`${rowIndex}-${i}`}
-                                        path={path}
-                                        options={{ strokeColor: stroke, strokeWeight, zIndex }}
-                                        onClick={() => setSelectedRowIndex(rowIndex)}
-                                        onMouseOver={() => setHoverRowIndex(rowIndex)}
-                                        onMouseOut={() => setHoverRowIndex(null)}
-                                    />
-                                );
-                            })}
-                        </span>
-                    );
-                }
-                if (geom.type === "MultiPolygon") {
-                    return (
-                        <span key={rowIndex}>
-                            {geom.coordinates.map((poly, i) => {
-                                if (!poly[0]) return null;
-                                const path = poly[0].map((c) => coordToLatLng(c));
-                                return (
-                                    <Polygon
-                                        key={`${rowIndex}-${i}`}
-                                        paths={path}
-                                        options={{ fillColor: POLYGON_FILL, fillOpacity: 0.4, strokeColor: stroke, strokeWeight, zIndex }}
-                                        onClick={() => setSelectedRowIndex(rowIndex)}
-                                        onMouseOver={() => setHoverRowIndex(rowIndex)}
-                                        onMouseOut={() => setHoverRowIndex(null)}
-                                    />
-                                );
-                            })}
-                        </span>
-                    );
-                }
-                return null;
-            })}
-            {hoverRowIndex != null && result && (() => {
-                const g = geometriesByRow[hoverRowIndex];
-                let position: { lat: number; lng: number } | undefined;
-                if (g?.type === "Point") position = coordToLatLng(g.coordinates);
-                else if (g?.type === "LineString" && g.coordinates[0])
-                    position = coordToLatLng(g.coordinates[Math.floor(g.coordinates.length / 2)]);
-                else if (g?.type === "Polygon" && g.coordinates[0]?.[0]) position = coordToLatLng(g.coordinates[0][0]);
-                else if (g?.type === "MultiLineString" && g.coordinates[0]?.[0]) position = coordToLatLng(g.coordinates[0][0]);
-                else if (g?.type === "MultiPolygon" && g.coordinates[0]?.[0]?.[0]) position = coordToLatLng(g.coordinates[0][0][0]);
-                else if (g?.type === "MultiPoint" && g.coordinates[0]) position = coordToLatLng(g.coordinates[0]);
-                if (!position) return null;
-                return (
-                    <InfoWindow position={position} onCloseClick={() => setHoverRowIndex(null)}>
-                        <div className="text-xs text-foreground p-0.5">
-                            Row {hoverRowIndex + 1}
-                            {result.columns[0] && (() => {
-                                const cell = result.rows[hoverRowIndex]?.[0];
-                                const v = cell ? getCellString(cell) : null;
-                                return v != null ? ` — ${String(v).slice(0, 30)}${String(v).length > 30 ? "…" : ""}` : "";
-                            })()}
-                        </div>
-                    </InfoWindow>
-                );
-            })()}
-        </GoogleMap>
-    );
 }
 
 export function MapViewContent() {
@@ -340,18 +127,13 @@ export function MapViewContent() {
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
     const [geometryColumnName, setGeometryColumnName] = useState<string | null>(null);
-    const [mapType, setMapType] = useState<"roadmap" | "satellite" | "hybrid">("roadmap");
+    const [mapType, setMapType] = useState<"roadmap" | "satellite" | "dark">("roadmap");
     const [coords, setCoords] = useState<{ lat: number; lng: number } | null>(null);
     const [selectedRowIndex, setSelectedRowIndex] = useState<number | null>(null);
     const [hoverRowIndex, setHoverRowIndex] = useState<number | null>(null);
     const [exporting, setExporting] = useState(false);
-    const mapRef = useRef<google.maps.Map | null>(null);
+    const leafletMapRef = useRef<L.Map | null>(null);
     const mapContainerRef = useRef<HTMLDivElement>(null);
-
-    const apiKey = typeof process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY === "string"
-        ? process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY
-        : "";
-    const hasGoogleKey = Boolean(apiKey?.trim());
 
     const loadData = useCallback(async () => {
         if (!connectionId || !schema || !table) return;
@@ -448,27 +230,19 @@ export function MapViewContent() {
     }, [schema, table]);
 
     const handleExportSvg = useCallback(() => {
-        if (!result || !geometryColumnName || !mapRef.current) return;
-        const map = mapRef.current;
+        const map = leafletMapRef.current;
+        if (!result || !geometryColumnName || !map) return;
         const bounds = map.getBounds();
         if (!bounds) return;
-        const ne = bounds.getNorthEast();
-        const sw = bounds.getSouthWest();
-        const topLeft = map.getProjection()?.fromLatLngToPoint?.(sw);
-        const bottomRight = map.getProjection()?.fromLatLngToPoint?.(ne);
-        if (!topLeft || !bottomRight) return;
-        const scale = 800 / (bottomRight.x - topLeft.x);
+        const size = map.getSize();
+        if (!size) return;
         const width = 800;
-        const height = Math.round((bottomRight.y - topLeft.y) * scale);
+        const scale = width / size.x;
+        const height = Math.round(size.y * scale);
 
         const project = (lat: number, lng: number) => {
-            const point = map.getProjection()?.fromLatLngToPoint?.(
-                new google.maps.LatLng(lat, lng)
-            );
-            if (!point) return null;
-            const x = (point.x - topLeft.x) * scale;
-            const y = (point.y - topLeft.y) * scale;
-            return { x, y };
+            const pt = map.latLngToContainerPoint([lat, lng]);
+            return { x: pt.x * scale, y: pt.y * scale };
         };
 
         const paths: string[] = [];
@@ -476,20 +250,16 @@ export function MapViewContent() {
             if (!g) return;
             if (g.type === "Point") {
                 const p = project(g.coordinates[1], g.coordinates[0]);
-                if (p) paths.push(`<circle cx="${p.x}" cy="${p.y}" r="4" fill="${POLYLINE_STROKE}" stroke="#fff" stroke-width="1"/>`);
+                paths.push(`<circle cx="${p.x}" cy="${p.y}" r="5" fill="${POLYLINE_STROKE}" stroke="#fff" stroke-width="1.5"/>`);
             } else if (g.type === "LineString") {
-                const d = g.coordinates
-                    .map((c) => project(c[1], c[0]))
-                    .filter((p): p is { x: number; y: number } => p != null);
+                const d = g.coordinates.map((c) => project(c[1], c[0]));
                 if (d.length >= 2) {
                     paths.push(
                         `<path fill="none" stroke="${POLYLINE_STROKE}" stroke-width="2" d="M ${d.map((p) => `${p.x} ${p.y}`).join(" L ")}"/>`
                     );
                 }
             } else if (g.type === "Polygon" && g.coordinates[0]) {
-                const d = g.coordinates[0]
-                    .map((c) => project(c[1], c[0]))
-                    .filter((p): p is { x: number; y: number } => p != null);
+                const d = g.coordinates[0].map((c) => project(c[1], c[0]));
                 if (d.length >= 2) {
                     paths.push(
                         `<path fill="${POLYGON_FILL}" stroke="${POLYGON_STROKE}" stroke-width="2" d="M ${d.map((p) => `${p.x} ${p.y}`).join(" L ")} Z"/>`
@@ -552,9 +322,8 @@ export function MapViewContent() {
                     </span>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
-                    {hasGoogleKey && (
                     <div className="flex rounded-lg bg-muted/40 p-0.5 border border-border/20">
-                        {(["roadmap", "satellite", "hybrid"] as const).map((type) => (
+                        {(["roadmap", "satellite", "dark"] as const).map((type) => (
                             <button
                                 key={type}
                                 type="button"
@@ -567,12 +336,11 @@ export function MapViewContent() {
                             >
                                 {type === "roadmap" && <MapPin className="h-3 w-3" />}
                                 {type === "satellite" && <Satellite className="h-3 w-3" />}
-                                {type === "hybrid" && <Layers className="h-3 w-3" />}
+                                {type === "dark" && <Layers className="h-3 w-3" />}
                                 {type.charAt(0).toUpperCase() + type.slice(1)}
                             </button>
                         ))}
                     </div>
-                    )}
                     <DropdownMenu>
                         <DropdownMenuTrigger asChild>
                             <Button
@@ -597,7 +365,7 @@ export function MapViewContent() {
                 </div>
             </header>
 
-            <div ref={hasGoogleKey ? mapContainerRef : undefined} className="flex-1 relative min-h-0">
+            <div ref={mapContainerRef} className="flex-1 relative min-h-0">
                 {loading && (
                     <div className="absolute inset-0 z-10 flex items-center justify-center bg-background/80">
                         <Loader2 className="h-8 w-8 animate-spin text-emerald-500" />
@@ -611,34 +379,19 @@ export function MapViewContent() {
                     </div>
                 )}
                 {!loading && !error && result && (
-                    hasGoogleKey ? (
-                        <GoogleMapSection
-                            apiKey={apiKey}
-                            bounds={bounds}
-                            focusPoint={focusPoint}
-                            geometriesByRow={geometriesByRow}
-                            result={result}
-                            selectedRowIndex={selectedRowIndex}
-                            setSelectedRowIndex={setSelectedRowIndex}
-                            hoverRowIndex={hoverRowIndex}
-                            setHoverRowIndex={setHoverRowIndex}
-                            setCoords={setCoords}
-                            mapRef={mapRef}
-                            mapType={mapType}
-                        />
-                    ) : (
-                        <LeafletMapViewDynamic
-                            geometriesByRow={geometriesByRow}
-                            bounds={bounds}
-                            focusPoint={focusPoint}
-                            selectedRowIndex={selectedRowIndex}
-                            onSelectRowIndex={setSelectedRowIndex}
-                            hoverRowIndex={hoverRowIndex}
-                            onHoverRowIndex={setHoverRowIndex}
-                            onCoords={setCoordsFromLeaflet}
-                            containerRef={mapContainerRef}
-                        />
-                    )
+                    <LeafletMapViewDynamic
+                        geometriesByRow={geometriesByRow}
+                        bounds={bounds}
+                        focusPoint={focusPoint}
+                        selectedRowIndex={selectedRowIndex}
+                        onSelectRowIndex={setSelectedRowIndex}
+                        hoverRowIndex={hoverRowIndex}
+                        onHoverRowIndex={setHoverRowIndex}
+                        onCoords={setCoordsFromLeaflet}
+                        containerRef={mapContainerRef}
+                        mapType={mapType}
+                        onMapReady={(map) => { leafletMapRef.current = map; }}
+                    />
                 )}
                 {coords != null && (
                     <div className="absolute bottom-3 left-3 px-2 py-1 rounded bg-background/90 border border-border/30 text-[10px] font-mono text-muted-foreground shadow-sm">
