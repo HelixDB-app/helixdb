@@ -1545,6 +1545,7 @@ export function QueryEditor() {
                 editorHeight: number;
                 className: string;
                 reviewIssues: SqlReviewReport["issues"];
+                fillHeight?: boolean;
             }
         ) => {
             if (isDocTab(tab.id)) {
@@ -1584,6 +1585,7 @@ export function QueryEditor() {
                     className={options.className}
                     hideNextActionSuggestions
                     editorHeight={options.editorHeight}
+                    fillHeight={options.fillHeight}
                 />
             );
         },
@@ -1897,7 +1899,7 @@ export function QueryEditor() {
                         <span className="text-xs text-emerald-400/50 ml-1">
                             {isSandboxReviewing ? "— Review diff, then Commit or Rollback"
                                 : isSandboxBusy ? "— Processing…"
-                                : "— Nothing committed until you approve"}
+                                    : "— Nothing committed until you approve"}
                         </span>
                         {isSandboxReviewing && sandboxElapsed > 0 && (
                             <span className="ml-auto text-[10px] font-mono text-emerald-400/40">txn open {sandboxElapsed}s</span>
@@ -1934,9 +1936,9 @@ export function QueryEditor() {
 
                 {activeTab ? (
                     <>
-                        {/* Full-screen editor overlay */}
+                        {/* Full-screen editor overlay: sidebar + full-height Monaco */}
                         {editorFullScreen && (
-                            <div className="fixed inset-0 z-50 bg-background flex flex-col">
+                            <div className="fixed inset-0 z-50 bg-background flex flex-col h-screen">
                                 <header className="flex items-center justify-between px-4 py-2 border-b border-border/30 bg-card/50 shrink-0">
                                     <span className="text-sm font-medium text-muted-foreground">
                                         {activeTabIsDoc ? "Document editor" : "Query editor"}
@@ -1962,18 +1964,41 @@ export function QueryEditor() {
                                         </Button>
                                     </div>
                                 </header>
-                                {renderTabEditor(activeTab, {
-                                    keyPrefix: "fullscreen",
-                                    editorHeight: 480,
-                                    className: "rounded-none border-0 flex-1",
-                                    reviewIssues: reviewReport?.issues ?? [],
-                                })}
+                                <div className="flex flex-1 min-h-0">
+                                    <QueryActivityBar activePanel={sidebarPanel} onToggle={handleActivityBarToggle} />
+                                    {sidebarPanel && sidebarPanel !== "git" && (
+                                        <div className="w-64 shrink-0 flex flex-col overflow-hidden border-r border-border/25">
+                                            <QuerySidebar
+                                                activePanel={sidebarPanel}
+                                                history={history}
+                                                onLoadSql={handleLoadSql}
+                                                onRerunSql={handleRerunFromHistory}
+                                                onClearHistory={clearHistory}
+                                                onDeleteHistoryEntry={deleteHistoryEntry}
+                                                schemaContext={schemaContext}
+                                                connectionId={connectionId ?? "default"}
+                                                databaseName={databaseName || "workspace"}
+                                                canEditFiles={collaborationStatus !== "connected" || collaborationPermissions.canEdit}
+                                                canDeleteFiles={collaborationStatus !== "connected" || collaborationPermissions.canDelete}
+                                            />
+                                        </div>
+                                    )}
+                                    <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
+                                        {renderTabEditor(activeTab, {
+                                            keyPrefix: "fullscreen",
+                                            editorHeight: 480,
+                                            className: "rounded-none border-0 flex-1 min-h-0",
+                                            reviewIssues: reviewReport?.issues ?? [],
+                                            fillHeight: true,
+                                        })}
+                                    </div>
+                                </div>
                             </div>
                         )}
 
-                        <ResizablePanelGroup id="qe-vgroup" orientation="vertical" className="flex-1 min-h-[280px] w-full">
+                        <ResizablePanelGroup id="qe-vgroup" orientation="vertical" className="flex-1 min-h-[320px] w-full">
                             {/* Editor panel */}
-                            <ResizablePanel id="qe-editor" defaultSize="60%" minSize="50%" maxSize="85%" className="flex flex-col min-h-0">
+                            <ResizablePanel id="qe-editor" defaultSize="65%" minSize="40%" maxSize="85%" className="flex flex-col min-h-0">
                                 <QueryToolbar
                                     isExecuting={activeTab.isExecuting}
                                     isReviewLoading={reviewLoading}
@@ -1997,7 +2022,7 @@ export function QueryEditor() {
                                         else { enableSandbox(); toast.success("Sandbox mode enabled — queries run inside a transaction", { duration: 2500 }); }
                                     }}
                                 />
-                                <div className="flex-1 min-h-[200px] overflow-hidden">
+                                <div className="flex-1 min-h-[280px] overflow-hidden">
                                     {editorGroups.length > 1 ? (
                                         <ResizablePanelGroup id="qe-editor-hgroup" orientation="horizontal" className="h-full min-h-0">
                                             {editorGroups.map((group, index) => {
@@ -2214,7 +2239,7 @@ export function QueryEditor() {
                             <ResizableHandle withHandle className="shrink-0 min-h-2 bg-border/20 hover:bg-border/50 data-[resize-handle-active]:bg-emerald-500/40 transition-colors cursor-row-resize" />
 
                             {/* Results panel */}
-                            <ResizablePanel id="qe-results" defaultSize="40%" minSize="15%" maxSize="50%" className="flex flex-col min-h-0 overflow-hidden">
+                            <ResizablePanel id="qe-results" defaultSize="35%" minSize="12%" maxSize="55%" className="flex flex-col min-h-0 overflow-hidden">
                                 <ResultsArea
                                     activeTab={activeTab}
                                     isDocumentTab={activeTabIsDoc}
@@ -2438,7 +2463,7 @@ function ResultsArea({
                         <span className="text-sm text-muted-foreground">
                             {sandboxStatus === "executing" ? "Running in sandbox transaction…"
                                 : sandboxStatus === "committing" ? "Committing changes…"
-                                : "Rolling back changes…"}
+                                    : "Rolling back changes…"}
                         </span>
                     </div>
                 </div>

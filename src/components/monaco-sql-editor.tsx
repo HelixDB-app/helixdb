@@ -10,7 +10,7 @@ import type { SchemaContext } from "@/lib/ai-suggestions";
 import { useSettingsStore } from "@/stores/settings-store";
 import type { SqlReviewIssue } from "@/lib/sql-review";
 import type { CollaborationSelection } from "@/lib/collaboration/types";
-import { Sparkles, Zap } from "lucide-react";
+import { Loader2, Sparkles, Zap } from "lucide-react";
 
 const EDITOR_HEIGHT = 200;
 
@@ -47,8 +47,10 @@ export interface MonacoSqlEditorProps {
     schemaContext?: SchemaContext;
     disabled?: boolean;
     className?: string;
-    /** Editor height in px; default 200 */
+    /** Editor height in px; default 200. Ignored when fillHeight is true. */
     editorHeight?: number;
+    /** When true, editor fills container height (use in flex layout with flex-1 min-h-0 parent). */
+    fillHeight?: boolean;
     /** Hide the Nova AI next-action suggestions bar above the results area */
     hideNextActionSuggestions?: boolean;
     collaborators?: Array<{
@@ -91,6 +93,7 @@ export function MonacoSqlEditor({
     disabled,
     className,
     editorHeight = EDITOR_HEIGHT,
+    fillHeight = false,
     hideNextActionSuggestions = false,
     collaborators = [],
     onCursorActivity,
@@ -463,33 +466,39 @@ export function MonacoSqlEditor({
                     { token: "predefined.sql", foreground: "4EC9B0" },
                 ],
                 colors: {
-                    "editor.background": "#1E1E1E",
-                    "editor.foreground": "#D4D4D4",
+                    "editor.background": "#1e1e1e",
+                    "editor.foreground": "#d4d4d4",
                     "editorLineNumber.foreground": "#858585",
-                    "editorLineNumber.activeForeground": "#C6C6C6",
-                    "editorCursor.foreground": "#AEAFAD",
-                    "editor.selectionBackground": "#264F78",
-                    "editor.inactiveSelectionBackground": "#3A3D41",
+                    "editorLineNumber.activeForeground": "#c6c6c6",
+                    "editorCursor.foreground": "#aeafad",
+                    "editor.selectionBackground": "#264f7840",
+                    "editor.inactiveSelectionBackground": "#3a3d4140",
+                    "editor.lineHighlightBackground": "#2d2d2d",
+                    "editor.lineHighlightBorder": "#2d2d2d",
                     "editorIndentGuide.background": "#404040",
                     "editorIndentGuide.activeBackground": "#707070",
+                    "editorBracketMatch.background": "#0064001a",
+                    "editorBracketMatch.border": "#006400",
                     "editorWidget.background": "#252526",
                     "editorWidget.border": "#454545",
                     "editorSuggestWidget.background": "#252526",
                     "editorSuggestWidget.border": "#454545",
-                    "editorSuggestWidget.foreground": "#D4D4D4",
-                    "editorSuggestWidget.highlightForeground": "#569CD6",
+                    "editorSuggestWidget.foreground": "#d4d4d4",
+                    "editorSuggestWidget.highlightForeground": "#0097fb",
                     "editorSuggestWidget.selectedBackground": "#094771",
-                    "editorGhostText.foreground": "#ffffff30",
+                    "editorGhostText.foreground": "#6a737d",
+                    "editorStickyScroll.background": "#1e1e1e",
+                    "editorStickyScrollHover.background": "#2d2d2d",
                     "scrollbar.shadow": "#00000000",
                     "scrollbarSlider.background": "#79797933",
-                    "scrollbarSlider.hoverBackground": "#64646480",
-                    "scrollbarSlider.activeBackground": "#64646480",
+                    "scrollbarSlider.hoverBackground": "#79797966",
+                    "scrollbarSlider.activeBackground": "#79797999",
                 },
             });
 
             // ── Schema-aware dropdown completions ────────────────────────────────
             const schemaProvider = monacoInstance.languages.registerCompletionItemProvider("sql", {
-                triggerCharacters: [" ", ".", "\n"],
+                triggerCharacters: ["."],
                 provideCompletionItems: async (model, position) => {
                     const textUntilPosition = model.getValueInRange({
                         startLineNumber: 1,
@@ -572,7 +581,7 @@ export function MonacoSqlEditor({
 
             // ── AI dropdown completions (throttled, cursor-aware, telemetry) ─────
             const aiDropdownProvider = monacoInstance.languages.registerCompletionItemProvider("sql", {
-                triggerCharacters: [" ", "\n", "."],
+                triggerCharacters: ["."],
                 provideCompletionItems: async (model, position, _ctx, token) => {
                     const cfg = aiConfigRef.current;
                     if (!cfg.aiAutocompleteEnabled || !cfg.aiDropdownSuggestions || disabledRef.current) {
@@ -727,7 +736,7 @@ export function MonacoSqlEditor({
                         endAiRequest();
                     }
                 },
-                freeInlineCompletions: () => {},
+                freeInlineCompletions: () => { },
             });
 
             disposablesRef.current.push(schemaProvider, aiDropdownProvider);
@@ -883,8 +892,14 @@ export function MonacoSqlEditor({
         <div className={cn("flex flex-col", className)}>
             {/* ── Editor ──────────────────────────────────────────────────────── */}
             <div
-                className="relative overflow-hidden rounded-b border border-t-0"
-                style={{ borderColor: "var(--monaco-editor-border, rgba(255,255,255,0.12))", minHeight: editorHeight }}
+                className={cn(
+                    "relative overflow-hidden rounded-b border border-t-0",
+                    fillHeight && "flex-1 min-h-0 flex flex-col"
+                )}
+                style={{
+                    borderColor: "var(--monaco-editor-border, rgba(255,255,255,0.12))",
+                    ...(fillHeight ? {} : { minHeight: editorHeight }),
+                }}
             >
                 {!value.trim() && !disabled && (
                     <div
@@ -897,7 +912,7 @@ export function MonacoSqlEditor({
                     </div>
                 )}
                 <Editor
-                    height={editorHeight}
+                    height={fillHeight ? "100%" : editorHeight}
                     defaultLanguage="sql"
                     language="sql"
                     value={value}
@@ -912,64 +927,77 @@ export function MonacoSqlEditor({
                         lineNumbersMinChars: 3,
                         scrollBeyondLastLine: false,
                         fontSize: editorFontSize,
-                        fontFamily: "var(--font-mono), ui-monospace, monospace",
+                        fontFamily: "var(--font-mono), 'JetBrains Mono', 'Fira Code', ui-monospace, monospace",
                         fontLigatures: editorFontLigatures,
                         wordWrap: editorWordWrap ? "on" : "off",
-                        padding: { top: 12, bottom: 12 },
+                        padding: { top: 16, bottom: 16 },
                         scrollbar: {
-                            verticalScrollbarSize: 8,
-                            horizontalScrollbarSize: 8,
+                            verticalScrollbarSize: 10,
+                            horizontalScrollbarSize: 10,
+                            verticalSliderSize: 6,
+                            horizontalSliderSize: 6,
                         },
                         renderLineHighlight: "line",
+                        renderLineHighlightOnlyWhenFocus: false,
                         cursorBlinking: "smooth",
+                        cursorSmoothCaretAnimation: "on",
+                        cursorWidth: 2,
                         smoothScrolling: true,
                         tabSize: editorTabSize,
                         insertSpaces: true,
                         automaticLayout: true,
                         readOnly: disabled,
                         domReadOnly: disabled,
-                        quickSuggestions: {
-                            other: true,
-                            comments: false,
-                            strings: false,
+                        bracketPairColorization: { enabled: true, independentColorPoolPerBracketType: true },
+                        guides: {
+                            bracketPairs: "active",
+                            indentation: true,
+                            highlightActiveIndentation: true,
                         },
-                        quickSuggestionsDelay: Math.min(240, Math.max(20, Math.round(aiSuggestionThrottleMs / 2))),
+                        renderWhitespace: "selection",
+                        stickyScroll: { enabled: true, maxLineCount: 3 },
+                        quickSuggestions: false,
+                        quickSuggestionsDelay: 400,
                         suggestOnTriggerCharacters: true,
-                        acceptSuggestionOnEnter: "smart",
+                        acceptSuggestionOnEnter: "off",
                         // Enable inline ghost-text (Copilot-style Tab-to-accept)
                         inlineSuggest: {
                             enabled: aiAutocompleteEnabled && aiInlineSuggestions && !disabled,
                             mode: "prefix",
-                            suppressSuggestions: false,
+                            suppressSuggestions: true,
                         },
                     }}
                 />
-{/* 
                 {aiAutocompleteEnabled && aiShowSuggestionLatency && !disabled && (
-                    <div className="pointer-events-none absolute left-2 top-2 z-20">
+                    <div className="pointer-events-none absolute right-3 top-3 z-20 transition-opacity duration-300" style={{ opacity: liveAi.mode === "idle" && !aiRequestInFlight ? 0.4 : 0.9 }}>
                         <div
                             className={cn(
-                                "inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[10px] font-medium",
-                                "bg-background/80 backdrop-blur border-border/40 text-muted-foreground"
+                                "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-[10px] font-medium shadow-sm",
+                                "bg-background/70 backdrop-blur-md border text-muted-foreground",
+                                aiRequestInFlight
+                                    ? "border-emerald-500/30"
+                                    : liveAi.mode === "inline"
+                                        ? "border-blue-500/25"
+                                        : "border-border/30"
                             )}
                         >
                             {aiRequestInFlight ? (
                                 <Loader2 className="h-3 w-3 animate-spin text-emerald-400" />
                             ) : (
-                                <Zap className="h-3 w-3 text-amber-400/80" />
+                                <Sparkles className="h-3 w-3 text-purple-400/80" />
                             )}
-                            <span>AI {liveAi.mode === "idle" ? "ready" : liveAi.mode}</span>
+                            <span className="text-foreground/70">Nova</span>
                             {liveAi.latencyMs != null && (
-                                <span className="font-mono text-foreground/80">{liveAi.latencyMs}ms</span>
+                                <span className="font-mono text-[9px] text-foreground/50">{liveAi.latencyMs}ms</span>
                             )}
-                            {liveAi.source && (
-                                <span className="uppercase tracking-wide text-[9px] text-muted-foreground/70">
+                            {liveAi.source && liveAi.source !== "network" && (
+                                <span className="rounded-full bg-emerald-500/15 px-1.5 py-px text-[8px] font-semibold uppercase tracking-wider text-emerald-400">
                                     {liveAi.source}
                                 </span>
                             )}
                         </div>
                     </div>
-                )} */}
+                )}
             </div>
 
             {/* Next-action suggestions bar — hidden when hideNextActionSuggestions (cleaner results view) */}

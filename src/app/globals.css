@@ -465,3 +465,52 @@
 .doc-command-item:last-child {
   margin-bottom: 0;
 }
+
+/* ── Monaco editor enhancements ─────────────────────────────────────────── */
+
+/* Refined scrollbar tracks */
+.monaco-editor .scrollbar .slider {
+  border-radius: 4px;
+}
+
+/* Smooth ghost text (inline suggestion) appearance */
+.monaco-editor .ghost-text-decoration {
+  transition: opacity 0.18s ease-out;
+}
+
+/* Editor container focus ring */
+.monaco-editor-container:focus-within {
+  box-shadow: 0 0 0 1px rgba(86, 156, 214, 0.15) inset;
+}
+
+/* Smoother cursor line highlight transition */
+.monaco-editor .current-line {
+  transition: background-color 0.12s ease;
+}
+
+/* Editor suggest widget polish */
+.monaco-editor .suggest-widget {
+  border-radius: 8px !important;
+  overflow: hidden;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2), 0 2px 8px rgba(0, 0, 0, 0.1) !important;
+}
+
+.monaco-editor .suggest-widget .monaco-list-row {
+  border-radius: 4px;
+  margin: 0 4px;
+}
+
+/* Sticky scroll polish */
+.monaco-editor .sticky-widget {
+  border-bottom: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Nova AI status indicator animation */
+@keyframes nova-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(86, 156, 214, 0); }
+  50% { box-shadow: 0 0 0 4px rgba(86, 156, 214, 0.12); }
+}
+
+.nova-ai-active {
+  animation: nova-pulse 2s ease-in-out infinite;
+}

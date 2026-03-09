@@ -262,24 +262,53 @@ function sanitizeDropdownSuggestions(
 }
 
 function sanitizeInlineCompletion(raw: string, textUntilCursor: string, schema: SchemaContext): string {
-    // Keep only first non-empty line to avoid verbose output.
-    const firstLine = stripCodeFences(raw)
+    const cleaned = stripCodeFences(raw);
+    const lines = cleaned
         .split("\n")
-        .map((line) => line.trimEnd())
-        .find((line) => line.length > 0) ?? "";
+        .map((line) => line.trimEnd());
 
-    if (!firstLine) return "";
+    // Find first non-empty line index
+    const firstNonEmptyIdx = lines.findIndex((line) => line.length > 0);
+    if (firstNonEmptyIdx === -1) return "";
 
-    let completion = stripLeadingDuplication(firstLine, textUntilCursor);
-    completion = ensureProperSpacing(completion, textUntilCursor);
+    // Take up to 12 lines for block-level suggestions
+    const relevantLines = lines.slice(firstNonEmptyIdx, firstNonEmptyIdx + 12)
+        // Trim trailing empty lines
+        .reduceRight<string[]>((acc, line) => {
+            if (acc.length === 0 && line.length === 0) return acc;
+            acc.unshift(line);
+            return acc;
+        }, []);
 
-    // Keep inline ghost text compact and fast to accept.
-    if (completion.length > 220) {
-        completion = completion.slice(0, 220).trimEnd();
+    if (relevantLines.length === 0) return "";
+
+    // For single-line: apply standard dedup and spacing
+    if (relevantLines.length === 1) {
+        let completion = stripLeadingDuplication(relevantLines[0], textUntilCursor);
+        completion = ensureProperSpacing(completion, textUntilCursor);
+        if (completion.length > 400) {
+            completion = completion.slice(0, 400).trimEnd();
+        }
+        if (hasUnknownIdentifiers(completion, schema)) return "";
+        return completion;
     }
 
-    if (hasUnknownIdentifiers(completion, schema)) return "";
-    return completion;
+    // For multi-line block suggestions:
+    // Apply dedup only on the first line, then join with remaining lines
+    let firstLine = stripLeadingDuplication(relevantLines[0], textUntilCursor);
+    firstLine = ensureProperSpacing(firstLine, textUntilCursor);
+
+    const block = [firstLine, ...relevantLines.slice(1)].join("\n");
+
+    // Cap total length for performance
+    if (block.length > 800) {
+        // Find the last complete line within the limit
+        const truncated = block.slice(0, 800);
+        const lastNewline = truncated.lastIndexOf("\n");
+        return lastNewline > 0 ? truncated.slice(0, lastNewline) : truncated.trimEnd();
+    }
+
+    return block;
 }
 
 // ── Worker call ─────────────────────────────────────────────────────────────
@@ -356,17 +385,30 @@ YOUR TASK
 ---------
 The user is actively typing SQL.
 Output only the text that should appear immediately after the cursor.
+You MUST provide COMPLETE, multi-line block suggestions when appropriate.
+
+For example, if the user types:
+  CREATE TABLE categories (
+You should suggest the FULL table body:
+  id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+  name VARCHAR(255) NOT NULL,
+  description TEXT,
+  created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT NOW()
+  );
 
 STRICT RULES
 ------------
 1. Output ONLY the continuation from the cursor.
 2. Never repeat text already typed by the user.
 3. ${hasColumns
-        ? "Only use table/column names from DATABASE SCHEMA."
-        : "Do not invent table/column names."}
-4. Return exactly one continuation (no list).
+            ? "Only use table/column names from DATABASE SCHEMA."
+            : "Do not invent table/column names."}
+4. Return exactly one continuation — multi-line is encouraged for block completions.
 5. No markdown, no explanations, no code fences.
-6. If query is complete, return an empty string.`;
+6. If query is complete, return an empty string.
+7. For CREATE TABLE, INSERT, and other structured statements, ALWAYS suggest complete blocks.
+8. Maintain consistent indentation (4 spaces) in multi-line suggestions.`;
 }
 
 function nextActionPrompt(schema: SchemaContext, appName: string): string {
@@ -584,7 +626,7 @@ class AISuggestionEngine {
                     ],
                     {
                         temperature: 0.1,
-                        max_tokens: 140,
+                        max_tokens: 400,
                         signal: effectiveSignal,
                         sessionId: this.sessionId,
                     }

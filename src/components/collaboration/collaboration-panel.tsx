@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState, useEffect, useRef } from "react";
+import { useCallback, useMemo, useState, useEffect, useRef } from "react";
 import { useShallow } from "zustand/react/shallow";
 import { toast } from "sonner";
 import {
@@ -16,12 +16,19 @@ import {
     Users,
     Video,
     VideoOff,
+    X,
 } from "lucide-react";
 import { useCollaborationStore, getCollaborationColor, getCollaborationPermissions } from "@/stores/collaboration-store";
 import type { CollaborationAccessLevel, CollaborationParticipant, CollaborationRemoteMedia } from "@/lib/collaboration/types";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import {
+    Dialog,
+    DialogContent,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
@@ -77,26 +84,39 @@ function permissionStateBadgeClass(state: MediaPermissionState): string {
     }
 }
 
+type MediaTile = { id: string; title: string; subtitle?: string; stream: MediaStream | null; color: string };
+
 function VideoBubble({
     title,
     subtitle,
     stream,
     color,
+    onClick,
 }: {
     title: string;
     subtitle?: string;
     stream: MediaStream | null;
     color: string;
+    onClick?: () => void;
 }) {
     const ref = useRef<HTMLVideoElement | null>(null);
 
     useEffect(() => {
-        if (!ref.current) return;
-        ref.current.srcObject = stream;
+        const el = ref.current;
+        if (!el || !stream) return;
+        el.srcObject = stream;
+        const play = () => {
+            el.play().catch(() => {});
+        };
+        if (el.readyState >= 2) play();
+        else el.addEventListener("loadedmetadata", play, { once: true });
+        return () => {
+            el.removeEventListener("loadedmetadata", play);
+        };
     }, [stream]);
 
-    return (
-        <div className="relative flex h-20 w-20 shrink-0 flex-col items-center justify-center rounded-full border border-border/30 bg-black/45 shadow-sm">
+    const content = (
+        <>
             {stream ? (
                 <video
                     ref={ref}
@@ -121,7 +141,83 @@ function VideoBubble({
                     {subtitle}
                 </span>
             )}
+        </>
+    );
+
+    return onClick ? (
+        <button
+            type="button"
+            onClick={onClick}
+            className="relative flex h-20 w-20 shrink-0 flex-col items-center justify-center rounded-full border border-border/30 bg-black/45 shadow-sm transition hover:scale-105 hover:border-primary/40 hover:shadow-md focus:outline-none focus:ring-2 focus:ring-primary/50"
+        >
+            {content}
+        </button>
+    ) : (
+        <div className="relative flex h-20 w-20 shrink-0 flex-col items-center justify-center rounded-full border border-border/30 bg-black/45 shadow-sm">
+            {content}
         </div>
+    );
+}
+
+function MediaPreviewDialog({
+    tile,
+    onClose,
+}: {
+    tile: MediaTile;
+    onClose: () => void;
+}) {
+    const setVideoRef = useCallback((el: HTMLVideoElement | null) => {
+        if (!el || !tile.stream) return;
+        el.srcObject = tile.stream;
+        const play = () => {
+            el.play().catch(() => {});
+        };
+        if (el.readyState >= 2) play();
+        else el.addEventListener("loadedmetadata", play, { once: true });
+    }, [tile.stream]);
+
+    return (
+        <Dialog open onOpenChange={(open) => !open && onClose()}>
+            <DialogContent className="max-h-[95vh] w-[95vw] max-w-4xl border-border/40 bg-zinc-950 p-0 overflow-hidden">
+                <DialogHeader className="sr-only">
+                    <DialogTitle>{tile.title} • {tile.subtitle ?? "Media"}</DialogTitle>
+                </DialogHeader>
+                <div className="relative flex flex-col">
+                    <div className="flex items-center justify-between border-b border-border/30 px-4 py-2">
+                        <span className="text-sm font-medium text-foreground">
+                            {tile.title}
+                            {tile.subtitle && (
+                                <span className="ml-2 text-muted-foreground">• {tile.subtitle}</span>
+                            )}
+                        </span>
+                        <Button variant="ghost" size="icon" className="h-8 w-8 shrink-0" onClick={onClose} aria-label="Close">
+                            <X className="h-4 w-4" />
+                        </Button>
+                    </div>
+                    <div className="relative aspect-video min-h-[320px] w-full bg-black">
+                        {tile.stream ? (
+                            <video
+                                ref={setVideoRef}
+                                autoPlay
+                                muted
+                                playsInline
+                                className="h-full w-full object-contain"
+                            />
+                        ) : (
+                            <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                                No stream
+                            </div>
+                        )}
+                        <div
+                            className="absolute bottom-2 left-2 rounded-full px-2.5 py-1 text-[10px] font-semibold text-black"
+                            style={{ backgroundColor: tile.color }}
+                        >
+                            {tile.title}
+                        </div>
+                    </div>
+                </div>
+            </DialogContent>
+        </Dialog>
     );
 }
 
@@ -258,6 +354,7 @@ export function CollaborationPanel({ connectionId, className }: CollaborationPan
     const [chatInput, setChatInput] = useState("");
     const [permissionSnapshot, setPermissionSnapshot] = useState<MediaPermissionSnapshot | null>(null);
     const [requestingPermissions, setRequestingPermissions] = useState(false);
+    const [expandedMedia, setExpandedMedia] = useState<MediaTile | null>(null);
     const workspaceFileCount = useIdeFsStore((state) => (
         connectionId ? state.getFileCount(connectionId) : 0
     ));
@@ -450,6 +547,8 @@ export function CollaborationPanel({ connectionId, className }: CollaborationPan
                         <p className="text-[10px] text-muted-foreground/70">Role: {localAccessLevel ?? "view"}</p>
                     </div>
                 </div>
+                <div className="">
+
                 <Badge
                     variant="outline"
                     className={cn(
@@ -458,9 +557,10 @@ export function CollaborationPanel({ connectionId, className }: CollaborationPan
                         status === "connecting" && "border-amber-500/40 text-amber-400",
                         status === "error" && "border-red-500/40 text-red-400"
                     )}
-                >
+                    >
                     {status}
                 </Badge>
+                    </div>
             </div>
 
             {status !== "connected" ? (
@@ -567,7 +667,7 @@ export function CollaborationPanel({ connectionId, className }: CollaborationPan
                                 {localScreenEnabled ? "Sharing" : "Share"}
                             </Button>
                         </div>
-                        {showMediaHelp && (
+                        {/* {showMediaHelp && (
                             <div className="rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-2 text-[10px] text-amber-200">
                                 Media permissions/runtime need attention. Request permissions, then restart PGStudio if camera/mic/screen are still unavailable.
                                 {permissionEntries.length > 0 && (
@@ -625,7 +725,7 @@ export function CollaborationPanel({ connectionId, className }: CollaborationPan
                                     )}
                                 </div>
                             </div>
-                        )}
+                        )} */}
                         {mediaTiles.length > 0 && (
                             <ScrollArea className="w-full">
                                 <div className="flex gap-2 pb-1">
@@ -636,12 +736,17 @@ export function CollaborationPanel({ connectionId, className }: CollaborationPan
                                             subtitle={tile.subtitle}
                                             stream={tile.stream}
                                             color={tile.color}
+                                            onClick={() => setExpandedMedia(tile)}
                                         />
                                     ))}
                                 </div>
                             </ScrollArea>
                         )}
                     </div>
+
+                    {expandedMedia && (
+                        <MediaPreviewDialog tile={expandedMedia} onClose={() => setExpandedMedia(null)} />
+                    )}
 
                     <div className="grid min-h-0 flex-1 grid-rows-[minmax(0,1fr)_minmax(0,1fr)]">
                         <div className="min-h-0 border-b border-border/20 px-3 py-2">
