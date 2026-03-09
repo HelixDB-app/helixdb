@@ -4791,7 +4791,10 @@ pub async fn cancel_backend(pool: &Pool, pid: i32) -> Result<bool, String> {
 pub async fn get_pg_stat_statements_status(
     pool: &Pool,
 ) -> Result<super::types::PgStatStatementsStatus, String> {
-    let client = pool.get().await.map_err(|e| e.to_string())?;
+    let client = pool
+        .get()
+        .await
+        .map_err(|e| format!("Connection error: {}", pg_error_message(&e)))?;
 
     let extension_installed: bool = client
         .query_one(
@@ -4799,13 +4802,13 @@ pub async fn get_pg_stat_statements_status(
             &[],
         )
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format_pg_error(&e))?
         .get(0);
 
     let preload_raw: String = client
         .query_one("SHOW shared_preload_libraries", &[])
         .await
-        .map_err(|e| e.to_string())?
+        .map_err(|e| format_pg_error(&e))?
         .get(0);
 
     let preload_enabled = preload_raw
@@ -4822,7 +4825,7 @@ pub async fn get_pg_stat_statements_status(
         {
             Ok(_) => can_query = true,
             Err(err) => {
-                probe_error = Some(err.to_string());
+                probe_error = Some(format_pg_error(&err));
             }
         }
     }
@@ -4939,7 +4942,7 @@ pub async fn list_pg_stat_statements(
         )
         .await
         .map_err(|e| {
-            let msg = e.to_string();
+            let msg = format_pg_error(&e);
             if msg.contains("pg_stat_statements") {
                 format!("Unable to read pg_stat_statements: {}", msg)
             } else {
@@ -4990,7 +4993,7 @@ pub async fn list_pg_stat_statements(
         .query(&sql, &[&search_text, &min_mean_ms, &limit_i64, &offset_i64])
         .await
         .map_err(|e| {
-            let msg = e.to_string();
+            let msg = format_pg_error(&e);
             if msg.contains("pg_stat_statements") {
                 format!("Unable to read pg_stat_statements rows: {}", msg)
             } else {

@@ -459,6 +459,11 @@ export default function QueryHistoryPage() {
 
     const [refreshTick, setRefreshTick] = useState(0);
 
+    const pgStatStatusErrorDisplay =
+        !pgStatStatusError?.trim() || pgStatStatusError === "db error"
+            ? "Could not check the extension. Verify your database connection and that you have permission to read system catalogs (e.g. pg_extension, pg_settings)."
+            : pgStatStatusError;
+
     useEffect(() => {
         if (source === "pg_stat" && viewMode === "dashboard") {
             setViewMode("history");
@@ -1094,8 +1099,11 @@ export default function QueryHistoryPage() {
                 </div>
             ) : pgStatStatusError ? (
                 <div className="m-4 rounded-lg border border-destructive/40 bg-destructive/10 p-4">
-                    <p className="text-sm font-medium text-destructive">Failed to read pg_stat_statements status</p>
-                    <p className="mt-1 text-xs text-muted-foreground">{pgStatStatusError}</p>
+                    <p className="text-sm font-medium text-destructive">Could not read pg_stat_statements status</p>
+                    <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">{pgStatStatusErrorDisplay}</p>
+                    <Button variant="outline" size="sm" className="mt-3 h-7" onClick={refreshList}>
+                        Retry
+                    </Button>
                 </div>
             ) : !isConnected || !connectionId ? (
                 <div className="flex h-full items-center justify-center text-muted-foreground">
@@ -1832,8 +1840,8 @@ export default function QueryHistoryPage() {
                                             </div>
                                         ) : pgStatStatusError ? (
                                             <div className="m-4 rounded-lg border border-destructive/40 bg-destructive/10 p-4">
-                                                <p className="text-sm font-medium text-destructive">Failed to check extension status</p>
-                                                <p className="mt-1 text-xs text-muted-foreground">{pgStatStatusError}</p>
+                                                <p className="text-sm font-medium text-destructive">Could not check extension status</p>
+                                                <p className="mt-1 text-xs text-muted-foreground whitespace-pre-wrap">{pgStatStatusErrorDisplay}</p>
                                                 <Button variant="outline" size="sm" className="mt-3 h-7" onClick={refreshList}>
                                                     Retry
                                                 </Button>
