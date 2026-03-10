@@ -47,10 +47,13 @@
     "macOS": {
       "entitlements": "./Entitlements.plist",
       "minimumSystemVersion": "12.0",
-      "bundleVersion": "24",
+      "bundleVersion": "26",
       "files": {
         "embedded.provisionprofile": "../apple/pgstudio.provisionprofile"
       }
+    },
+    "iOS": {
+      "developmentTeam": "GZM73634C6"
     }
   },
   "plugins": {

@@ -3,6 +3,19 @@
  * Combo format: "Mod+Shift+Key" (Mod = Cmd on Mac, Ctrl on Win/Linux).
  */
 
+/** True if the event target is an editable control; global shortcuts should not run. */
+export function isEditableTarget(target: EventTarget | null): boolean {
+    if (!target || !(target instanceof Node)) return false;
+    const el = target as HTMLElement;
+    if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return true;
+    if (el.isContentEditable) return true;
+    // Monaco and other code editors: focus is inside a wrapper, not always contenteditable
+    if (el.closest?.(".monaco-editor, [data-monaco-editor]")) return true;
+    const role = el.getAttribute?.("role");
+    if (role === "textbox" || role === "searchbox") return true;
+    return false;
+}
+
 const isMac =
     typeof navigator !== "undefined" &&
     /Mac|iPod|iPhone|iPad/.test(navigator.platform);

@@ -29,6 +29,7 @@ import { aiSuggestionEngine } from "@/lib/ai-suggestions";
 import { explainSql } from "@/lib/sql-explain-ai";
 import { getSqlReviewIntent, runSqlSafetyReview, type SqlReviewReport } from "@/lib/sql-review";
 import { isDocFileName } from "@/lib/doc-editor";
+import { isEditableTarget } from "@/lib/shortcut-keys";
 import {
     formatEnvironmentLabel,
     normalizeConnectionEnvironment,
@@ -1284,8 +1285,7 @@ export function QueryEditor() {
             if (e.key === "Escape") { setEditorFullScreen((v) => v ? false : v); return; }
             const isModEnter = (e.metaKey || e.ctrlKey) && e.key === "Enter";
             if (isModEnter) {
-                const target = e.target as Node;
-                if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement || (target instanceof HTMLElement && target.isContentEditable)) return;
+                if (isEditableTarget(e.target)) return;
                 e.preventDefault();
                 handleExecute();
                 return;
@@ -2447,9 +2447,9 @@ function ResultsArea({
         return (
             <div className="flex h-full items-center justify-center border-t border-border/20 bg-muted/5 text-muted-foreground">
                 <div className="max-w-sm px-6 text-center">
-                    <p className="text-sm font-medium text-foreground/80">Document mode</p>
+                    <p className="text-sm font-medium text-foreground/80">Notion-style Document</p>
                     <p className="mt-1 text-xs text-muted-foreground/70">
-                        This tab uses Editor.js blocks and is auto-saved as JSON. SQL run results appear only for .sql tabs.
+                        This document uses Novel (Tiptap) blocks and is auto-saved as JSON. SQL run results appear only for .sql tabs.
                     </p>
                 </div>
             </div>

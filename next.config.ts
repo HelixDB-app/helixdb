@@ -9,6 +9,10 @@ const nextConfig: NextConfig = {
   images: { unoptimized: true },
   trailingSlash: true,
   assetPrefix: isProd ? undefined : `http://${devHost}:3000`,
+  // API routes are not available with output: "export". Bug report form checks this.
+  env: {
+    NEXT_PUBLIC_HAS_BUG_REPORT_API: "false",
+  },
 };
 
 export default nextConfig;

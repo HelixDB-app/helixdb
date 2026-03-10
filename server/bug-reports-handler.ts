@@ -1,11 +1,17 @@
+/**
+ * Bug reports API handler logic (Node.js).
+ * Used with static export: this file is NOT part of the Next.js build.
+ * Use with a custom Node server (e.g. next dev or standalone) or adapt for Tauri invoke.
+ *
+ * Next.js app with output: "export" cannot use API routes; the route was removed
+ * so the static export builds. Restore src/app/api/bug-reports/route.ts and
+ * import from here when running with a server (e.g. pnpm dev or deployed web app).
+ */
+
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { NextResponse } from "next/server";
-
-export const runtime = "nodejs";
-export const dynamic = "force-dynamic";
 
 const BUG_REPORT_TYPES = new Set(["bug", "feature", "idea"]);
 const BUG_REPORT_STATUSES = new Set([
@@ -34,7 +40,7 @@ type BugReportStatus =
   | "done"
   | "released";
 
-interface StoredBugReport {
+export interface StoredBugReport {
   id: string;
   reportType: BugReportType;
   reporterName: string;
@@ -109,8 +115,11 @@ function toSafeString(value: FormDataEntryValue | null): string {
   return typeof value === "string" ? value.trim() : "";
 }
 
-function validationError(message: string, status = 400): NextResponse {
-  return NextResponse.json({ error: message }, { status });
+function jsonResponse(body: unknown, status = 200): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "Content-Type": "application/json" },
+  });
 }
 
 function screenshotExtension(mimeType: string): string {
@@ -258,25 +267,22 @@ async function createReportFromFormData(
   return { report, storageWarning };
 }
 
-export async function POST(request: Request): Promise<Response> {
+export async function handleBugReportsPost(request: Request): Promise<Response> {
   try {
     const formData = await request.formData();
     const { report, storageWarning } = await createReportFromFormData(formData);
-    return NextResponse.json(
-      {
-        report: { id: report.id },
-        warning: storageWarning,
-      },
-      { status: 201 }
+    return jsonResponse(
+      { report: { id: report.id }, warning: storageWarning },
+      201
     );
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unable to submit bug report.";
-    return validationError(message);
+    return jsonResponse({ error: message }, 400);
   }
 }
 
-export async function GET(request: Request): Promise<Response> {
+export async function handleBugReportsGet(request: Request): Promise<Response> {
   try {
     const { searchParams } = new URL(request.url);
     const reporterSessionId = searchParams.get("reporterSessionId")?.trim() ?? "";
@@ -311,10 +317,10 @@ export async function GET(request: Request): Promise<Response> {
         lastCommitSummary: report.lastCommitSummary,
       }));
 
-    return NextResponse.json({ reports: payload });
+    return jsonResponse({ reports: payload }, 200);
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "Unable to load bug reports.";
-    return validationError(message, 500);
+    return jsonResponse({ error: message }, 500);
   }
 }

@@ -18,6 +18,7 @@ import {
     registerLintProvider,
     type RegisteredLintProvider,
 } from "@/lib/sql-linter";
+import { readClipboardText } from "@/lib/clipboard";
 
 const EDITOR_HEIGHT = 200;
 
@@ -136,6 +137,8 @@ export function MonacoSqlEditor({
     const onCursorActivityRef = useRef<typeof onCursorActivity>(onCursorActivity);
     const onRegisterActionTriggerRef = useRef<typeof onRegisterActionTrigger>(onRegisterActionTrigger);
     const onChangeRef = useRef(onChange);
+    const onExecuteRef = useRef(onExecute);
+    const onReviewRef = useRef(onReview);
     const disposablesRef = useRef<IDisposable[]>([]);
     const lintProviderRef = useRef<RegisteredLintProvider | null>(null);
     const collaboratorDecorationsRef = useRef<string[]>([]);
@@ -267,7 +270,12 @@ export function MonacoSqlEditor({
         [getAnchorRect]
     );
 
+    const triggerExplainRef = useRef(triggerExplain);
+
     // Keep refs current
+    useEffect(() => { triggerExplainRef.current = triggerExplain; }, [triggerExplain]);
+    useEffect(() => { onExecuteRef.current = onExecute; }, [onExecute]);
+    useEffect(() => { onReviewRef.current = onReview; }, [onReview]);
     useEffect(() => {
         schemaContextRef.current = schemaContext;
         lintProviderRef.current?.trigger();
@@ -874,14 +882,14 @@ export function MonacoSqlEditor({
                 id: "run-query",
                 label: "Run Query",
                 keybindings: [monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.Enter],
-                run: () => onExecute(),
+                run: () => onExecuteRef.current(),
             });
 
             editorInstance.addAction({
                 id: "review-query",
                 label: "Review Query",
                 keybindings: [monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyR],
-                run: () => onReview?.(),
+                run: () => onReviewRef.current?.(),
             });
 
             editorInstance.addAction({
@@ -938,7 +946,7 @@ export function MonacoSqlEditor({
                 contextMenuOrder: 1.5,
                 run: () => {
                     const sql = editorInstance.getValue();
-                    triggerExplain(sql);
+                    triggerExplainRef.current(sql);
                 },
             });
 
@@ -955,12 +963,12 @@ export function MonacoSqlEditor({
                     const selectedText = selection
                         ? editorInstance.getModel()?.getValueInRange(selection) ?? ""
                         : "";
-                    triggerExplain(sql, selectedText || undefined);
+                    triggerExplainRef.current(sql, selectedText || undefined);
                 },
             });
 
             // Custom paste (Cmd+V / Ctrl+V): read clipboard, insert at cursor, sync to parent.
-            // Ensures paste works even when default paste is blocked (e.g. in Tauri/desktop).
+            // Ensures paste works when default paste is blocked (e.g. Tauri before native Edit menu).
             editorInstance.addAction({
                 id: "helix-paste",
                 label: "Paste",
@@ -968,27 +976,22 @@ export function MonacoSqlEditor({
                 run: async () => {
                     const model = editorInstance.getModel();
                     if (!model || disabledRef.current) return;
-                    try {
-                        const text = await navigator.clipboard.readText();
-                        if (text === "") return;
+                    const text = await readClipboardText();
+                    if (text !== "") {
                         const selection = editorInstance.getSelection();
-                        if (!selection) return;
-                        const edit = {
-                            range: selection,
-                            text,
-                            forceMoveMarkers: true as const,
-                        };
-                        editorInstance.executeEdits("helix-paste", [edit]);
-                        const newValue = model.getValue();
-                        onChangeRef.current(newValue);
-                    } catch {
-                        // Fallback: trigger built-in paste then sync
-                        editorInstance.trigger("keyboard", "editor.action.clipboardPasteAction", null);
-                        queueMicrotask(() => {
-                            const v = model.getValue();
-                            onChangeRef.current(v);
-                        });
+                        if (selection) {
+                            editorInstance.executeEdits("helix-paste", [{
+                                range: selection,
+                                text,
+                                forceMoveMarkers: true as const,
+                            }]);
+                            onChangeRef.current(model.getValue());
+                            return;
+                        }
                     }
+                    // Fallback: trigger built-in paste then sync
+                    editorInstance.trigger("keyboard", "editor.action.clipboardPasteAction", null);
+                    queueMicrotask(() => onChangeRef.current(model.getValue()));
                 },
             });
 
@@ -1053,7 +1056,7 @@ export function MonacoSqlEditor({
                 editorInstance.trigger("external", actionId, null);
             });
         },
-        [onExecute, onReview, triggerExplain]
+        [] // Using refs for all callbacks to avoid stale closures in handleEditorDidMount
     );
 
     return (
@@ -1075,6 +1078,7 @@ export function MonacoSqlEditor({
                     "relative overflow-hidden rounded-b border border-t-0",
                     fillHeight && "flex-1 min-h-0 flex flex-col"
                 )}
+                data-monaco-editor
                 style={{
                     borderColor: "var(--monaco-editor-border, rgba(255,255,255,0.12))",
                     ...(fillHeight ? {} : { minHeight: editorHeight }),

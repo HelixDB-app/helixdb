@@ -10,7 +10,7 @@ import { useAuthStore } from "@/stores/auth-store";
 import { useTrialStore } from "@/stores/trial-store";
 import { useCollaborationStore } from "@/stores/collaboration-store";
 import { authFetchProfile, authGetToken } from "@/lib/tauri";
-import { eventMatchesCombo, formatShortcut } from "@/lib/shortcut-keys";
+import { eventMatchesCombo, formatShortcut, isEditableTarget } from "@/lib/shortcut-keys";
 import { APP_NAME } from "@/lib/app-config";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -178,7 +178,7 @@ export default function Home() {
     // Global keyboard shortcuts (configurable via Settings → Shortcuts)
     useEffect(() => {
         const handler = (e: KeyboardEvent) => {
-            if (e.target instanceof HTMLInputElement || e.target instanceof HTMLTextAreaElement || (e.target as HTMLElement)?.isContentEditable) return;
+            if (isEditableTarget(e.target)) return;
             const actions: Array<{ id: string; combo: string }> = [
                 { id: "search", combo: getCombo("search") },
                 { id: "settings", combo: getCombo("settings") },

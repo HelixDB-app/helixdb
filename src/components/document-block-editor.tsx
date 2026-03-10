@@ -527,7 +527,7 @@ export function DocumentBlockEditor({
             <div className="relative flex-1 overflow-auto">
                 <EditorRoot>
                     <EditorContent
-                        className="mx-auto h-full w-full max-w-[980px] px-4 pb-12 pt-6 sm:px-8"
+                        className="prose prose-stone dark:prose-invert prose-p:my-2 prose-headings:mb-3 prose-headings:mt-6 max-w-3xl mx-auto h-full px-4 pb-12 pt-6 sm:px-8"
                         initialContent={initialParsedRef.current.data}
                         extensions={extensions}
                         immediatelyRender={false}
@@ -562,7 +562,7 @@ export function DocumentBlockEditor({
                         }}
                         editorProps={{
                             attributes: {
-                                class: "helix-doc-editor min-h-[420px] w-full max-w-none text-foreground focus:outline-none",
+                                class: "helix-doc-editor min-h-[420px] w-full text-foreground focus:outline-none",
                             },
                             handleDOMEvents: {
                                 keydown: (_view, event) => handleCommandNavigation(event as KeyboardEvent) === true,
@@ -572,27 +572,28 @@ export function DocumentBlockEditor({
                         }}
                     >
                         {!readOnly && (
-                            <EditorCommand className="doc-command-menu max-h-[320px] w-[360px] overflow-y-auto rounded-xl border border-border/70 bg-popover p-2 shadow-xl">
-                                <EditorCommandEmpty className="px-2 py-3 text-sm text-muted-foreground">
-                                    No matching commands
+                            <EditorCommand className="z-50 h-auto max-h-[330px] w-80 overflow-y-auto rounded-xl border border-border/40 bg-popover/95 p-1.5 shadow-2xl backdrop-blur-md transition-all animate-in fade-in slide-in-from-top-1">
+                                <EditorCommandEmpty className="px-2 py-4 flex flex-col items-center justify-center text-sm text-muted-foreground">
+                                    <AlertCircle className="mb-2 h-5 w-5 text-muted-foreground/50" />
+                                    No results found
                                 </EditorCommandEmpty>
                                 <EditorCommandList>
                                     {suggestionItems.map((item) => (
                                         <EditorCommandItem
                                             key={item.title}
-                                            value={item.title}
-                                            className="doc-command-item mb-1 flex cursor-pointer items-start gap-2 rounded-lg border border-transparent px-2 py-2 text-left text-sm data-[selected=true]:border-border data-[selected=true]:bg-accent data-[selected=true]:text-accent-foreground"
+                                            value={`${item.title} ${item.searchTerms?.join(" ")}`}
+                                            className="flex w-full items-center space-x-3 rounded-lg px-2 py-1.5 text-left text-sm cursor-pointer outline-none transition-colors hover:bg-accent/80 hover:text-accent-foreground aria-selected:bg-accent aria-selected:text-accent-foreground group"
                                             onCommand={({ editor, range }) => {
                                                 item.command?.({ editor, range });
                                             }}
                                         >
-                                            <span className="mt-0.5 inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/60 bg-background/70 text-muted-foreground">
+                                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border/50 bg-background/50 shadow-sm transition-colors group-hover:bg-background group-aria-selected:bg-background text-muted-foreground group-hover:text-foreground group-aria-selected:text-foreground">
                                                 {item.icon}
-                                            </span>
-                                            <span className="flex-1">
-                                                <span className="block font-medium text-foreground">{item.title}</span>
-                                                <span className="block text-xs text-muted-foreground">{item.description}</span>
-                                            </span>
+                                            </div>
+                                            <div className="flex flex-col gap-0.5 mt-0.5">
+                                                <p className="font-medium text-[13px] leading-tight text-foreground/90">{item.title}</p>
+                                                <p className="text-[11px] leading-tight text-muted-foreground">{item.description}</p>
+                                            </div>
                                         </EditorCommandItem>
                                     ))}
                                 </EditorCommandList>
@@ -600,7 +601,7 @@ export function DocumentBlockEditor({
                         )}
 
                         {!readOnly && (
-                            <EditorBubble className="doc-bubble-menu rounded-xl border border-border/70 bg-popover p-1.5 shadow-xl">
+                            <EditorBubble className="doc-bubble-menu z-50 rounded-xl border border-border bg-popover p-1.5 shadow-2xl">
                                 <div className="flex items-center gap-1">
                                     <EditorBubbleItem
                                         className={cn(

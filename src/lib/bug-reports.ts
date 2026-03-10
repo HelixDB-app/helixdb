@@ -297,12 +297,24 @@ export function getBugReportingAvailability(): {
   canUploadScreenshots: boolean;
   reason?: string;
 } {
-  if (!getApiBaseUrl() && typeof window === "undefined") {
+  if (typeof window === "undefined" && !getApiBaseUrl()) {
     return {
       canSubmit: false,
       canUploadScreenshots: false,
       reason:
         "Bug reporting is unavailable during server rendering. Try again from the client session.",
+    };
+  }
+  // With output: "export", API routes are not built. Submit only works when an external API URL is set.
+  if (
+    process.env.NEXT_PUBLIC_HAS_BUG_REPORT_API === "false" &&
+    !CONFIGURED_WEB_BASE_URL
+  ) {
+    return {
+      canSubmit: false,
+      canUploadScreenshots: false,
+      reason:
+        "Bug reporting is not available in this build. Set NEXT_PUBLIC_WEB_APP_URL to a backend that hosts the bug report API to submit reports.",
     };
   }
 

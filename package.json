@@ -10,11 +10,15 @@
     "test:unit": "node --test src/lib/sql-risk-guard.test.ts",
     "tauri": "cargo tauri",
     "build:mac": "sh -c 'case \"$(uname -m)\" in arm64) T=aarch64-apple-darwin;; x86_64) T=x86_64-apple-darwin;; *) T=;; esac; if [ -n \"$T\" ]; then pnpm tauri build --target \"$T\"; else pnpm tauri build; fi'",
-    "release:mac": "pnpm build:mac"
+    "release:mac": "pnpm build:mac",
+    "ios:init": "cargo tauri ios init",
+    "ios:dev": "pnpm tauri ios dev",
+    "ios:build": "pnpm tauri ios build"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-context-menu": "^2.2.16",
+    "@tailwindcss/typography": "^0.5.19",
     "@tanstack/react-virtual": "^3.13.18",
     "@tauri-apps/api": "^2.10.1",
     "@tauri-apps/plugin-deep-link": "^2.4.7",

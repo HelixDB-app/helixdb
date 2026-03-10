@@ -77,7 +77,7 @@ pub fn run() {
                     }
                 });
 
-            // Native macOS menu with File > New Window
+            // Native macOS menu: File + Edit (Cut/Copy/Paste required for Cmd+C/V/X to work in webview)
             let new_window_item = MenuItemBuilder::with_id("new_window", "New Window")
                 .accelerator("CmdOrCtrl+Shift+N")
                 .build(app)?;
@@ -86,7 +86,16 @@ pub fn run() {
                 .separator()
                 .close_window()
                 .build()?;
-            let menu = MenuBuilder::new(app).item(&file_menu).build()?;
+            let edit_menu = SubmenuBuilder::new(app, "Edit")
+                .cut()
+                .copy()
+                .paste()
+                .select_all()
+                .build()?;
+            let menu = MenuBuilder::new(app)
+                .item(&file_menu)
+                .item(&edit_menu)
+                .build()?;
             app.set_menu(menu)?;
             app.on_menu_event(|app, event| {
                 if event.id() == "new_window" {

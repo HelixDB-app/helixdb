@@ -11,7 +11,7 @@ import { useShortcutsStore } from "@/stores/shortcuts-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { githubCreateRepo } from "@/lib/tauri";
 import { generateAiCommitMessage } from "@/lib/git-ai";
-import { eventMatchesCombo, formatShortcut } from "@/lib/shortcut-keys";
+import { eventMatchesCombo, formatShortcut, isEditableTarget } from "@/lib/shortcut-keys";
 import type { GithubRepo } from "@/lib/tauri";
 import type { GitFileStatus } from "@/stores/git-store";
 import { GithubAuthDialog } from "@/components/github-auth-dialog";
@@ -581,12 +581,7 @@ function CommitPanel() {
 
     useEffect(() => {
         const onKey = (e: KeyboardEvent) => {
-            const target = e.target as HTMLElement | null;
-            const isTypingTarget =
-                target instanceof HTMLInputElement ||
-                target instanceof HTMLTextAreaElement ||
-                Boolean(target?.isContentEditable);
-
+            const isTypingTarget = isEditableTarget(e.target);
             const commitCombo = getCombo("git_commit");
             const commitPushCombo = getCombo("git_commit_push");
             const stageAllCombo = getCombo("git_stage_all");
