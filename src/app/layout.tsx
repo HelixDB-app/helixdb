@@ -7,6 +7,7 @@ import { FirebaseProvider } from "@/components/firebase-provider";
 import { NotificationProvider } from "@/components/notification-provider";
 import { NotificationRTDBProvider } from "@/components/notification-rtdb-provider";
 import { WhatsNewModal } from "@/components/whats-new-modal";
+import { AppUpdateManager } from "@/components/app-update-manager";
 import { NetworkStatusProvider } from "@/components/network-status-provider";
 import { AppDebugLogger } from "@/components/app-debug-logger";
 import { AppSplash } from "@/components/app-splash";
@@ -49,12 +50,6 @@ export default function RootLayout({
       >
         <AppSplash />
         <AppDebugLogger />
-        <a
-          href="#main"
-          className="focus-ring fixed left-2 top-2 z-[100] rounded-md bg-primary px-3 py-2 text-sm font-medium text-primary-foreground opacity-0 transition-opacity focus-visible:opacity-100"
-        >
-          Skip to main content
-        </a>
         <ThemeProvider
           attribute="class"
           defaultTheme="dark"
@@ -68,6 +63,7 @@ export default function RootLayout({
                   <NotificationRTDBProvider>
                     <TrialProvider>
                       <TrialBanner />
+                      <AppUpdateManager />
                       <WhatsNewModal />
                       <ErrorBoundary>
                         {children}

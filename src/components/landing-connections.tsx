@@ -16,10 +16,13 @@ import { LoginPrompt } from "@/components/login-prompt";
 import {
     formatCriticalityLabel,
     normalizeConnectionCriticality,
+    normalizeConnectionEnvironment,
     normalizeConnectionMetadata,
+    formatEnvironmentLabel,
 } from "@/lib/connection-metadata";
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
     Tooltip,
@@ -35,11 +38,20 @@ import {
     Loader2,
     Server,
     Globe,
+    Search,
+    AlertCircle,
     Clock,
     ChevronRight,
     Keyboard,
     Layers,
 } from "lucide-react";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
 import { cn } from "@/lib/utils";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
@@ -88,8 +100,20 @@ function accentFor(id: string) {
 // ── Component ──────────────────────────────────────────────────────────────
 
 export function LandingConnections() {
-    const { connections, isLoading, load, remove } = useSavedConnectionsStore();
-    const { connect, isConnecting } = useConnectionStore();
+    const {
+        connections,
+        isLoading,
+        load,
+        remove,
+        error: savedConnectionsError,
+        clearError: clearSavedConnectionsError,
+    } = useSavedConnectionsStore();
+    const {
+        connect,
+        isConnecting,
+        connectionError,
+        clearError: clearConnectionError,
+    } = useConnectionStore();
     const { user, isAuthenticated } = useAuthStore();
 
     const [showQuickConnect, setShowQuickConnect] = useState(false);
@@ -99,6 +123,9 @@ export function LandingConnections() {
     const [pendingConnect, setPendingConnect] = useState<SavedConnection | null>(null);
     const [mounted, setMounted] = useState(false);
     const [showProfile, setShowProfile] = useState(false);
+    const [searchQuery, setSearchQuery] = useState("");
+    const [environmentFilter, setEnvironmentFilter] = useState<"all" | "dev" | "staging" | "prod">("all");
+    const [criticalityFilter, setCriticalityFilter] = useState<"all" | "low" | "medium" | "high">("all");
 
     useEffect(() => {
         load();
@@ -157,6 +184,50 @@ export function LandingConnections() {
         setEditConnection(null);
         setShowSaveDialog(true);
     };
+
+    const handleClearFilters = () => {
+        setSearchQuery("");
+        setEnvironmentFilter("all");
+        setCriticalityFilter("all");
+    };
+
+    const normalizedConnections = connections.map((conn) => ({
+        ...conn,
+        environment: normalizeConnectionEnvironment(conn.environment),
+        criticality: normalizeConnectionCriticality(conn.criticality),
+    }));
+
+    const query = searchQuery.trim().toLowerCase();
+
+    const filteredConnections = normalizedConnections.filter((conn) => {
+        const matchesEnv =
+            environmentFilter === "all" ||
+            normalizeConnectionEnvironment(conn.environment) === environmentFilter;
+        const matchesCriticality =
+            criticalityFilter === "all" ||
+            normalizeConnectionCriticality(conn.criticality) === criticalityFilter;
+
+        if (!matchesEnv || !matchesCriticality) return false;
+
+        if (!query) return true;
+
+        const host = parseHost(conn.connection_string);
+        const db = conn.database_name ?? parseDb(conn.connection_string);
+        const tokens = [
+            conn.name,
+            host,
+            db,
+            conn.owner ?? "",
+            formatEnvironmentLabel(conn.environment),
+            formatCriticalityLabel(conn.criticality),
+        ]
+            .join(" ")
+            .toLowerCase();
+
+        return tokens.includes(query);
+    });
+
+    const hasConnections = connections.length > 0;
 
     return (
         <div className="flex h-screen flex-col bg-background overflow-hidden">
@@ -293,9 +364,102 @@ export function LandingConnections() {
                                 mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-3"
                             )}
                         >
-                            <div className="flex items-center justify-between">
-                                <SectionHeader icon={<Globe className="h-3.5 w-3.5" />} title="Saved connections" count={connections.length} />
+                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                                <SectionHeader
+                                    icon={<Globe className="h-3.5 w-3.5" />}
+                                    title="Saved connections"
+                                    count={connections.length}
+                                />
+                                <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
+                                    <div className="relative flex-1 min-w-0 max-w-xs">
+                                        <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/40" />
+                                        <Input
+                                            value={searchQuery}
+                                            onChange={(e) => setSearchQuery(e.target.value)}
+                                            placeholder="Search connections…"
+                                            className="h-8 w-full pl-7 text-xs bg-background/40 border-border/30 focus-visible:ring-1 focus-visible:ring-emerald-500/40"
+                                        />
+                                    </div>
+                                    <div className="flex items-center gap-1.5">
+                                        <Select
+                                            value={environmentFilter}
+                                            onValueChange={(value: "all" | "dev" | "staging" | "prod") =>
+                                                setEnvironmentFilter(value)
+                                            }
+                                        >
+                                            <SelectTrigger className="h-8 w-[120px] text-xs bg-background/40 border-border/30">
+                                                <SelectValue placeholder="Environment" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="all">All envs</SelectItem>
+                                                <SelectItem value="dev">Dev</SelectItem>
+                                                <SelectItem value="staging">Staging</SelectItem>
+                                                <SelectItem value="prod">Prod</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                        <Select
+                                            value={criticalityFilter}
+                                            onValueChange={(value: "all" | "low" | "medium" | "high") =>
+                                                setCriticalityFilter(value)
+                                            }
+                                        >
+                                            <SelectTrigger className="h-8 w-[120px] text-xs bg-background/40 border-border/30">
+                                                <SelectValue placeholder="Criticality" />
+                                            </SelectTrigger>
+                                            <SelectContent>
+                                                <SelectItem value="all">All tiers</SelectItem>
+                                                <SelectItem value="low">Low</SelectItem>
+                                                <SelectItem value="medium">Medium</SelectItem>
+                                                <SelectItem value="high">High</SelectItem>
+                                            </SelectContent>
+                                        </Select>
+                                    </div>
+                                </div>
                             </div>
+
+                            {(connectionError || savedConnectionsError) && (
+                                <div className="flex items-start gap-2 rounded-lg border border-destructive/25 bg-destructive/5 px-3 py-2 text-[11px] text-destructive">
+                                    <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0" />
+                                    <div className="flex-1 min-w-0 space-y-0.5">
+                                        <p className="font-medium">
+                                            {connectionError
+                                                ? "Couldn’t connect to database."
+                                                : "Couldn’t load saved connections."}
+                                        </p>
+                                        <p className="text-[11px] text-destructive/90 break-words">
+                                            {connectionError ?? savedConnectionsError}
+                                        </p>
+                                        {connectionError && (
+                                            <p className="text-[10px] text-destructive/80">
+                                                Check your connection string, credentials, and network, then try
+                                                again.
+                                            </p>
+                                        )}
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            if (connectionError) clearConnectionError();
+                                            if (savedConnectionsError) clearSavedConnectionsError();
+                                        }}
+                                        className="ml-2 text-[10px] font-medium text-destructive underline-offset-2 hover:underline"
+                                    >
+                                        Dismiss
+                                    </button>
+                                </div>
+                            )}
+
+                            {isConnecting && (
+                                <div className="flex items-center gap-2 rounded-lg border border-emerald-500/25 bg-emerald-500/5 px-3 py-2 text-[11px] text-emerald-300/95">
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
+                                    <div className="flex-1">
+                                        <p className="font-medium">Connecting to database…</p>
+                                        <p className="text-[10px] text-emerald-200/80">
+                                            This can take a few seconds. You can keep browsing while we connect.
+                                        </p>
+                                    </div>
+                                </div>
+                            )}
 
                             {isLoading ? (
                                 <div className="grid gap-3 sm:grid-cols-2">
@@ -303,11 +467,13 @@ export function LandingConnections() {
                                         <Skeleton key={i} className="h-[88px] rounded-xl" />
                                     ))}
                                 </div>
-                            ) : connections.length === 0 ? (
+                            ) : !hasConnections ? (
                                 <EmptyConnections onAdd={openAddDialog} onQuickConnect={() => setShowQuickConnect(true)} />
+                            ) : filteredConnections.length === 0 ? (
+                                <FilteredEmptyState onClearFilters={handleClearFilters} />
                             ) : (
                                 <div className="grid gap-3 sm:grid-cols-2">
-                                    {connections.map((conn, i) => {
+                                    {filteredConnections.map((conn, i) => {
                                         const isConnectingThis = isConnecting && connectingId === conn.id;
                                         return (
                                             <ConnectionCard
@@ -556,3 +722,30 @@ function EmptyConnections({
         </div>
     );
 }
+
+function FilteredEmptyState({ onClearFilters }: { onClearFilters: () => void }) {
+    return (
+        <div className="rounded-xl border border-dashed border-border/25 bg-card/10 p-8 text-center space-y-3">
+            <div className="mx-auto flex h-10 w-10 items-center justify-center rounded-xl bg-muted/30">
+                <Search className="h-5 w-5 text-muted-foreground/35" />
+            </div>
+            <div className="space-y-1">
+                <p className="text-sm font-medium text-muted-foreground/70">
+                    No connections match your filters
+                </p>
+                <p className="text-xs text-muted-foreground/45">
+                    Try adjusting your search terms or clearing the filters to see all saved connections.
+                </p>
+            </div>
+            <Button
+                size="sm"
+                variant="outline"
+                className="h-8 text-xs border-border/30"
+                onClick={onClearFilters}
+            >
+                Clear filters
+            </Button>
+        </div>
+    );
+}
+

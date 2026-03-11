@@ -26,10 +26,12 @@ import {
     Table2,
     FolderOpen,
     FileUp,
+    ArrowLeft,
 } from "lucide-react";
 import { ImportSqlDialog } from "./import-sql-dialog";
 import { toast } from "sonner";
 import { getSchemaTemplateCatalog, instantiateFullSchemaTemplate } from "@/lib/schema-templates";
+import Link from "next/link";
 
 const APP_TYPES = [
     { value: "ecommerce", label: "eCommerce", icon: "🛒" },
@@ -109,6 +111,15 @@ export function ProjectList() {
     return (
         <div className="h-full overflow-y-auto">
             <div className="max-w-5xl mx-auto px-6 py-10">
+                {/* Header */}
+                <div className="">
+                    <Button asChild variant="ghost" size="sm" className="h-6 px-2 gap-1 text-xs text-muted-foreground hover:text-foreground">
+                        <Link href="/">
+                            <ArrowLeft className="h-3.5 w-3.5" />
+                            Back
+                        </Link>
+                    </Button>
+                </div>
                 {/* Hero */}
                 <div className="text-center mb-10">
                     <div className="inline-flex items-center gap-2 px-3 py-1 rounded-full bg-emerald-500/10 border border-emerald-500/20 mb-4">

@@ -1,0 +1,102 @@
+name: Build desktop apps
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  build:
+    name: Build Tauri app
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: linux
+          - os: windows-latest
+            target: windows
+
+    runs-on: ${{ matrix.os }}
+
+    env:
+      # Reuse Node/Rust versions across steps
+      NODE_VERSION: "22"
+      RUST_TOOLCHAIN: "stable"
+      # Optional Windows code-signing (self-signed or real cert)
+      WIN_CODE_SIGN_PFX: ${{ secrets.WIN_CODE_SIGN_PFX }}
+      WIN_CODE_SIGN_PFX_PASSWORD: ${{ secrets.WIN_CODE_SIGN_PFX_PASSWORD }}
+      WIN_CODE_SIGN_TIMESTAMP_URL: ${{ secrets.WIN_CODE_SIGN_TIMESTAMP_URL }}
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_TOOLCHAIN }}
+
+      - name: Install pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 9
+          run_install: false
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: pnpm
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Tauri CLI
+        run: cargo install tauri-cli --locked
+
+      - name: Build Tauri app
+        run: |
+          if [ "${{ matrix.target }}" = "linux" ]; then
+            pnpm tauri build
+          else
+            pnpm tauri build
+          fi
+        shell: bash
+
+      - name: Sign Windows artifacts (optional, self-signed or real cert)
+        if: matrix.os == 'windows-latest' && env.WIN_CODE_SIGN_PFX != ''
+        shell: pwsh
+        run: |
+          Write-Host "Recreating PFX from base64 secret..."
+          [IO.File]::WriteAllBytes(
+            "codesign.pfx",
+            [Convert]::FromBase64String($env:WIN_CODE_SIGN_PFX)
+          )
+
+          $timestampUrl = if ([string]::IsNullOrWhiteSpace($env:WIN_CODE_SIGN_TIMESTAMP_URL)) {
+            "http://timestamp.sectigo.com"
+          } else {
+            $env:WIN_CODE_SIGN_TIMESTAMP_URL
+          }
+
+          Write-Host "Signing Windows bundles under src-tauri/target..."
+          Get-ChildItem "src-tauri/target" -Recurse -Include *.exe,*.msi | ForEach-Object {
+            Write-Host "Signing $($_.FullName)"
+            signtool sign `
+              /f "codesign.pfx" `
+              /p "$env:WIN_CODE_SIGN_PFX_PASSWORD" `
+              /fd sha256 `
+              /tr "$timestampUrl" `
+              /td sha256 `
+              "$($_.FullName)"
+          }
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-${{ matrix.target }}-artifacts
+          path: |
+            src-tauri/target/**/bundle/**

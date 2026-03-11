@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useEffect, useMemo, memo, useRef } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useSavedConnectionsStore } from "@/stores/saved-connections-store";
 import { useMigrationStudioStore } from "@/stores/migration-studio-store";
@@ -2582,6 +2583,7 @@ function ApplyOverlay() {
 // ─── Main Page ────────────────────────────────────────────────────────────────
 
 export default function MigrationStudioPage() {
+    const router = useRouter();
     const { connections: activeConnections } = useConnectionStore();
     const {
         connections: savedConnections,
@@ -2824,14 +2826,15 @@ export default function MigrationStudioPage() {
             {/* Header */}
             <header className="flex h-11 shrink-0 items-center justify-between border-b border-border/20 bg-card/20 px-4">
                 <div className="flex items-center gap-3">
-                    <Link
-                        href="/"
+                    <button
+                        type="button"
+                        onClick={() => router.back()}
                         className="flex items-center gap-1.5 rounded-md px-2 py-1 text-muted-foreground/50 hover:text-foreground hover:bg-muted/30 transition-all text-xs"
                     >
                         <ArrowLeft className="h-3.5 w-3.5" />
                         <span>Back</span>
-                    </Link>
-                    <Separator orientation="vertical" className="h-4 bg-border/30" />
+                    </button>
+                    {/* <Separator orientation="vertical" className="h-4 bg-border/30" /> */}
                     <div className="flex items-center gap-2">
                         <GitCompare className="h-4 w-4 text-emerald-400" />
                         <span className="text-sm font-semibold">Migration Studio</span>

@@ -660,6 +660,15 @@
   border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
 }
 
+.doc-editor-shell .helix-doc-editor iframe,
+.doc-editor-shell .helix-doc-editor video {
+  width: 100%;
+  max-width: 100%;
+  aspect-ratio: 16 / 9;
+  border-radius: 0.7rem;
+  border: 1px solid color-mix(in oklab, var(--border) 80%, transparent);
+}
+
 .doc-editor-shell .helix-doc-editor a {
   color: color-mix(in oklab, var(--primary) 90%, #53b4ff);
   text-decoration: underline;

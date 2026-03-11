@@ -30,6 +30,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { APP_NAME, APP_VERSION } from "@/lib/app-config";
+import { useUpdateStore } from "@/stores/update-store";
+import { isTauriRuntime } from "@/lib/runtime";
 import {
     Sun,
     Moon,
@@ -52,6 +54,8 @@ import {
     Pencil,
     RotateCcw as ResetIcon,
     MessageSquareText,
+    ArrowUpRight,
+    Loader2,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { toast } from "sonner";
@@ -954,6 +958,21 @@ function AISection() {
 
 function AboutSection({ onOpenSurvey }: { onOpenSurvey?: () => void }) {
     const [copied, setCopied] = useState(false);
+    const isTauri = isTauriRuntime();
+    const {
+        status: updateStatus,
+        latestVersion,
+        lastCheckedAt,
+        updateAvailable,
+        openingStore,
+        checkForUpdates,
+        openAppStore,
+    } = useUpdateStore();
+
+    const isChecking = updateStatus === "checking";
+    const updateDescription = lastCheckedAt
+        ? `Last checked ${new Date(lastCheckedAt).toLocaleString()}`
+        : "Check for updates in the Mac App Store.";
 
     const info = [
         { label: "Version", value: APP_VERSION },
@@ -1016,6 +1035,43 @@ function AboutSection({ onOpenSurvey }: { onOpenSurvey?: () => void }) {
                     <NotificationsToggle />
                 </SettingRow>
             </SettingSection>
+
+            {isTauri && (
+                <SettingSection title="Updates">
+                    <SettingRow
+                        label="App updates"
+                        description={updateDescription}
+                    >
+                        <div className="flex items-center gap-2">
+                            {updateAvailable && latestVersion ? (
+                                <Badge className="font-mono text-xs">v{latestVersion} available</Badge>
+                            ) : updateStatus === "up-to-date" ? (
+                                <span className="text-xs text-muted-foreground">Up to date</span>
+                            ) : null}
+                            <Button
+                                type="button"
+                                size="sm"
+                                className="gap-2"
+                                onClick={() => {
+                                    if (updateAvailable) {
+                                        void openAppStore();
+                                        return;
+                                    }
+                                    void checkForUpdates({ source: "manual" });
+                                }}
+                                disabled={isChecking || openingStore}
+                            >
+                                {isChecking || openingStore ? (
+                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                ) : (
+                                    <ArrowUpRight className="h-3.5 w-3.5" />
+                                )}
+                                Update Now
+                            </Button>
+                        </div>
+                    </SettingRow>
+                </SettingSection>
+            )}
 
             <SettingSection title="Support">
                 <SettingRow

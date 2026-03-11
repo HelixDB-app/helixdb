@@ -11,6 +11,7 @@ interface LocalTracks {
 interface PeerEntry {
     pc: RTCPeerConnection;
     senders: Partial<Record<LocalTrackKey, RTCRtpSender>>;
+    transceivers: Partial<Record<LocalTrackKey, RTCRtpTransceiver>>;
     makingOffer: boolean;
     closed: boolean;
     pendingIceCandidates: RTCIceCandidateInit[];
@@ -209,9 +210,12 @@ export class WebRtcMesh {
             rtcpMuxPolicy: "require",
         });
 
-        const audioSender = pc.addTransceiver("audio", { direction: "sendrecv" }).sender;
-        const cameraSender = pc.addTransceiver("video", { direction: "sendrecv" }).sender;
-        const screenSender = pc.addTransceiver("video", { direction: "sendrecv" }).sender;
+        const audioTransceiver = pc.addTransceiver("audio", { direction: "sendrecv" });
+        const cameraTransceiver = pc.addTransceiver("video", { direction: "sendrecv" });
+        const screenTransceiver = pc.addTransceiver("video", { direction: "sendrecv" });
+        const audioSender = audioTransceiver.sender;
+        const cameraSender = cameraTransceiver.sender;
+        const screenSender = screenTransceiver.sender;
 
         const entry: PeerEntry = {
             pc,
@@ -219,6 +223,11 @@ export class WebRtcMesh {
                 audio: audioSender,
                 camera: cameraSender,
                 screen: screenSender,
+            },
+            transceivers: {
+                audio: audioTransceiver,
+                camera: cameraTransceiver,
+                screen: screenTransceiver,
             },
             makingOffer: false,
             closed: false,
@@ -296,7 +305,7 @@ export class WebRtcMesh {
         };
 
         pc.ontrack = (event) => {
-            const stream = event.streams[0] ?? new MediaStream([event.track]);
+            const stream = new MediaStream([event.track]);
             const current = this.remoteMediaState.get(remoteUserId) ?? {
                 userId: remoteUserId,
                 cameraStream: null,
@@ -307,24 +316,21 @@ export class WebRtcMesh {
             if (event.track.kind === "audio") {
                 current.audioStream = stream;
             } else {
-                const label = (event.track.label || "").toLowerCase();
-                const hasScreenHints =
-                    label.includes("screen") ||
-                    event.track.contentHint === "detail" ||
-                    label.includes("window") ||
-                    label.includes("display");
-
-                const alreadyCamera =
-                    current.cameraStream?.getVideoTracks().some((track) => track.id === event.track.id) ?? false;
-                const alreadyScreen =
-                    current.screenStream?.getVideoTracks().some((track) => track.id === event.track.id) ?? false;
-
-                if (hasScreenHints || alreadyScreen) {
+                const isScreenTrack = event.transceiver === entry.transceivers.screen;
+                const isCameraTrack = event.transceiver === entry.transceivers.camera;
+                if (isScreenTrack) {
                     current.screenStream = stream;
-                } else if (!current.cameraStream || alreadyCamera) {
+                } else if (isCameraTrack) {
                     current.cameraStream = stream;
                 } else {
-                    current.screenStream = stream;
+                    const label = (event.track.label || "").toLowerCase();
+                    const hasScreenHints =
+                        label.includes("screen") ||
+                        event.track.contentHint === "detail" ||
+                        label.includes("window") ||
+                        label.includes("display");
+                    if (hasScreenHints) current.screenStream = stream;
+                    else current.cameraStream = stream;
                 }
             }
 
@@ -345,27 +351,27 @@ export class WebRtcMesh {
                     return;
                 }
 
-                const label = (event.track.label || "").toLowerCase();
-                const hasScreenHints =
-                    label.includes("screen") ||
-                    event.track.contentHint === "detail" ||
-                    label.includes("window") ||
-                    label.includes("display");
+                const isScreenTrack = event.transceiver === entry.transceivers.screen;
+                const isCameraTrack = event.transceiver === entry.transceivers.camera;
                 const next = this.remoteMediaState.get(remoteUserId) ?? {
                     userId: remoteUserId,
                     cameraStream: null,
                     screenStream: null,
                     audioStream: null,
                 };
-                const matchesScreen =
-                    next.screenStream?.getVideoTracks().some((track) => track.id === event.track.id) ?? false;
-                const matchesCamera =
-                    next.cameraStream?.getVideoTracks().some((track) => track.id === event.track.id) ?? false;
-
-                if (matchesScreen || (!matchesCamera && hasScreenHints)) {
+                if (isScreenTrack) {
                     next.screenStream = null;
-                } else {
+                } else if (isCameraTrack) {
                     next.cameraStream = null;
+                } else {
+                    const label = (event.track.label || "").toLowerCase();
+                    const hasScreenHints =
+                        label.includes("screen") ||
+                        event.track.contentHint === "detail" ||
+                        label.includes("window") ||
+                        label.includes("display");
+                    if (hasScreenHints) next.screenStream = null;
+                    else next.cameraStream = null;
                 }
                 this.remoteMediaState.set(remoteUserId, next);
                 this.onRemoteMedia(next);

@@ -31,6 +31,25 @@ function getExtension(name: string): string {
     return dot === -1 ? "" : name.slice(dot + 1).toLowerCase();
 }
 
+export function computeWorkspaceFingerprint(nodes: Record<string, FsNode>, connectionId: string): string {
+    const signatures: string[] = [];
+    for (const node of Object.values(nodes)) {
+        if (node.connectionId !== connectionId) continue;
+        signatures.push(`${node.id}:${node.type}:${node.updatedAt}:${node.parentId ?? ""}:${node.name}`);
+    }
+    signatures.sort();
+
+    // 32-bit FNV-1a hash for cheap and stable change detection.
+    let hash = 2166136261;
+    for (const signature of signatures) {
+        for (let i = 0; i < signature.length; i += 1) {
+            hash ^= signature.charCodeAt(i);
+            hash = Math.imul(hash, 16777619);
+        }
+    }
+    return `${signatures.length}:${(hash >>> 0).toString(16)}`;
+}
+
 interface IdeFsState {
     nodes: Record<string, FsNode>;
     /** folder ids that are expanded: Record<id, true> */
@@ -77,6 +96,14 @@ interface IdeFsState {
             activeFileId: string | null;
             expandedIds?: string[];
         }
+    ) => void;
+
+    // Collaboration sync helpers (apply remote changes)
+    upsertNode: (connectionId: string, node: FsNode) => void;
+    removeNode: (connectionId: string, id: string) => void;
+    applyWorkspaceState: (
+        connectionId: string,
+        state: { activeFileId: string | null; expandedIds?: string[] }
     ) => void;
 }
 
@@ -378,22 +405,7 @@ export const useIdeFsStore = create<IdeFsState>()(
             },
 
             getConnectionSyncFingerprint: (connectionId) => {
-                const signatures: string[] = [];
-                for (const node of Object.values(get().nodes)) {
-                    if (node.connectionId !== connectionId || node.type !== "file") continue;
-                    signatures.push(`${node.id}:${node.updatedAt}:${node.parentId ?? ""}:${node.name}`);
-                }
-                signatures.sort();
-
-                // 32-bit FNV-1a hash for cheap and stable change detection.
-                let hash = 2166136261;
-                for (const signature of signatures) {
-                    for (let i = 0; i < signature.length; i += 1) {
-                        hash ^= signature.charCodeAt(i);
-                        hash = Math.imul(hash, 16777619);
-                    }
-                }
-                return `${signatures.length}:${(hash >>> 0).toString(16)}`;
+                return computeWorkspaceFingerprint(get().nodes, connectionId);
             },
 
             getConnectionWorkspaceSnapshot: (connectionId) => {
@@ -459,6 +471,81 @@ export const useIdeFsStore = create<IdeFsState>()(
                     return {
                         nodes: nextNodes,
                         expandedIds: nextExpandedIds,
+                        activeFileByConnection: {
+                            ...s.activeFileByConnection,
+                            [connectionId]: safeActiveFileId,
+                        },
+                    };
+                });
+            },
+
+            upsertNode: (connectionId, node) => {
+                if (!node?.id) return;
+                set((s) => ({
+                    nodes: {
+                        ...s.nodes,
+                        [node.id]: {
+                            ...node,
+                            connectionId,
+                        },
+                    },
+                }));
+            },
+
+            removeNode: (connectionId, id) => {
+                const { nodes } = get();
+                const target = nodes[id];
+                if (!target || target.connectionId !== connectionId) return;
+
+                const toDelete = new Set<string>();
+                const queue = [id];
+                while (queue.length > 0) {
+                    const current = queue.pop()!;
+                    toDelete.add(current);
+                    for (const node of Object.values(nodes)) {
+                        if (node.connectionId !== connectionId) continue;
+                        if (node.parentId === current) queue.push(node.id);
+                    }
+                }
+
+                set((s) => {
+                    const next = { ...s.nodes };
+                    const expanded = { ...s.expandedIds };
+                    const active = { ...s.activeFileByConnection };
+                    toDelete.forEach((did) => {
+                        delete next[did];
+                        delete expanded[did];
+                    });
+                    for (const connId of Object.keys(active)) {
+                        if (active[connId] && toDelete.has(active[connId]!)) {
+                            active[connId] = null;
+                        }
+                    }
+                    return { nodes: next, expandedIds: expanded, activeFileByConnection: active };
+                });
+            },
+
+            applyWorkspaceState: (connectionId, state) => {
+                const expandedIds = state.expandedIds ?? [];
+                set((s) => {
+                    const nextExpanded = { ...s.expandedIds };
+                    for (const [id, node] of Object.entries(s.nodes)) {
+                        if (node.connectionId === connectionId) {
+                            delete nextExpanded[id];
+                        }
+                    }
+                    for (const id of expandedIds) {
+                        const node = s.nodes[id];
+                        if (node && node.connectionId === connectionId && node.type === "folder") {
+                            nextExpanded[id] = true;
+                        }
+                    }
+                    const safeActiveFileId =
+                        state.activeFileId && s.nodes[state.activeFileId]?.connectionId === connectionId
+                            ? state.activeFileId
+                            : null;
+                    return {
+                        expandedIds: nextExpanded,
                         activeFileByConnection: {
                             ...s.activeFileByConnection,
                             [connectionId]: safeActiveFileId,

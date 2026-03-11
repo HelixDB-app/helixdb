@@ -3,11 +3,13 @@
 import { create } from "zustand";
 import { toast } from "sonner";
 import { getFirebaseConfig } from "@/lib/firebase";
+import { playNotificationSound } from "@/lib/notification-sound";
 import { useAuthStore } from "@/stores/auth-store";
-import { useIdeFsStore } from "@/stores/ide-fs-store";
+import { useIdeFsStore, computeWorkspaceFingerprint } from "@/stores/ide-fs-store";
 import { getCollaboratorColor, getColorIndexFromUserId, getInitials } from "@/lib/collaboration/palette";
 import { WebRtcMesh } from "@/lib/collaboration/webrtc-mesh";
 import type { QueryResult } from "@/lib/types";
+import type { FsNode } from "@/stores/ide-fs-store";
 import type {
     CollaborationAccessLevel,
     CollaborationChatMessage,
@@ -30,8 +32,11 @@ const ROOM_ROOT = "collabRooms";
 const MAX_CHAT_MESSAGES = 250;
 const CURSOR_THROTTLE_MS = 90;
 const DOC_THROTTLE_MS = 120;
-const WORKSPACE_SYNC_INTERVAL_MS = 900;
+const WORKSPACE_SYNC_INTERVAL_MS = 2500;
 const WORKSPACE_SYNC_DEBOUNCE_MS = 220;
+const WORKSPACE_STATE_DEBOUNCE_MS = 240;
+const WORKSPACE_NODE_RETRY_MS = 1200;
+const JOIN_TOAST_WINDOW_MS = 650;
 const HEARTBEAT_MS = 12_000;
 const MEDIA_STAGE_LIMIT = 12;
 const QUERY_RESULT_PREVIEW_ROWS = 200;
@@ -42,6 +47,7 @@ const INSTANCE_ID_KEY = "pgstudio_collab_instance_id";
 
 interface Identity {
     userId: string;
+    accountId: string;
     displayName: string;
     avatar: string | null;
     initials: string;
@@ -50,6 +56,7 @@ interface Identity {
 
 interface ParticipantRecord {
     id?: string;
+    accountId?: string;
     name?: string;
     avatar?: string | null;
     colorIndex?: number;
@@ -81,21 +88,44 @@ interface QueryResultRecord {
     updatedAt?: number;
 }
 
+interface WorkspaceNodeRecord {
+    id: string;
+    name: string;
+    type: "file" | "folder";
+    content: string;
+    parentId: string | null;
+    order: number;
+    createdAt: number;
+    updatedAt: number;
+    updatedBy: string;
+}
+
+interface WorkspaceStateRecord {
+    activeFileId: string | null;
+    expandedIds: string[];
+    updatedAt: number;
+    updatedBy: string;
+}
+
 interface RuntimeState {
     appModule: AppModule | null;
     dbModule: DatabaseModule | null;
     db: Database | null;
     roomId: string | null;
     localUserId: string | null;
+    localAccountId: string | null;
     participantRefPath: string | null;
     unsubs: Array<() => void>;
     heartbeatTimer: ReturnType<typeof setInterval> | null;
     workspaceTimer: ReturnType<typeof setInterval> | null;
     pendingWorkspaceSyncTimer: ReturnType<typeof setTimeout> | null;
+    pendingWorkspaceStateTimer: ReturnType<typeof setTimeout> | null;
+    pendingWorkspaceNodeChanges: Record<string, WorkspaceNodeRecord | null>;
     pendingDocTimers: Record<string, ReturnType<typeof setTimeout>>;
     lastCursorEmitAt: number;
     suppressWorkspaceUploadUntil: number;
     lastWorkspaceFingerprint: string;
+    lastWorkspaceStateFingerprint: string;
     mesh: WebRtcMesh | null;
     localAudioTrack: MediaStreamTrack | null;
     localCameraTrack: MediaStreamTrack | null;
@@ -103,6 +133,16 @@ interface RuntimeState {
     localCameraStream: MediaStream | null;
     localScreenStream: MediaStream | null;
     remoteMedia: Record<string, CollaborationRemoteMedia>;
+    participantCache: Record<string, CollaborationParticipant>;
+    participantRecordCache: Record<string, ParticipantRecord>;
+    cursorCacheByDoc: Record<string, Record<string, CollaborationParticipant>>;
+    participantsReady: boolean;
+    chatReady: boolean;
+    seenChatIds: Set<string>;
+    seenParticipantIds: Set<string>;
+    joinToastNames: string[];
+    joinToastTimer: ReturnType<typeof setTimeout> | null;
+    workspaceMutedNodes: Map<string, number>;
     pendingJoinRoomId: string | null;
 }
 
@@ -112,15 +152,19 @@ const runtime: RuntimeState = {
     db: null,
     roomId: null,
     localUserId: null,
+    localAccountId: null,
     participantRefPath: null,
     unsubs: [],
     heartbeatTimer: null,
     workspaceTimer: null,
     pendingWorkspaceSyncTimer: null,
+    pendingWorkspaceStateTimer: null,
+    pendingWorkspaceNodeChanges: {},
     pendingDocTimers: {},
     lastCursorEmitAt: 0,
     suppressWorkspaceUploadUntil: 0,
     lastWorkspaceFingerprint: "",
+    lastWorkspaceStateFingerprint: "",
     mesh: null,
     localAudioTrack: null,
     localCameraTrack: null,
@@ -128,6 +172,16 @@ const runtime: RuntimeState = {
     localCameraStream: null,
     localScreenStream: null,
     remoteMedia: {},
+    participantCache: {},
+    participantRecordCache: {},
+    cursorCacheByDoc: {},
+    participantsReady: false,
+    chatReady: false,
+    seenChatIds: new Set<string>(),
+    seenParticipantIds: new Set<string>(),
+    joinToastNames: [],
+    joinToastTimer: null,
+    workspaceMutedNodes: new Map<string, number>(),
     pendingJoinRoomId: null,
 };
 
@@ -171,6 +225,7 @@ function getGuestIdentity(): Identity {
     const displayName = `Guest ${guestNumber}`;
     return {
         userId: participantId,
+        accountId: guestId,
         displayName,
         avatar: null,
         initials: getInitials(displayName),
@@ -181,10 +236,12 @@ function getGuestIdentity(): Identity {
 function getIdentityFromAuth(): Identity {
     const user = useAuthStore.getState().user;
     if (!user?.id) return getGuestIdentity();
-    const participantId = composeParticipantId(user.id);
+    const accountId = user.id;
+    const participantId = composeParticipantId(accountId);
     const displayName = (user.name || user.email || "User").trim();
     return {
         userId: participantId,
+        accountId,
         displayName,
         avatar: user.image ?? null,
         initials: getInitials(displayName),
@@ -328,6 +385,60 @@ function truncateQueryResultForSync(result: QueryResult): {
     };
 }
 
+function buildWorkspaceNodePayload(node: FsNode, updatedBy: string): WorkspaceNodeRecord {
+    return {
+        id: node.id,
+        name: node.name,
+        type: node.type,
+        content: node.content,
+        parentId: node.parentId ?? null,
+        order: node.order,
+        createdAt: node.createdAt,
+        updatedAt: node.updatedAt,
+        updatedBy,
+    };
+}
+
+function getExpandedIdsForConnection(state: ReturnType<typeof useIdeFsStore.getState>, connectionId: string): string[] {
+    const ids: string[] = [];
+    for (const [id, expanded] of Object.entries(state.expandedIds)) {
+        if (!expanded) continue;
+        const node = state.nodes[id];
+        if (node && node.connectionId === connectionId && node.type === "folder") {
+            ids.push(id);
+        }
+    }
+    ids.sort();
+    return ids;
+}
+
+function computeWorkspaceStateFingerprint(activeFileId: string | null, expandedIds: string[]): string {
+    return `${activeFileId ?? ""}::${expandedIds.join(",")}`;
+}
+
+function enqueueJoinToast(name: string): void {
+    if (!name) return;
+    runtime.joinToastNames.push(name);
+    if (runtime.joinToastTimer) return;
+    runtime.joinToastTimer = setTimeout(() => {
+        const names = runtime.joinToastNames.splice(0);
+        runtime.joinToastTimer = null;
+        if (names.length === 0) return;
+        const uniqueNames = Array.from(new Set(names)).slice(0, 6);
+        let message: string;
+        if (uniqueNames.length === 1) {
+            message = `${uniqueNames[0]} joined the session`;
+        } else if (uniqueNames.length <= 3) {
+            message = `${uniqueNames.join(", ")} joined the session`;
+        } else {
+            const firstTwo = uniqueNames.slice(0, 2).join(", ");
+            message = `${firstTwo} and ${uniqueNames.length - 2} others joined the session`;
+        }
+        playNotificationSound(0.22);
+        toast(message, { duration: 3200 });
+    }, JOIN_TOAST_WINDOW_MS);
+}
+
 function clearRuntime(): void {
     runtime.unsubs.forEach((unsub) => {
         try {
@@ -350,6 +461,10 @@ function clearRuntime(): void {
         clearTimeout(runtime.pendingWorkspaceSyncTimer);
         runtime.pendingWorkspaceSyncTimer = null;
     }
+    if (runtime.pendingWorkspaceStateTimer) {
+        clearTimeout(runtime.pendingWorkspaceStateTimer);
+        runtime.pendingWorkspaceStateTimer = null;
+    }
 
     Object.values(runtime.pendingDocTimers).forEach((timer) => clearTimeout(timer));
     runtime.pendingDocTimers = {};
@@ -370,8 +485,24 @@ function clearRuntime(): void {
     runtime.lastCursorEmitAt = 0;
     runtime.suppressWorkspaceUploadUntil = 0;
     runtime.lastWorkspaceFingerprint = "";
+    runtime.lastWorkspaceStateFingerprint = "";
+    runtime.pendingWorkspaceNodeChanges = {};
+    runtime.workspaceMutedNodes = new Map<string, number>();
+    runtime.participantCache = {};
+    runtime.participantRecordCache = {};
+    runtime.cursorCacheByDoc = {};
+    runtime.participantsReady = false;
+    runtime.chatReady = false;
+    runtime.seenChatIds = new Set<string>();
+    runtime.seenParticipantIds = new Set<string>();
+    if (runtime.joinToastTimer) {
+        clearTimeout(runtime.joinToastTimer);
+        runtime.joinToastTimer = null;
+    }
+    runtime.joinToastNames = [];
     runtime.roomId = null;
     runtime.localUserId = null;
+    runtime.localAccountId = null;
     runtime.participantRefPath = null;
 }
 
@@ -385,6 +516,7 @@ interface CollaborationStore {
     pendingJoinRoomId: string | null;
 
     hostId: string | null;
+    hostAccountId: string | null;
     localUserId: string | null;
     localUserName: string | null;
 
@@ -427,9 +559,16 @@ interface CollaborationStore {
     setLocalScreenEnabled: (enabled: boolean) => Promise<void>;
 }
 
-function computeAccessLevel(hostId: string | null, localUserId: string | null, permissions: Record<string, CollaborationAccessLevel>): CollaborationAccessLevel | null {
+function computeAccessLevel(
+    hostId: string | null,
+    hostAccountId: string | null,
+    localUserId: string | null,
+    localAccountId: string | null,
+    permissions: Record<string, CollaborationAccessLevel>
+): CollaborationAccessLevel | null {
     if (!localUserId) return null;
     if (hostId && hostId === localUserId) return "host";
+    if (hostAccountId && localAccountId && hostAccountId === localAccountId) return "host";
     return permissions[localUserId] ?? "view";
 }
 
@@ -438,15 +577,21 @@ async function publishParticipantPatch(patch: Partial<ParticipantRecord>): Promi
     await runtime.dbModule.update(runtime.dbModule.ref(runtime.db, runtime.participantRefPath), patch);
 }
 
-async function publishWorkspaceSnapshot(connectionId: string | null): Promise<void> {
+async function publishWorkspaceSnapshot(connectionId: string | null, force = false): Promise<void> {
     if (!runtime.db || !runtime.dbModule || !runtime.roomId || !runtime.localUserId || !connectionId) return;
-    if (Date.now() < runtime.suppressWorkspaceUploadUntil) return;
+    if (!force && Date.now() < runtime.suppressWorkspaceUploadUntil) return;
 
     const state = useIdeFsStore.getState();
     const snapshot = state.getConnectionWorkspaceSnapshot(connectionId);
-    if (snapshot.fingerprint === runtime.lastWorkspaceFingerprint) return;
+    if (!force && snapshot.fingerprint === runtime.lastWorkspaceFingerprint) return;
 
     runtime.lastWorkspaceFingerprint = snapshot.fingerprint;
+    runtime.lastWorkspaceStateFingerprint = computeWorkspaceStateFingerprint(snapshot.activeFileId, snapshot.expandedIds);
+    runtime.pendingWorkspaceNodeChanges = {};
+    if (runtime.pendingWorkspaceSyncTimer) {
+        clearTimeout(runtime.pendingWorkspaceSyncTimer);
+        runtime.pendingWorkspaceSyncTimer = null;
+    }
 
     const payload: WorkspaceSnapshot = {
         ...snapshot,
@@ -454,10 +599,88 @@ async function publishWorkspaceSnapshot(connectionId: string | null): Promise<vo
         updatedAt: Date.now(),
     };
 
-    await runtime.dbModule.set(
-        runtime.dbModule.ref(runtime.db, `${ROOM_ROOT}/${runtime.roomId}/workspace`),
-        payload
-    );
+    const nodes: Record<string, WorkspaceNodeRecord> = {};
+    for (const node of Object.values(snapshot.nodes)) {
+        nodes[node.id] = buildWorkspaceNodePayload(node, runtime.localUserId);
+    }
+
+    const statePayload: WorkspaceStateRecord = {
+        activeFileId: snapshot.activeFileId,
+        expandedIds: snapshot.expandedIds,
+        updatedAt: Date.now(),
+        updatedBy: runtime.localUserId,
+    };
+
+    await Promise.all([
+        runtime.dbModule.set(
+            runtime.dbModule.ref(runtime.db, `${ROOM_ROOT}/${runtime.roomId}/workspaceNodes`),
+            nodes
+        ),
+        runtime.dbModule.set(
+            runtime.dbModule.ref(runtime.db, `${ROOM_ROOT}/${runtime.roomId}/workspaceState`),
+            statePayload
+        ),
+        runtime.dbModule.set(
+            runtime.dbModule.ref(runtime.db, `${ROOM_ROOT}/${runtime.roomId}/workspace`),
+            payload
+        ),
+    ]);
+}
+
+async function flushWorkspaceNodeChanges(connectionId: string | null): Promise<void> {
+    if (!runtime.db || !runtime.dbModule || !runtime.roomId || !runtime.localUserId || !connectionId) return;
+    if (!canEdit(useCollaborationStore.getState().localAccessLevel)) return;
+    if (Date.now() < runtime.suppressWorkspaceUploadUntil) return;
+
+    const patch = runtime.pendingWorkspaceNodeChanges;
+    if (!patch || Object.keys(patch).length === 0) return;
+    const patchCopy = { ...patch };
+    runtime.pendingWorkspaceNodeChanges = {};
+
+    try {
+        await runtime.dbModule.update(
+            runtime.dbModule.ref(runtime.db, `${ROOM_ROOT}/${runtime.roomId}/workspaceNodes`),
+            patchCopy
+        );
+        const nextFingerprint = useIdeFsStore.getState().getConnectionSyncFingerprint(connectionId);
+        runtime.lastWorkspaceFingerprint = nextFingerprint;
+    } catch (error) {
+        runtime.pendingWorkspaceNodeChanges = { ...patchCopy, ...runtime.pendingWorkspaceNodeChanges };
+        console.warn(`${LOG} workspace node sync failed`, error);
+        setTimeout(() => {
+            void flushWorkspaceNodeChanges(connectionId);
+        }, WORKSPACE_NODE_RETRY_MS);
+    }
+}
+
+async function flushWorkspaceState(connectionId: string | null): Promise<void> {
+    if (!runtime.db || !runtime.dbModule || !runtime.roomId || !runtime.localUserId || !connectionId) return;
+    if (!canEdit(useCollaborationStore.getState().localAccessLevel)) return;
+    if (Date.now() < runtime.suppressWorkspaceUploadUntil) return;
+
+    const state = useIdeFsStore.getState();
+    const expandedIds = getExpandedIdsForConnection(state, connectionId);
+    const activeFileId = state.getActiveFile(connectionId);
+    const fingerprint = computeWorkspaceStateFingerprint(activeFileId, expandedIds);
+    if (fingerprint === runtime.lastWorkspaceStateFingerprint) return;
+
+    runtime.lastWorkspaceStateFingerprint = fingerprint;
+    const payload: WorkspaceStateRecord = {
+        activeFileId,
+        expandedIds,
+        updatedAt: Date.now(),
+        updatedBy: runtime.localUserId,
+    };
+
+    try {
+        await runtime.dbModule.set(
+            runtime.dbModule.ref(runtime.db, `${ROOM_ROOT}/${runtime.roomId}/workspaceState`),
+            payload
+        );
+    } catch (error) {
+        runtime.lastWorkspaceStateFingerprint = "";
+        console.warn(`${LOG} workspace state sync failed`, error);
+    }
 }
 
 export const useCollaborationStore = create<CollaborationStore>((set, get) => ({
@@ -470,6 +693,7 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => ({
     pendingJoinRoomId: null,
 
     hostId: null,
+    hostAccountId: null,
     localUserId: null,
     localUserName: null,
 
@@ -538,6 +762,7 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => ({
         try {
             const identity = getIdentityFromAuth();
             runtime.localUserId = identity.userId;
+            runtime.localAccountId = identity.accountId;
             const { db, dbModule } = await ensureDb();
             runtime.db = db;
             runtime.dbModule = dbModule;
@@ -551,6 +776,8 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => ({
             const queryResultsRef = dbModule.ref(db, `${roomRoot}/queryResults`);
             const chatRef = dbModule.query(dbModule.ref(db, `${roomRoot}/chat`), dbModule.limitToLast(MAX_CHAT_MESSAGES));
             const workspaceRef = dbModule.ref(db, `${roomRoot}/workspace`);
+            const workspaceNodesRef = dbModule.ref(db, `${roomRoot}/workspaceNodes`);
+            const workspaceStateRef = dbModule.ref(db, `${roomRoot}/workspaceState`);
             const signalsRef = dbModule.ref(db, `${roomRoot}/signals/${identity.userId}`);
             const participantRef = dbModule.ref(db, `${roomRoot}/participants/${identity.userId}`);
             runtime.participantRefPath = `${roomRoot}/participants/${identity.userId}`;
@@ -559,17 +786,29 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => ({
                 if (meta && typeof meta === "object") return meta;
                 return {
                     hostId: identity.userId,
+                    hostAccountId: identity.accountId,
                     createdAt: Date.now(),
                     updatedAt: Date.now(),
                 };
             });
 
             const metaSnapshot = await dbModule.get(roomMetaRef);
-            const metaData = metaSnapshot.val() as { hostId?: string } | null;
+            const metaData = metaSnapshot.val() as { hostId?: string; hostAccountId?: string } | null;
             const hostId = metaData?.hostId ?? identity.userId;
+            const hostAccountId =
+                metaData?.hostAccountId ??
+                (hostId === identity.userId ? identity.accountId : null);
+            if (!metaData?.hostAccountId && hostId === identity.userId) {
+                await dbModule.update(roomMetaRef, {
+                    hostAccountId: identity.accountId,
+                    updatedAt: Date.now(),
+                });
+            }
 
             const localPermission: CollaborationAccessLevel =
-                hostId === identity.userId ? "host" : "view";
+                hostId === identity.userId || (hostAccountId && hostAccountId === identity.accountId)
+                    ? "host"
+                    : "view";
 
             await dbModule.runTransaction(dbModule.ref(db, `${roomRoot}/permissions/${identity.userId}`), (existing) => {
                 if (existing && typeof existing === "object" && (existing as PermissionRecord).level) {
@@ -585,6 +824,7 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => ({
             const now = Date.now();
             await dbModule.set(participantRef, {
                 id: identity.userId,
+                accountId: identity.accountId,
                 name: identity.displayName,
                 avatar: identity.avatar,
                 colorIndex: identity.colorIndex,
@@ -609,8 +849,15 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => ({
                 localUserId: identity.userId,
                 localUserName: identity.displayName,
                 hostId,
+                hostAccountId,
                 status: "connected",
-                localAccessLevel: computeAccessLevel(hostId, identity.userId, { [identity.userId]: localPermission }),
+                localAccessLevel: computeAccessLevel(
+                    hostId,
+                    hostAccountId,
+                    identity.userId,
+                    identity.accountId,
+                    { [identity.userId]: localPermission }
+                ),
             });
 
             runtime.mesh = new WebRtcMesh({
@@ -647,90 +894,359 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => ({
             runtime.workspaceTimer = setInterval(() => {
                 const accessLevel = get().localAccessLevel;
                 if (!canEdit(accessLevel)) return;
-                void publishWorkspaceSnapshot(get().connectionContextId);
+                const currentConnectionId = get().connectionContextId;
+                void flushWorkspaceNodeChanges(currentConnectionId);
+                void flushWorkspaceState(currentConnectionId);
             }, WORKSPACE_SYNC_INTERVAL_MS);
 
             const ideFsUnsub = useIdeFsStore.subscribe((state, previousState) => {
                 const accessLevel = get().localAccessLevel;
                 const currentConnectionId = get().connectionContextId;
                 if (!currentConnectionId || !canEdit(accessLevel)) return;
+                if (Date.now() < runtime.suppressWorkspaceUploadUntil) return;
 
-                const previousFingerprint = previousState.getConnectionSyncFingerprint(currentConnectionId);
-                const nextFingerprint = state.getConnectionSyncFingerprint(currentConnectionId);
-                if (previousFingerprint === nextFingerprint) return;
+                const previousFingerprint = computeWorkspaceFingerprint(previousState.nodes, currentConnectionId);
+                const nextFingerprint = computeWorkspaceFingerprint(state.nodes, currentConnectionId);
+                if (previousFingerprint !== nextFingerprint) {
+                    const patch: Record<string, WorkspaceNodeRecord | null> = {};
+                    for (const node of Object.values(state.nodes)) {
+                        if (node.connectionId !== currentConnectionId) continue;
+                        const mutedAt = runtime.workspaceMutedNodes.get(node.id);
+                        if (mutedAt && mutedAt === node.updatedAt) {
+                            runtime.workspaceMutedNodes.delete(node.id);
+                            continue;
+                        }
+                        const prev = previousState.nodes[node.id];
+                        if (!prev) {
+                            patch[node.id] = buildWorkspaceNodePayload(node, runtime.localUserId ?? "unknown");
+                            continue;
+                        }
+                        if (
+                            prev.updatedAt !== node.updatedAt ||
+                            prev.name !== node.name ||
+                            prev.parentId !== node.parentId ||
+                            prev.order !== node.order ||
+                            prev.content !== node.content ||
+                            prev.type !== node.type
+                        ) {
+                            patch[node.id] = buildWorkspaceNodePayload(node, runtime.localUserId ?? "unknown");
+                        }
+                    }
+                    for (const prevNode of Object.values(previousState.nodes)) {
+                        if (prevNode.connectionId !== currentConnectionId) continue;
+                        if (state.nodes[prevNode.id]) continue;
+                        const mutedAt = runtime.workspaceMutedNodes.get(prevNode.id);
+                        if (typeof mutedAt === "number" && mutedAt < 0) {
+                            runtime.workspaceMutedNodes.delete(prevNode.id);
+                            continue;
+                        }
+                        runtime.workspaceMutedNodes.set(prevNode.id, -1);
+                        patch[prevNode.id] = null;
+                    }
 
-                if (runtime.pendingWorkspaceSyncTimer) {
-                    clearTimeout(runtime.pendingWorkspaceSyncTimer);
+                    if (Object.keys(patch).length > 0) {
+                        runtime.pendingWorkspaceNodeChanges = {
+                            ...runtime.pendingWorkspaceNodeChanges,
+                            ...patch,
+                        };
+                        if (runtime.pendingWorkspaceSyncTimer) {
+                            clearTimeout(runtime.pendingWorkspaceSyncTimer);
+                        }
+                        runtime.pendingWorkspaceSyncTimer = setTimeout(() => {
+                            runtime.pendingWorkspaceSyncTimer = null;
+                            void flushWorkspaceNodeChanges(currentConnectionId);
+                        }, WORKSPACE_SYNC_DEBOUNCE_MS);
+                    }
                 }
-                runtime.pendingWorkspaceSyncTimer = setTimeout(() => {
-                    runtime.pendingWorkspaceSyncTimer = null;
-                    void publishWorkspaceSnapshot(currentConnectionId);
-                }, WORKSPACE_SYNC_DEBOUNCE_MS);
+
+                const expandedIds = getExpandedIdsForConnection(state, currentConnectionId);
+                const activeFileId = state.getActiveFile(currentConnectionId);
+                const stateFingerprint = computeWorkspaceStateFingerprint(activeFileId, expandedIds);
+                if (stateFingerprint !== runtime.lastWorkspaceStateFingerprint) {
+                    if (runtime.pendingWorkspaceStateTimer) {
+                        clearTimeout(runtime.pendingWorkspaceStateTimer);
+                    }
+                    runtime.pendingWorkspaceStateTimer = setTimeout(() => {
+                        runtime.pendingWorkspaceStateTimer = null;
+                        void flushWorkspaceState(currentConnectionId);
+                    }, WORKSPACE_STATE_DEBOUNCE_MS);
+                }
             });
 
-            const participantsUnsub = dbModule.onValue(participantsRef, async (snapshot) => {
-                const raw = (snapshot.val() ?? {}) as Record<string, ParticipantRecord>;
+            const updateRemoteCursors = (docKeys: Set<string>) => {
+                if (docKeys.size === 0) return;
+                set((prev) => {
+                    const next = { ...prev.remoteCursorsByDoc };
+                    for (const docKey of docKeys) {
+                        const map = runtime.cursorCacheByDoc[docKey];
+                        if (map && Object.keys(map).length > 0) {
+                            next[docKey] = Object.values(map);
+                        } else {
+                            delete next[docKey];
+                        }
+                    }
+                    return { remoteCursorsByDoc: next };
+                });
+            };
+
+            const updateMediaStage = async () => {
+                if (!runtime.mesh) return;
+                const localIdValue = get().localUserId;
+                const participants = Object.values(runtime.participantCache);
+                const stageParticipants = participants
+                    .filter((p) => p.id !== localIdValue)
+                    .sort((a, b) => {
+                        const aScore = Number(a.screenEnabled) * 4 + Number(a.cameraEnabled) * 3 + Number(a.micEnabled) * 2;
+                        const bScore = Number(b.screenEnabled) * 4 + Number(b.cameraEnabled) * 3 + Number(b.micEnabled) * 2;
+                        if (aScore !== bScore) return bScore - aScore;
+                        return a.joinedAt - b.joinedAt;
+                    })
+                    .slice(0, MEDIA_STAGE_LIMIT);
+
+                const stageSet = new Set(stageParticipants.map((p) => p.id));
+
+                await Promise.all(stageParticipants.map(async (participant) => {
+                    await runtime.mesh?.connectPeer(participant.id, true);
+                }));
+
+                for (const peerId of runtime.mesh.getConnectedPeers()) {
+                    if (!stageSet.has(peerId)) {
+                        runtime.mesh.disconnectPeer(peerId);
+                    }
+                }
+            };
+
+            const buildParticipant = (participantId: string, record: ParticipantRecord): CollaborationParticipant => {
                 const permissions = get().permissions;
                 const currentHostId = get().hostId;
+                const currentHostAccountId = get().hostAccountId;
                 const localId = get().localUserId;
+                const explicitAccess =
+                    (currentHostId && participantId === currentHostId) ||
+                        (record.accountId && currentHostAccountId && record.accountId === currentHostAccountId)
+                        ? "host"
+                        : (permissions[participantId] ?? record.accessLevel ?? "view");
 
-                const participants: Record<string, CollaborationParticipant> = {};
-                const cursorsByDoc: Record<string, CollaborationParticipant[]> = {};
+                return ensureParticipant({
+                    ...record,
+                    accessLevel: explicitAccess,
+                }, participantId, participantId === localId);
+            };
 
-                for (const [participantId, record] of Object.entries(raw)) {
-                    const explicitAccess =
-                        currentHostId && participantId === currentHostId
-                            ? "host"
-                            : (permissions[participantId] ?? record.accessLevel ?? "view");
+            const upsertParticipant = (participantId: string, record: ParticipantRecord, notifyJoin: boolean) => {
+                if (!record) return;
+                const prev = runtime.participantCache[participantId];
+                const participant = buildParticipant(participantId, record);
+                runtime.participantCache[participantId] = participant;
+                runtime.participantRecordCache[participantId] = record;
 
-                    const participant = ensureParticipant({
-                        ...record,
-                        accessLevel: explicitAccess,
-                    }, participantId, participantId === localId);
+                const affectedDocs = new Set<string>();
+                const prevDocKey = prev?.activeDocKey ?? null;
+                const nextDocKey = participant.activeDocKey ?? null;
+                const prevCursorVersion = prev?.cursor?.updatedAt ?? 0;
+                const nextCursorVersion = participant.cursor?.updatedAt ?? 0;
 
-                    participants[participantId] = participant;
-                    if (participant.activeDocKey && participant.cursor && participantId !== localId) {
-                        if (!cursorsByDoc[participant.activeDocKey]) {
-                            cursorsByDoc[participant.activeDocKey] = [];
-                        }
-                        cursorsByDoc[participant.activeDocKey].push(participant);
+                if (prevDocKey && prev?.cursor && prevDocKey !== nextDocKey) {
+                    const map = runtime.cursorCacheByDoc[prevDocKey];
+                    if (map) {
+                        delete map[participantId];
                     }
+                    affectedDocs.add(prevDocKey);
                 }
 
-                set((prev) => {
-                    const localAccessLevel = computeAccessLevel(prev.hostId, prev.localUserId, prev.permissions);
-                    return {
-                        participants,
-                        remoteCursorsByDoc: cursorsByDoc,
-                        localAccessLevel,
-                    };
-                });
+                if (nextDocKey && participant.cursor && participantId !== get().localUserId) {
+                    if (!runtime.cursorCacheByDoc[nextDocKey]) {
+                        runtime.cursorCacheByDoc[nextDocKey] = {};
+                    }
+                    runtime.cursorCacheByDoc[nextDocKey][participantId] = participant;
+                    affectedDocs.add(nextDocKey);
+                } else if (prevDocKey && prev?.cursor && !participant.cursor) {
+                    const map = runtime.cursorCacheByDoc[prevDocKey];
+                    if (map) {
+                        delete map[participantId];
+                    }
+                    affectedDocs.add(prevDocKey);
+                }
 
-                if (runtime.mesh) {
-                    const localIdValue = get().localUserId;
-                    const stageParticipants = Object.values(participants)
-                        .filter((p) => p.id !== localIdValue)
-                        .sort((a, b) => {
-                            const aScore = Number(a.screenEnabled) * 4 + Number(a.cameraEnabled) * 3 + Number(a.micEnabled) * 2;
-                            const bScore = Number(b.screenEnabled) * 4 + Number(b.cameraEnabled) * 3 + Number(b.micEnabled) * 2;
-                            if (aScore !== bScore) return bScore - aScore;
-                            return a.joinedAt - b.joinedAt;
-                        })
-                        .slice(0, MEDIA_STAGE_LIMIT);
+                if (prevDocKey === nextDocKey && prevCursorVersion !== nextCursorVersion && prevDocKey) {
+                    if (!runtime.cursorCacheByDoc[prevDocKey]) {
+                        runtime.cursorCacheByDoc[prevDocKey] = {};
+                    }
+                    if (participant.cursor && participantId !== get().localUserId) {
+                        runtime.cursorCacheByDoc[prevDocKey][participantId] = participant;
+                    } else {
+                        delete runtime.cursorCacheByDoc[prevDocKey][participantId];
+                    }
+                    affectedDocs.add(prevDocKey);
+                }
 
-                    const stageSet = new Set(stageParticipants.map((p) => p.id));
+                const mediaChanged =
+                    !prev ||
+                    prev.micEnabled !== participant.micEnabled ||
+                    prev.cameraEnabled !== participant.cameraEnabled ||
+                    prev.screenEnabled !== participant.screenEnabled;
 
-                    await Promise.all(stageParticipants.map(async (participant) => {
-                        await runtime.mesh?.connectPeer(participant.id, true);
+                const identityChanged =
+                    !prev ||
+                    prev.name !== participant.name ||
+                    prev.avatar !== participant.avatar ||
+                    prev.colorIndex !== participant.colorIndex ||
+                    prev.accessLevel !== participant.accessLevel ||
+                    prev.activeDocKey !== participant.activeDocKey;
+
+                if (identityChanged || mediaChanged) {
+                    set((prevState) => ({
+                        participants: {
+                            ...prevState.participants,
+                            [participantId]: participant,
+                        },
                     }));
+                }
 
-                    for (const peerId of runtime.mesh.getConnectedPeers()) {
-                        if (!stageSet.has(peerId)) {
-                            runtime.mesh.disconnectPeer(peerId);
-                        }
+                if (affectedDocs.size > 0) {
+                    updateRemoteCursors(affectedDocs);
+                }
+
+                if (mediaChanged) {
+                    void updateMediaStage();
+                }
+
+                if (notifyJoin && runtime.participantsReady && participantId !== get().localUserId) {
+                    enqueueJoinToast(participant.name);
+                }
+            };
+
+            const removeParticipant = (participantId: string) => {
+                const prev = runtime.participantCache[participantId];
+                if (!prev) return;
+                delete runtime.participantCache[participantId];
+                delete runtime.participantRecordCache[participantId];
+                const affectedDocs = new Set<string>();
+                if (prev.activeDocKey && prev.cursor) {
+                    const map = runtime.cursorCacheByDoc[prev.activeDocKey];
+                    if (map) {
+                        delete map[participantId];
+                    }
+                    affectedDocs.add(prev.activeDocKey);
+                }
+                set((prevState) => {
+                    const nextParticipants = { ...prevState.participants };
+                    delete nextParticipants[participantId];
+                    return { participants: nextParticipants };
+                });
+                if (affectedDocs.size > 0) {
+                    updateRemoteCursors(affectedDocs);
+                }
+                runtime.mesh?.disconnectPeer(participantId);
+                void updateMediaStage();
+            };
+
+            const initialParticipantsSnapshot = await dbModule.get(participantsRef);
+            const initialRaw = (initialParticipantsSnapshot.val() ?? {}) as Record<string, ParticipantRecord>;
+            runtime.participantCache = {};
+            runtime.participantRecordCache = {};
+            runtime.cursorCacheByDoc = {};
+
+            for (const [participantId, record] of Object.entries(initialRaw)) {
+                if (!record) continue;
+                const participant = buildParticipant(participantId, record);
+                runtime.participantCache[participantId] = participant;
+                runtime.participantRecordCache[participantId] = record;
+                if (participant.activeDocKey && participant.cursor && participantId !== get().localUserId) {
+                    if (!runtime.cursorCacheByDoc[participant.activeDocKey]) {
+                        runtime.cursorCacheByDoc[participant.activeDocKey] = {};
+                    }
+                    runtime.cursorCacheByDoc[participant.activeDocKey][participantId] = participant;
+                }
+            }
+
+            const initialCursors: Record<string, CollaborationParticipant[]> = {};
+            for (const [docKey, map] of Object.entries(runtime.cursorCacheByDoc)) {
+                initialCursors[docKey] = Object.values(map);
+            }
+
+            set((prev) => ({
+                participants: { ...runtime.participantCache },
+                remoteCursorsByDoc: initialCursors,
+                localAccessLevel: computeAccessLevel(
+                    prev.hostId,
+                    prev.hostAccountId,
+                    prev.localUserId,
+                    runtime.localAccountId,
+                    prev.permissions
+                ),
+            }));
+
+            runtime.seenParticipantIds = new Set(Object.keys(initialRaw));
+            runtime.participantsReady = true;
+            void updateMediaStage();
+
+            const participantsAddedUnsub = dbModule.onChildAdded(participantsRef, (snapshot) => {
+                const participantId = snapshot.key;
+                if (!participantId) return;
+                if (runtime.participantCache[participantId]) return;
+                const record = snapshot.val() as ParticipantRecord | null;
+                if (!record) return;
+                upsertParticipant(participantId, record, true);
+                runtime.seenParticipantIds.add(participantId);
+            });
+
+            const participantsChangedUnsub = dbModule.onChildChanged(participantsRef, (snapshot) => {
+                const participantId = snapshot.key;
+                if (!participantId) return;
+                const record = snapshot.val() as ParticipantRecord | null;
+                if (!record) return;
+                const prevRecord = runtime.participantRecordCache[participantId];
+                const onlyLastSeenChanged =
+                    prevRecord &&
+                    Object.keys(record).length === Object.keys(prevRecord).length &&
+                    Object.entries(record).every(([key, value]) => {
+                        if (key === "lastSeen") return true;
+                        return (prevRecord as Record<string, unknown>)[key] === value;
+                    });
+                if (onlyLastSeenChanged) {
+                    runtime.participantRecordCache[participantId] = record;
+                    return;
+                }
+                upsertParticipant(participantId, record, false);
+            });
+
+            const participantsRemovedUnsub = dbModule.onChildRemoved(participantsRef, (snapshot) => {
+                const participantId = snapshot.key;
+                if (!participantId) return;
+                removeParticipant(participantId);
+                runtime.seenParticipantIds.delete(participantId);
+            });
+
+            const refreshParticipantAccessLevels = (
+                nextPermissions: Record<string, CollaborationAccessLevel>,
+                nextHostId: string | null,
+                nextHostAccountId: string | null
+            ) => {
+                let changed = false;
+                const updatedParticipants: Record<string, CollaborationParticipant> = { ...runtime.participantCache };
+                for (const [participantId, participant] of Object.entries(runtime.participantCache)) {
+                    const record = runtime.participantRecordCache[participantId];
+                    if (!record) continue;
+                    const explicitAccess =
+                        (nextHostId && participantId === nextHostId) ||
+                            (record.accountId && nextHostAccountId && record.accountId === nextHostAccountId)
+                            ? "host"
+                            : (nextPermissions[participantId] ?? record.accessLevel ?? "view");
+                    if (participant.accessLevel !== explicitAccess) {
+                        const nextParticipant = {
+                            ...participant,
+                            accessLevel: explicitAccess,
+                        };
+                        updatedParticipants[participantId] = nextParticipant;
+                        runtime.participantCache[participantId] = nextParticipant;
+                        changed = true;
                     }
                 }
-            });
+                if (changed) {
+                    set({ participants: updatedParticipants });
+                }
+            };
 
             const permissionsUnsub = dbModule.onValue(permissionsRef, (snapshot) => {
                 const raw = (snapshot.val() ?? {}) as Record<string, PermissionRecord>;
@@ -741,18 +1257,37 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => ({
                     nextPermissions[userId] = level;
                 }
 
+                const currentHostId = get().hostId;
+                const currentHostAccountId = get().hostAccountId;
+                refreshParticipantAccessLevels(nextPermissions, currentHostId, currentHostAccountId);
+
                 set((prev) => ({
                     permissions: nextPermissions,
-                    localAccessLevel: computeAccessLevel(prev.hostId, prev.localUserId, nextPermissions),
+                    localAccessLevel: computeAccessLevel(
+                        prev.hostId,
+                        prev.hostAccountId,
+                        prev.localUserId,
+                        runtime.localAccountId,
+                        nextPermissions
+                    ),
                 }));
             });
 
             const metaUnsub = dbModule.onValue(roomMetaRef, (snapshot) => {
-                const meta = snapshot.val() as { hostId?: string } | null;
+                const meta = snapshot.val() as { hostId?: string; hostAccountId?: string } | null;
                 const nextHostId = meta?.hostId ?? null;
+                const nextHostAccountId = meta?.hostAccountId ?? null;
+                refreshParticipantAccessLevels(get().permissions, nextHostId, nextHostAccountId);
                 set((prev) => ({
                     hostId: nextHostId,
-                    localAccessLevel: computeAccessLevel(nextHostId, prev.localUserId, prev.permissions),
+                    hostAccountId: nextHostAccountId,
+                    localAccessLevel: computeAccessLevel(
+                        nextHostId,
+                        nextHostAccountId,
+                        prev.localUserId,
+                        runtime.localAccountId,
+                        prev.permissions
+                    ),
                 }));
             });
 
@@ -826,28 +1361,156 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => ({
                     }))
                     .sort((a, b) => a.createdAt - b.createdAt)
                     .slice(-MAX_CHAT_MESSAGES);
+                const incoming = messages.filter((msg) => !runtime.seenChatIds.has(msg.id));
+                runtime.seenChatIds = new Set(messages.map((msg) => msg.id));
                 set({ chatMessages: messages });
-            });
 
-            const workspaceUnsub = dbModule.onValue(workspaceRef, (snapshot) => {
-                const data = snapshot.val() as WorkspaceSnapshot | null;
-                if (!data || !data.nodes) return;
-
-                if (data.updatedBy === runtime.localUserId) {
-                    runtime.lastWorkspaceFingerprint = data.fingerprint;
+                if (!runtime.chatReady) {
+                    runtime.chatReady = true;
                     return;
                 }
 
-                const currentConnectionId = get().connectionContextId;
-                if (!currentConnectionId) return;
+                const remoteIncoming = incoming.filter((msg) => msg.userId !== runtime.localUserId);
+                if (remoteIncoming.length === 0) return;
+                playNotificationSound(0.2);
+                for (const msg of remoteIncoming) {
+                    const preview = msg.text.length > 140 ? `${msg.text.slice(0, 137)}…` : msg.text;
+                    toast(`${msg.userName}: ${preview}`, { duration: 4500 });
+                }
+            });
 
-                runtime.suppressWorkspaceUploadUntil = Date.now() + 1400;
-                runtime.lastWorkspaceFingerprint = data.fingerprint;
+            const initialWorkspaceNodesSnapshot = await dbModule.get(workspaceNodesRef);
+            const initialWorkspaceStateSnapshot = await dbModule.get(workspaceStateRef);
+            const initialNodesRaw = (initialWorkspaceNodesSnapshot.val() ?? {}) as Record<string, WorkspaceNodeRecord>;
+            const initialStateRaw = initialWorkspaceStateSnapshot.val() as WorkspaceStateRecord | null;
 
-                useIdeFsStore.getState().replaceConnectionWorkspace(currentConnectionId, {
-                    nodes: data.nodes,
-                    activeFileId: data.activeFileId,
-                    expandedIds: data.expandedIds,
+            const currentConnectionId = get().connectionContextId;
+            if (currentConnectionId) {
+                if (Object.keys(initialNodesRaw).length > 0) {
+                    const nodes: Record<string, FsNode> = {};
+                    for (const record of Object.values(initialNodesRaw)) {
+                        if (!record?.id) continue;
+                        nodes[record.id] = {
+                            id: record.id,
+                            connectionId: currentConnectionId,
+                            name: record.name ?? "untitled",
+                            type: record.type ?? "file",
+                            content: record.content ?? "",
+                            parentId: record.parentId ?? null,
+                            order: Number.isFinite(record.order) ? record.order : 0,
+                            createdAt: Number.isFinite(record.createdAt) ? record.createdAt : Date.now(),
+                            updatedAt: Number.isFinite(record.updatedAt) ? record.updatedAt : Date.now(),
+                        };
+                    }
+                    runtime.suppressWorkspaceUploadUntil = Date.now() + 900;
+                    useIdeFsStore.getState().replaceConnectionWorkspace(currentConnectionId, {
+                        nodes,
+                        activeFileId: initialStateRaw?.activeFileId ?? null,
+                        expandedIds: initialStateRaw?.expandedIds ?? [],
+                    });
+                    runtime.lastWorkspaceFingerprint = useIdeFsStore.getState().getConnectionSyncFingerprint(currentConnectionId);
+                    runtime.lastWorkspaceStateFingerprint = computeWorkspaceStateFingerprint(
+                        initialStateRaw?.activeFileId ?? null,
+                        initialStateRaw?.expandedIds ?? []
+                    );
+                } else {
+                    const legacySnapshot = await dbModule.get(workspaceRef);
+                    const legacy = legacySnapshot.val() as WorkspaceSnapshot | null;
+                    if (legacy?.nodes) {
+                        runtime.suppressWorkspaceUploadUntil = Date.now() + 900;
+                        useIdeFsStore.getState().replaceConnectionWorkspace(currentConnectionId, {
+                            nodes: legacy.nodes,
+                            activeFileId: legacy.activeFileId,
+                            expandedIds: legacy.expandedIds,
+                        });
+                        runtime.lastWorkspaceFingerprint = legacy.fingerprint;
+                        runtime.lastWorkspaceStateFingerprint = computeWorkspaceStateFingerprint(
+                            legacy.activeFileId,
+                            legacy.expandedIds
+                        );
+                    }
+                    if (canEdit(get().localAccessLevel)) {
+                        await publishWorkspaceSnapshot(currentConnectionId, true);
+                    }
+                }
+            }
+
+            const workspaceNodesAddedUnsub = dbModule.onChildAdded(workspaceNodesRef, (snapshot) => {
+                const record = snapshot.val() as WorkspaceNodeRecord | null;
+                if (!record || !record.id) return;
+                if (record.updatedBy === runtime.localUserId) return;
+                const connectionId = get().connectionContextId;
+                if (!connectionId) return;
+                runtime.workspaceMutedNodes.set(record.id, record.updatedAt);
+                setTimeout(() => runtime.workspaceMutedNodes.delete(record.id), 5000);
+                useIdeFsStore.getState().upsertNode(connectionId, {
+                    id: record.id,
+                    connectionId,
+                    name: record.name ?? "untitled",
+                    type: record.type ?? "file",
+                    content: record.content ?? "",
+                    parentId: record.parentId ?? null,
+                    order: Number.isFinite(record.order) ? record.order : 0,
+                    createdAt: Number.isFinite(record.createdAt) ? record.createdAt : Date.now(),
+                    updatedAt: Number.isFinite(record.updatedAt) ? record.updatedAt : Date.now(),
+                });
+            });
+
+            const workspaceNodesChangedUnsub = dbModule.onChildChanged(workspaceNodesRef, (snapshot) => {
+                const record = snapshot.val() as WorkspaceNodeRecord | null;
+                if (!record || !record.id) return;
+                if (record.updatedBy === runtime.localUserId) return;
+                const connectionId = get().connectionContextId;
+                if (!connectionId) return;
+                runtime.workspaceMutedNodes.set(record.id, record.updatedAt);
+                setTimeout(() => runtime.workspaceMutedNodes.delete(record.id), 5000);
+                useIdeFsStore.getState().upsertNode(connectionId, {
+                    id: record.id,
+                    connectionId,
+                    name: record.name ?? "untitled",
+                    type: record.type ?? "file",
+                    content: record.content ?? "",
+                    parentId: record.parentId ?? null,
+                    order: Number.isFinite(record.order) ? record.order : 0,
+                    createdAt: Number.isFinite(record.createdAt) ? record.createdAt : Date.now(),
+                    updatedAt: Number.isFinite(record.updatedAt) ? record.updatedAt : Date.now(),
+                });
+            });
+
+            const workspaceNodesRemovedUnsub = dbModule.onChildRemoved(workspaceNodesRef, (snapshot) => {
+                const nodeId = snapshot.key;
+                if (!nodeId) return;
+                const mutedAt = runtime.workspaceMutedNodes.get(nodeId);
+                if (mutedAt === -1) {
+                    runtime.workspaceMutedNodes.delete(nodeId);
+                    return;
+                }
+                const connectionId = get().connectionContextId;
+                if (!connectionId) return;
+                runtime.workspaceMutedNodes.set(nodeId, -2);
+                useIdeFsStore.getState().removeNode(connectionId, nodeId);
+            });
+
+            const workspaceStateUnsub = dbModule.onValue(workspaceStateRef, (snapshot) => {
+                const data = snapshot.val() as WorkspaceStateRecord | null;
+                if (!data) return;
+                if (data.updatedBy === runtime.localUserId) {
+                    runtime.lastWorkspaceStateFingerprint = computeWorkspaceStateFingerprint(
+                        data.activeFileId,
+                        data.expandedIds ?? []
+                    );
+                    return;
+                }
+                const connectionId = get().connectionContextId;
+                if (!connectionId) return;
+                runtime.suppressWorkspaceUploadUntil = Date.now() + 800;
+                runtime.lastWorkspaceStateFingerprint = computeWorkspaceStateFingerprint(
+                    data.activeFileId,
+                    data.expandedIds ?? []
+                );
+                useIdeFsStore.getState().applyWorkspaceState(connectionId, {
+                    activeFileId: data.activeFileId ?? null,
+                    expandedIds: data.expandedIds ?? [],
                 });
             });
 
@@ -862,18 +1525,25 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => ({
             });
 
             runtime.unsubs.push(
-                participantsUnsub,
+                participantsAddedUnsub,
+                participantsChangedUnsub,
+                participantsRemovedUnsub,
                 permissionsUnsub,
                 metaUnsub,
                 docsUnsub,
                 queryResultsUnsub,
                 chatUnsub,
-                workspaceUnsub,
+                workspaceNodesAddedUnsub,
+                workspaceNodesChangedUnsub,
+                workspaceNodesRemovedUnsub,
+                workspaceStateUnsub,
                 signalsUnsub,
                 ideFsUnsub
             );
 
-            await publishWorkspaceSnapshot(connectionId);
+            if (canEdit(get().localAccessLevel)) {
+                await publishWorkspaceSnapshot(connectionId);
+            }
             toast.success("Collaboration session connected");
             debug(`joined room ${roomId}`);
         } catch (error) {
@@ -912,6 +1582,7 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => ({
             shareUrl: null,
             error: null,
             hostId: null,
+            hostAccountId: null,
             participants: {},
             permissions: {},
             chatMessages: [],
@@ -979,6 +1650,8 @@ export const useCollaborationStore = create<CollaborationStore>((set, get) => ({
             ...message,
             id: nextRef.key,
         });
+        playNotificationSound(0.18);
+        toast.success("Message sent", { duration: 1800 });
     },
 
     setParticipantAccess: async (userId, accessLevel) => {

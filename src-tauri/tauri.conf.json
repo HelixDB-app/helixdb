@@ -44,10 +44,26 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
+    "windows": {
+      "wix": {
+        "language": "en-US",
+        "fragmentPaths": [],
+        "componentGroupRefs": [],
+        "componentRefs": [],
+        "featureGroupRefs": [],
+        "uiRef": null
+      },
+      "nsis": {
+        "displayLanguageSelector": true
+      },
+      "certificateThumbprint": null,
+      "digestAlgorithm": "sha256",
+ "timestampUrl": "http://timestamp.digicert.com"
+    },
     "macOS": {
       "entitlements": "./Entitlements.plist",
       "minimumSystemVersion": "12.0",
-      "bundleVersion": "26",
+      "bundleVersion": "28",
       "files": {
         "embedded.provisionprofile": "../apple/pgstudio.provisionprofile"
       }

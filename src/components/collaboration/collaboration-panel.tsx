@@ -421,6 +421,12 @@ export function CollaborationPanel({ connectionId, className }: CollaborationPan
         }),
         [participants, localUserId]
     );
+    const MAX_PARTICIPANTS_RENDER = 180;
+    const visibleParticipants = useMemo(
+        () => participantList.slice(0, MAX_PARTICIPANTS_RENDER),
+        [participantList]
+    );
+    const hiddenParticipantCount = participantList.length - visibleParticipants.length;
 
     const { canEdit, canDelete } = getCollaborationPermissions(localAccessLevel);
 
@@ -755,7 +761,7 @@ export function CollaborationPanel({ connectionId, className }: CollaborationPan
                             </div>
                             <ScrollArea className="h-[210px] pr-1">
                                 <div className="space-y-1.5">
-                                    {participantList.map((participant) => (
+                                    {visibleParticipants.map((participant) => (
                                         <ParticipantRow
                                             key={participant.id}
                                             participant={participant}
@@ -766,6 +772,11 @@ export function CollaborationPanel({ connectionId, className }: CollaborationPan
                                             }}
                                         />
                                     ))}
+                                    {hiddenParticipantCount > 0 && (
+                                        <div className="px-1 text-[10px] text-muted-foreground/70">
+                                            +{hiddenParticipantCount} more participants
+                                        </div>
+                                    )}
                                 </div>
                             </ScrollArea>
                         </div>

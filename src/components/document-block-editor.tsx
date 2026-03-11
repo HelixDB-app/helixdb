@@ -130,6 +130,11 @@ function countWords(text: string): number {
     return trimmed.split(/\s+/).length;
 }
 
+/**
+ * Rich document editor (Novel/TipTap) with autosave, slash commands, and optional collaboration.
+ * Type "/" in the editor to open the command palette (headings, lists, images, etc.).
+ * Slash menu is hidden in readOnly mode.
+ */
 export function DocumentBlockEditor({
     value,
     onChange,
@@ -146,12 +151,13 @@ export function DocumentBlockEditor({
     const suppressSaveRef = useRef(false);
     const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
     const lastSerializedRef = useRef(initialParsedRef.current.normalizedContent);
+    const imageUploadRef = useRef<ReturnType<typeof createImageUpload> | null>(null);
 
     const [saveState, setSaveState] = useState<SaveState>("loading");
     const [saveError, setSaveError] = useState<string | null>(null);
     const [parseWarning, setParseWarning] = useState<string | null>(initialParsedRef.current.parseError);
     const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
-    const [, forceEditorRerender] = useState(0);
+    const [, forceEditorRerender] = useState(0); // Used to refresh word count and bubble menu active state.
 
     const saveLabel = useMemo(() => formatSaveStateLabel(saveState, lastSavedAt), [saveState, lastSavedAt]);
 
@@ -174,6 +180,7 @@ export function DocumentBlockEditor({
             }),
         []
     );
+    imageUploadRef.current = imageUpload;
 
     const suggestionItems = useMemo(
         () =>
@@ -276,7 +283,7 @@ export function DocumentBlockEditor({
                     command: ({ editor, range }) => {
                         editor.chain().focus().deleteRange(range).run();
                         pickImageFile((file) => {
-                            imageUpload(file, editor.view, editor.state.selection.from);
+                            imageUploadRef.current?.(file, editor.view, editor.state.selection.from);
                         });
                     },
                 },
@@ -313,14 +320,16 @@ export function DocumentBlockEditor({
                     },
                 },
             ]),
-        [imageUpload]
+        []
     );
 
     const extensions = useMemo(() => {
+        // Slash-command extension: trigger on "/" and render items via Novel's helper.
         const slashCommand = Command.configure({
             suggestion: {
+                char: "/",
                 items: () => suggestionItems,
-                ...renderItems(),
+                render: renderItems,
             },
         });
 
@@ -371,7 +380,7 @@ export function DocumentBlockEditor({
             imageExtension,
             slashCommand,
         ];
-    }, [placeholder, suggestionItems]);
+    }, [placeholder]);
 
     const flushSave = useCallback(
         (editorArg?: EditorInstance | null) => {
@@ -564,6 +573,7 @@ export function DocumentBlockEditor({
                             attributes: {
                                 class: "helix-doc-editor min-h-[420px] w-full text-foreground focus:outline-none",
                             },
+                            // Delegate arrow/enter to slash-command menu when it is open (Novel expects this).
                             handleDOMEvents: {
                                 keydown: (_view, event) => handleCommandNavigation(event as KeyboardEvent) === true,
                             },
@@ -572,7 +582,10 @@ export function DocumentBlockEditor({
                         }}
                     >
                         {!readOnly && (
-                            <EditorCommand className="z-50 h-auto max-h-[330px] w-80 overflow-y-auto rounded-xl border border-border/40 bg-popover/95 p-1.5 shadow-2xl backdrop-blur-md transition-all animate-in fade-in slide-in-from-top-1">
+                            <EditorCommand
+                                className="z-[100] h-auto max-h-[330px] w-80 overflow-y-auto rounded-xl border border-border/40 bg-popover p-1.5 shadow-2xl backdrop-blur-md transition-all animate-in fade-in slide-in-from-top-1"
+                                shouldFilter={true}
+                            >
                                 <EditorCommandEmpty className="px-2 py-4 flex flex-col items-center justify-center text-sm text-muted-foreground">
                                     <AlertCircle className="mb-2 h-5 w-5 text-muted-foreground/50" />
                                     No results found
@@ -581,18 +594,19 @@ export function DocumentBlockEditor({
                                     {suggestionItems.map((item) => (
                                         <EditorCommandItem
                                             key={item.title}
-                                            value={`${item.title} ${item.searchTerms?.join(" ")}`}
-                                            className="flex w-full items-center space-x-3 rounded-lg px-2 py-1.5 text-left text-sm cursor-pointer outline-none transition-colors hover:bg-accent/80 hover:text-accent-foreground aria-selected:bg-accent aria-selected:text-accent-foreground group"
+                                            value={item.title}
+                                            keywords={item.searchTerms}
+                                            className="flex w-full items-center gap-3 rounded-lg px-2 py-1.5 text-left text-sm cursor-pointer outline-none transition-colors hover:bg-accent/80 hover:text-accent-foreground aria-selected:bg-accent aria-selected:text-accent-foreground group"
                                             onCommand={({ editor, range }) => {
                                                 item.command?.({ editor, range });
                                             }}
                                         >
-                                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border/50 bg-background/50 shadow-sm transition-colors group-hover:bg-background group-aria-selected:bg-background text-muted-foreground group-hover:text-foreground group-aria-selected:text-foreground">
+                                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border/50 bg-background/50 text-muted-foreground group-hover:text-foreground group-aria-selected:text-foreground transition-colors">
                                                 {item.icon}
                                             </div>
-                                            <div className="flex flex-col gap-0.5 mt-0.5">
+                                            <div className="flex min-w-0 flex-col gap-0.5">
                                                 <p className="font-medium text-[13px] leading-tight text-foreground/90">{item.title}</p>
-                                                <p className="text-[11px] leading-tight text-muted-foreground">{item.description}</p>
+                                                <p className="text-[11px] leading-tight text-muted-foreground truncate">{item.description}</p>
                                             </div>
                                         </EditorCommandItem>
                                     ))}

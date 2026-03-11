@@ -13,6 +13,7 @@ mod query_history_storage;
 mod schema_designer_storage;
 mod sql_lint;
 mod trial;
+mod updates;
 
 use commands::AppState;
 use git::GitState;
@@ -262,6 +263,8 @@ pub fn run() {
             git::write_workspace_file,
             git::delete_workspace_file,
             git::sync_ide_files_to_workspace,
+            // Update commands
+            updates::app_store_check_update,
             // Git storage commands
             git_storage::git_storage_list_workspaces,
             git_storage::git_storage_save_workspace,

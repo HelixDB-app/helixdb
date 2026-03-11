@@ -1309,6 +1309,34 @@ pub async fn get_table_data_geojson(
 // Query execution
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Strip leading whitespace, line comments (-- ...) and block comments (/* ... */).
+/// Returns the slice starting at the first significant token, or empty if only comments.
+fn strip_leading_comments_and_whitespace(mut sql: &str) -> &str {
+    loop {
+        sql = sql.trim_start();
+        if sql.is_empty() {
+            return sql;
+        }
+        if sql.starts_with("--") {
+            if let Some(pos) = sql.find('\n') {
+                sql = &sql[pos + 1..];
+            } else {
+                return "";
+            }
+            continue;
+        }
+        if sql.starts_with("/*") {
+            if let Some(pos) = sql.find("*/") {
+                sql = sql.get(pos + 2..).unwrap_or("");
+            } else {
+                return "";
+            }
+            continue;
+        }
+        return sql;
+    }
+}
+
 /// Returns the maximum parameter index in SQL (e.g. $1, $2, $5 => 5). 0 if none.
 fn max_parameter_index(sql: &str) -> usize {
     let mut max = 0usize;
@@ -1499,7 +1527,8 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
         } else {
             &statements[0]
         };
-        let upper = stmt.to_uppercase();
+        let first_token = strip_leading_comments_and_whitespace(stmt);
+        let upper = first_token.to_uppercase();
         let is_select = upper.starts_with("SELECT")
             || upper.starts_with("WITH")
             || upper.starts_with("TABLE")
@@ -1614,7 +1643,8 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
         if stmt_trim.is_empty() {
             continue;
         }
-        let upper = stmt_trim.to_uppercase();
+        let first_token = strip_leading_comments_and_whitespace(stmt_trim);
+        let upper = first_token.to_uppercase();
         let read_only = upper.starts_with("SELECT")
             || upper.starts_with("WITH")
             || upper.starts_with("TABLE")
