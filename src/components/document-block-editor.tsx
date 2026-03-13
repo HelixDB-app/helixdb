@@ -53,6 +53,7 @@ import {
     Minus,
     Quote,
     Save,
+    Sparkles,
     Strikethrough,
     Underline,
     Youtube as YoutubeIcon,
@@ -61,6 +62,9 @@ import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { getCollaboratorColor } from "@/lib/collaboration/palette";
 import { parseDocContent, serializeDocData } from "@/lib/doc-editor";
+import { Button } from "@/components/ui/button";
+import { DocAiAssistDialog } from "@/components/doc-ai-assist-dialog";
+import type { DocAssistContextInput } from "@/lib/ai-doc-assist";
 
 const AUTOSAVE_DEBOUNCE_MS = 450;
 const MAX_UPLOAD_SIZE_BYTES = 10 * 1024 * 1024;
@@ -81,6 +85,17 @@ export interface DocumentBlockEditorProps {
     className?: string;
     collaborators?: DocumentCollaborator[];
     placeholder?: string;
+    aiAssist?: DocumentAiAssistConfig;
+}
+
+export interface DocumentAiAssistConfig {
+    getContext: (doc: { content: string; title?: string | null }) => Promise<DocAssistContextInput>;
+    docTitle?: string | null;
+    stats?: {
+        tableCount: number;
+        fileCount: number;
+        docCount: number;
+    };
 }
 
 function formatSaveStateLabel(state: SaveState, lastSavedAt: number | null): string {
@@ -142,6 +157,7 @@ export function DocumentBlockEditor({
     className,
     collaborators = [],
     placeholder = "Write your notes, plan, or docs here...",
+    aiAssist,
 }: DocumentBlockEditorProps) {
     const initialParsedRef = useRef(parseDocContent(value));
     const editorRef = useRef<EditorInstance | null>(null);
@@ -157,6 +173,7 @@ export function DocumentBlockEditor({
     const [saveError, setSaveError] = useState<string | null>(null);
     const [parseWarning, setParseWarning] = useState<string | null>(initialParsedRef.current.parseError);
     const [lastSavedAt, setLastSavedAt] = useState<number | null>(null);
+    const [aiAssistOpen, setAiAssistOpen] = useState(false);
     const [, forceEditorRerender] = useState(0); // Used to refresh word count and bubble menu active state.
 
     const saveLabel = useMemo(() => formatSaveStateLabel(saveState, lastSavedAt), [saveState, lastSavedAt]);
@@ -514,23 +531,36 @@ export function DocumentBlockEditor({
                         </span>
                     )}
                 </div>
-                {collaborators.length > 0 && (
-                    <div className="flex items-center gap-1.5">
-                        {collaborators.slice(0, 4).map((participant) => (
-                            <div
-                                key={participant.id}
-                                title={participant.name}
-                                className="flex h-6 w-6 items-center justify-center rounded-full border text-[10px] font-semibold text-foreground"
-                                style={{
-                                    borderColor: getCollaboratorColor(participant.colorIndex),
-                                    backgroundColor: `${getCollaboratorColor(participant.colorIndex)}22`,
-                                }}
-                            >
-                                {participant.initials.slice(0, 2)}
-                            </div>
-                        ))}
-                    </div>
-                )}
+                <div className="flex items-center gap-2">
+                    {aiAssist && !readOnly && (
+                        <Button
+                            variant="outline"
+                            size="xs"
+                            className="text-[10px] h-6 px-2 text-muted-foreground hover:text-foreground"
+                            onClick={() => setAiAssistOpen(true)}
+                        >
+                            <Sparkles className="h-3 w-3 text-emerald-500" />
+                            AI Assist
+                        </Button>
+                    )}
+                    {collaborators.length > 0 && (
+                        <div className="flex items-center gap-1.5">
+                            {collaborators.slice(0, 4).map((participant) => (
+                                <div
+                                    key={participant.id}
+                                    title={participant.name}
+                                    className="flex h-6 w-6 items-center justify-center rounded-full border text-[10px] font-semibold text-foreground"
+                                    style={{
+                                        borderColor: getCollaboratorColor(participant.colorIndex),
+                                        backgroundColor: `${getCollaboratorColor(participant.colorIndex)}22`,
+                                    }}
+                                >
+                                    {participant.initials.slice(0, 2)}
+                                </div>
+                            ))}
+                        </div>
+                    )}
+                </div>
             </div>
 
             <div className="relative flex-1 overflow-auto">
@@ -718,6 +748,18 @@ export function DocumentBlockEditor({
                 <div className="border-t border-border/40 bg-red-500/10 px-3 py-1.5 text-[11px] text-red-300 dark:text-red-200">
                     {saveError ?? parseWarning}
                 </div>
+            )}
+
+            {aiAssist && !readOnly && (
+                <DocAiAssistDialog
+                    open={aiAssistOpen}
+                    onOpenChange={setAiAssistOpen}
+                    currentValue={value}
+                    docTitle={aiAssist.docTitle}
+                    getContext={aiAssist.getContext}
+                    contextStats={aiAssist.stats}
+                    onApply={onChange}
+                />
             )}
 
         </div>

@@ -13,7 +13,7 @@ import { useCollaborationStore, getCollaborationPermissions } from "@/stores/col
 import { useShallow } from "zustand/react/shallow";
 import { formatCellValue } from "@/lib/types";
 import type { QueryResult } from "@/lib/types";
-import { dbGetColumns, dbExplainQuery, dbExecuteQuery } from "@/lib/tauri";
+import { dbGetColumns, dbExplainQuery, dbExecuteQuery, dbGetDocumentationContext } from "@/lib/tauri";
 import type { SandboxExecuteResult } from "@/lib/tauri";
 import { NotesPanel } from "@/components/notes-panel";
 import { QueryPlanViewer } from "@/components/query-plan-viewer";
@@ -531,6 +531,50 @@ export function QueryEditor() {
         return ["Tables:", ...tableLines, "", "Functions:", ...(funcLines.length ? funcLines : ["  (none listed)"])].join("\n");
     }, [tables, columnCache, selectedSchema, schemaFunctions]);
 
+    const docAiAssistStats = useMemo(() => {
+        if (!connectionId) return { tableCount: 0, fileCount: 0, docCount: 0 };
+        const files = Object.values(ideNodes).filter(
+            (node) => node.connectionId === connectionId && node.type === "file"
+        );
+        const docCount = files.filter((node) => {
+            const lower = node.name.toLowerCase();
+            return isDocFileName(node.name) || lower.endsWith(".md") || lower.endsWith(".markdown");
+        }).length;
+        return {
+            tableCount: tables.length,
+            fileCount: files.length,
+            docCount,
+        };
+    }, [connectionId, ideNodes, tables.length]);
+
+    const getDocAiAssistContext = useCallback(
+        async ({ content, title }: { content: string; title?: string | null }) => {
+            const fileEntries = connectionId
+                ? useIdeFsStore.getState().getAllFileEntries(connectionId)
+                : [];
+            let schemaContext = null;
+            let schemaError: string | null = null;
+            if (connectionId) {
+                try {
+                    schemaContext = await dbGetDocumentationContext(connectionId, null);
+                } catch (err) {
+                    schemaError = String(err).replace(/^[a-z_]+:\\s*/i, "").trim() || "Failed to load schema context.";
+                }
+            }
+            return {
+                databaseName: databaseName ?? null,
+                schemaContext,
+                schemaError,
+                fileEntries,
+                activeDoc: {
+                    path: title ?? null,
+                    content,
+                },
+            };
+        },
+        [connectionId, databaseName]
+    );
+
     const savedFileSqlMap = useMemo(
         () => Object.fromEntries(queryFiles.map((file) => [file.id, file.sql])),
         [queryFiles]
@@ -549,11 +593,14 @@ export function QueryEditor() {
         return fileNameMap;
     }, [queryFiles, ideNodes]);
 
-    const getTabFileName = useCallback((tabId: string): string | null => {
-        const fileId = tabFileMapRef.current[tabId];
-        if (!fileId) return null;
-        return fileNameById[fileId] ?? null;
-    }, [fileNameById]);
+    const getTabFileName = useCallback(
+        (tabId: string): string | null => {
+            const fileId = tabFileMap[tabId];
+            if (fileId) return fileNameById[fileId] ?? null;
+            return tabsById.get(tabId)?.title ?? null;
+        },
+        [tabFileMap, fileNameById, tabsById]
+    );
 
     const isDocTab = useCallback((tabId: string): boolean => {
         return isDocFileName(getTabFileName(tabId));
@@ -1580,6 +1627,11 @@ export function QueryEditor() {
                         collaborators={docCollaborators}
                         readOnly={isCollaborationReadOnly}
                         className={options.className}
+                        aiAssist={{
+                            getContext: getDocAiAssistContext,
+                            docTitle: getTabFileName(tab.id),
+                            stats: docAiAssistStats,
+                        }}
                     />
                 );
             }
@@ -1608,6 +1660,8 @@ export function QueryEditor() {
             );
         },
         [
+            docAiAssistStats,
+            getDocAiAssistContext,
             getCollaboratorsForTab,
             handleCursorActivity,
             handleExecute,
@@ -1616,6 +1670,7 @@ export function QueryEditor() {
             handleManualReview,
             handleNextAction,
             handleSqlChange,
+            getTabFileName,
             isCollaborationReadOnly,
             isDocTab,
             schemaContext,
@@ -2258,6 +2313,9 @@ export function QueryEditor() {
                             <ResizableHandle withHandle className="shrink-0 min-h-2 bg-border/20 hover:bg-border/50 data-[resize-handle-active]:bg-emerald-500/40 transition-colors cursor-row-resize" />
 
                             {/* Results panel */}
+                            {!activeTabIsDoc && (
+
+                        
                             <ResizablePanel id="qe-results" defaultSize="35%" minSize="12%" maxSize="55%" className="flex flex-col min-h-0 overflow-hidden">
                                 <ResultsArea
                                     activeTab={activeTab}
@@ -2298,7 +2356,7 @@ export function QueryEditor() {
                                     connectionId={connectionId}
                                     liveResultMeta={activeTabId ? (liveResultMetaByTab[activeTabId] ?? null) : null}
                                 />
-                            </ResizablePanel>
+                            </ResizablePanel>    )}
                         </ResizablePanelGroup>
                     </>
                 ) : (
