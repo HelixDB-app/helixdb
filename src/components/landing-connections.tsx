@@ -337,24 +337,6 @@ export function LandingConnections() {
                                 </p>
                             </div>
 
-                            {/* Schema Designer link */}
-                            <a
-                                href="/schema-designer/"
-                                className="group flex items-center gap-3 rounded-xl border border-border/20 bg-card/30 p-4 transition-all hover:border-emerald-500/30 hover:bg-emerald-500/5 hover:shadow-sm"
-                            >
-                                <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-gradient-to-br from-emerald-600 to-cyan-600 text-white shadow-sm">
-                                    <Layers className="h-4 w-4" />
-                                </div>
-                                <div className="min-w-0 flex-1">
-                                    <p className="text-sm font-semibold text-foreground/90 group-hover:text-emerald-400 transition-colors">
-                                        Schema Designer
-                                    </p>
-                                    <p className="text-[10px] text-muted-foreground/40">
-                                        Design schemas with AI assistance
-                                    </p>
-                                </div>
-                                <ChevronRight className="h-3.5 w-3.5 text-muted-foreground/20 group-hover:text-emerald-500/50 transition-colors shrink-0" />
-                            </a>
                         </div>
 
                         {/* ── Right column: Saved connections ────────────── */}

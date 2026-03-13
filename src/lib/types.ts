@@ -951,56 +951,7 @@ export type ForeignKeyAction =
     | "SET NULL"
     | "SET DEFAULT";
 
-export interface SchemaDesignerColumn {
-    id: string;
-    name: string;
-    data_type: string;
-    nullable: boolean;
-    default_value: string | null;
-    is_primary_key: boolean;
-    foreign_key: ForeignKeyRef | null;
-    /** Column has UNIQUE constraint */
-    unique?: boolean;
-}
 
-export interface SchemaDesignerIndex {
-    id: string;
-    name: string;
-    columns: string[];
-    unique: boolean;
-    method: string;
-}
-
-export interface TablePosition {
-    x: number;
-    y: number;
-}
-
-export interface SchemaDesignerTable {
-    id: string;
-    name: string;
-    columns: SchemaDesignerColumn[];
-    indexes: SchemaDesignerIndex[];
-    position: TablePosition | null;
-}
-
-export interface SchemaSnapshot {
-    id: string;
-    label: string;
-    timestamp: string;
-    tables: SchemaDesignerTable[];
-}
-
-export interface SchemaProject {
-    id: string;
-    name: string;
-    app_type: string;
-    description: string;
-    tables: SchemaDesignerTable[];
-    version_history: SchemaSnapshot[];
-    created_at: string;
-    updated_at: string;
-}
 
 export interface AISchemaReport {
     performance_score: number;

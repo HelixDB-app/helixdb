@@ -15,8 +15,6 @@ export type ApiFeatureType =
     | "sql-review"
     | "seed-data"
     | "index-optimization"
-    | "schema-designer"
-    | "sql-to-schema"
     | "query-error"
     | "query-explain"
     | "git"

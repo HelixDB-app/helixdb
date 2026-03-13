@@ -1186,29 +1186,7 @@ export async function notesSearch(query: string): Promise<QueryNote[]> {
     return invoke<QueryNote[]>("notes_search", { query });
 }
 
-// ─── Schema Designer (persisted via Rust core engine) ─────────────────────
 
-import type { SchemaProject } from "./types";
-
-/** Load all schema designer projects from disk */
-export async function schemaDesignerLoadAll(): Promise<SchemaProject[]> {
-    return invoke<SchemaProject[]>("schema_designer_load_all");
-}
-
-/** Get a single schema designer project by ID */
-export async function schemaDesignerGetProject(id: string): Promise<SchemaProject | null> {
-    return invoke<SchemaProject | null>("schema_designer_get_project", { id });
-}
-
-/** Save or update a schema designer project. Returns the full updated list. */
-export async function schemaDesignerSaveProject(project: SchemaProject): Promise<SchemaProject[]> {
-    return invoke<SchemaProject[]>("schema_designer_save_project", { project });
-}
-
-/** Delete a schema designer project by ID. Returns the full updated list. */
-export async function schemaDesignerDeleteProject(id: string): Promise<SchemaProject[]> {
-    return invoke<SchemaProject[]>("schema_designer_delete_project", { id });
-}
 
 // ─── Authentication ────────────────────────────────────────────────────────
 
