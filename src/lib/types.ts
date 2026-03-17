@@ -259,6 +259,8 @@ export interface PgStatStatementsPage {
 export interface ResultColumn {
     name: string;
     data_type: string;
+    /** For enum columns, ordered list of allowed values. Enables dropdown in table editor. */
+    enum_labels?: string[] | null;
 }
 
 export interface ConnectionResponse {

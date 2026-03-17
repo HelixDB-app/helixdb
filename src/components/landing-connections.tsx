@@ -53,6 +53,7 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { cn } from "@/lib/utils";
+import Link from "next/link";
 
 // ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -336,6 +337,13 @@ export function LandingConnections() {
                                     anywhere to quick connect with a URL
                                 </p>
                             </div>
+
+                            {/* Schema projects */}
+                            <SectionHeader icon={<Layers className="h-3.5 w-3.5" />} title="Schema projects" />
+                            {/* Link to schema projects page */}
+                            <Link href="/schema-projects" className="text-[10px] text-muted-foreground/40 hover:text-foreground hover:underline">
+                                View all schema projects
+                            </Link>
 
                         </div>
 

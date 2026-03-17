@@ -81,6 +81,9 @@ pub struct QueryResult {
 pub struct ResultColumn {
     pub name: String,
     pub data_type: String,
+    /// For enum columns, ordered list of allowed values (from pg_enum). Enables dropdown in UI.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enum_labels: Option<Vec<String>>,
 }
 
 /// Sort direction for table data requests

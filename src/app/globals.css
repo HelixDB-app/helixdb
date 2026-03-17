@@ -753,3 +753,205 @@
 .nova-ai-active {
   animation: nova-pulse 2s ease-in-out infinite;
 }
+
+/* ── Schema canvas edges + handles ─────────────────────────────────────── */
+
+.schema-flow {
+  background: linear-gradient(
+    180deg,
+    color-mix(in oklch, var(--background) 92%, white),
+    color-mix(in oklch, var(--background) 86%, white)
+  );
+}
+
+.schema-flow .react-flow__pane,
+.schema-flow .react-flow__renderer {
+  background: transparent;
+}
+
+.schema-flow .react-flow__background {
+  opacity: 0.45;
+}
+
+.schema-flow .react-flow__edge-path {
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  stroke-width: 2.2px;
+  filter: drop-shadow(
+    0 1px 2px color-mix(in oklch, var(--primary) 25%, transparent)
+  );
+}
+
+.schema-flow .schema-edge-muted .react-flow__edge-path {
+  opacity: 0.65;
+  filter: drop-shadow(
+    0 1px 2px color-mix(in oklch, var(--muted-foreground) 25%, transparent)
+  );
+}
+
+.schema-flow .react-flow__edge.selected .react-flow__edge-path {
+  stroke-width: 3px;
+  filter: drop-shadow(
+    0 0 10px color-mix(in oklch, var(--primary) 55%, transparent)
+  );
+}
+
+.schema-flow .react-flow__edge-text {
+  fill: var(--foreground);
+  font-weight: 600;
+  font-size: 10px;
+}
+
+.schema-flow .react-flow__edge-textbg {
+  fill: color-mix(in oklch, var(--background) 85%, transparent);
+  stroke: var(--border);
+  stroke-width: 1px;
+}
+
+.schema-flow .react-flow__connection-path {
+  stroke: var(--primary);
+  stroke-width: 2.4px;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  filter: drop-shadow(
+    0 1px 2px color-mix(in oklch, var(--primary) 25%, transparent)
+  );
+}
+
+.schema-flow .schema-card {
+  border-radius: 10px;
+  border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  background: color-mix(in oklch, var(--card) 92%, white);
+  box-shadow:
+    0 8px 20px rgba(15, 23, 42, 0.08),
+    0 1px 0 rgba(255, 255, 255, 0.05);
+  transition: box-shadow 0.18s ease, border-color 0.18s ease, transform 0.18s ease;
+}
+
+.schema-flow .schema-card--selected,
+.schema-flow .react-flow__node.selected .schema-card {
+  border-color: color-mix(in oklch, var(--primary) 55%, var(--border));
+  box-shadow:
+    0 0 0 3px color-mix(in oklch, var(--primary) 25%, transparent),
+    0 12px 24px rgba(15, 23, 42, 0.12);
+}
+
+.schema-flow .schema-card-header {
+  background: linear-gradient(
+    90deg,
+    color-mix(in oklch, var(--primary) 22%, transparent),
+    color-mix(in oklch, var(--card) 96%, transparent)
+  );
+  border-bottom: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  min-height: 36px;
+}
+
+.schema-flow .schema-card-title {
+  letter-spacing: 0.01em;
+}
+
+.schema-flow .schema-row {
+  display: grid;
+  grid-template-columns: 34px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 8px;
+  min-height: 28px;
+  padding: 4px 8px;
+  border-radius: 6px;
+  transition: background-color 0.12s ease;
+}
+
+.schema-flow .schema-row:hover {
+  background: color-mix(in oklch, var(--muted) 65%, transparent);
+}
+
+.schema-flow .schema-row-editor {
+  grid-column: 2 / -1;
+}
+
+.schema-flow .schema-col-name {
+  font-weight: 500;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.schema-flow .schema-col-type {
+  margin-left: auto;
+  font-size: 11px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas,
+    "Liberation Mono", "Courier New", monospace;
+  color: var(--muted-foreground);
+}
+
+.schema-flow .schema-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 26px;
+  height: 18px;
+  padding: 0 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  border: 1px solid transparent;
+}
+
+.schema-flow .schema-badge--pk {
+  background: color-mix(in oklch, var(--primary) 18%, transparent);
+  color: var(--primary);
+  border-color: color-mix(in oklch, var(--primary) 35%, transparent);
+}
+
+.schema-flow .schema-badge--uq {
+  background: color-mix(in oklch, var(--accent) 18%, transparent);
+  color: var(--accent);
+  border-color: color-mix(in oklch, var(--accent) 30%, transparent);
+}
+
+.schema-flow .schema-badge--empty {
+  opacity: 0;
+}
+
+.schema-flow .schema-handle {
+  width: 8px;
+  height: 8px;
+  border: 1.5px solid var(--primary);
+  background: var(--card);
+  border-radius: 999px;
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--card) 90%, transparent);
+  opacity: 0;
+  transform: scale(0.6);
+  transition: transform 0.12s ease, box-shadow 0.12s ease, opacity 0.12s ease;
+}
+
+.schema-flow .schema-card:hover .schema-handle,
+.schema-flow .react-flow__node.selected .schema-handle,
+.schema-flow .schema-handle:hover,
+.schema-flow .react-flow__handle-connecting {
+  opacity: 1;
+  transform: scale(1);
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--card) 90%, transparent),
+    0 0 10px color-mix(in oklch, var(--primary) 35%, transparent);
+}
+
+.schema-flow .react-flow__controls,
+.schema-flow .react-flow__minimap {
+  border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  background: color-mix(in oklch, var(--card) 90%, white);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.12);
+  border-radius: 12px;
+  backdrop-filter: blur(8px);
+}
+
+.schema-flow .react-flow__controls-button {
+  border-radius: 10px;
+  background: transparent;
+  border: none;
+}
+
+.schema-flow .react-flow__controls-button:hover {
+  background: color-mix(in oklch, var(--muted) 60%, transparent);
+}

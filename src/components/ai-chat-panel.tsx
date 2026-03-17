@@ -1,18 +1,34 @@
 "use client";
 
 import { useEffect, useRef, useState, useCallback, useMemo } from "react";
-import { useAIChatStore, type ChatMessage, type Conversation } from "@/stores/ai-chat-store";
+import { useAIChatStore, type ChatMessage, type Conversation, type ChatContextItem } from "@/stores/ai-chat-store";
 import { useConnectionStore } from "@/stores/connection-store";
+import { useQueryStore } from "@/stores/query-store";
+import { useQueryFilesStore, type SqlFile } from "@/stores/query-files-store";
+import { useIdeFsStore, type FsNode } from "@/stores/ide-fs-store";
+import { useShallow } from "zustand/react/shallow";
 import { GEMINI_MODELS, type GeminiModelId, type ImageAttachment } from "@/lib/ai-chat-engine";
 import { getFeaturedTemplates } from "@/lib/ai-prompt-templates";
 import { TemplateBrowserModal } from "@/components/ai-template-browser";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Separator } from "@/components/ui/separator";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import {
     Sparkles, Send, Square, Plus, Trash2, Copy, Check, PlayCircle,
     RefreshCw, Pencil, ChevronDown, Database, AlertCircle, Zap,
     MessageSquare, X, PanelLeftClose, PanelLeftOpen, Clock, Search,
-    Image as ImageIcon, Pin, PinOff, Download, BookOpen,
+    Image as ImageIcon, Pin, PinOff, BookOpen, Paperclip, FileText,
+    Layers, MoreHorizontal,
 } from "lucide-react";
 import { toast } from "sonner";
 
@@ -49,6 +65,54 @@ function groupByDate(convs: Conversation[]): { label: string; conversations: Con
         else g[5].conversations.push(c);
     }
     return g.filter((gr) => gr.conversations.length > 0);
+}
+
+// ── Context Helpers ────────────────────────────────────────────────────────
+
+const CONTEXT_TEXT_EXTS = new Set([
+    "sql", "txt", "md", "json", "yaml", "yml", "csv", "log", "ts", "tsx", "js", "jsx", "py", "go", "rs", "java",
+    "c", "cpp", "h", "hpp", "css", "scss", "html", "xml", "toml", "env",
+]);
+
+function getFileExtension(name: string): string {
+    const dot = name.lastIndexOf(".");
+    return dot === -1 ? "" : name.slice(dot + 1).toLowerCase();
+}
+
+function inferLanguage(name: string): string {
+    const ext = getFileExtension(name);
+    if (!ext) return "text";
+    if (ext === "sql") return "sql";
+    if (ext === "md") return "markdown";
+    if (ext === "yml" || ext === "yaml") return "yaml";
+    if (ext === "ts" || ext === "tsx") return "typescript";
+    if (ext === "js" || ext === "jsx") return "javascript";
+    if (ext === "py") return "python";
+    if (ext === "rs") return "rust";
+    if (ext === "go") return "go";
+    if (ext === "java") return "java";
+    if (ext === "cpp" || ext === "hpp" || ext === "cc") return "cpp";
+    if (ext === "c" || ext === "h") return "c";
+    if (ext === "json") return "json";
+    if (ext === "toml") return "toml";
+    if (ext === "css" || ext === "scss") return "css";
+    if (ext === "html") return "html";
+    if (ext === "xml") return "xml";
+    if (ext === "csv") return "csv";
+    return "text";
+}
+
+function formatBytes(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    const kb = bytes / 1024;
+    if (kb < 1024) return `${kb.toFixed(1)} KB`;
+    const mb = kb / 1024;
+    return `${mb.toFixed(1)} MB`;
+}
+
+function formatLineRange(text: string): string {
+    const lines = Math.max(1, text.split("\n").length);
+    return lines === 1 ? " (1)" : ` (1-${lines})`;
 }
 
 // ── SQL Highlighting ─────────────────────────────────────────────────────────
@@ -144,6 +208,21 @@ function ChatMessageBubble({ message, onRegenerate, onEdit, onInsertSql, isLast 
             <div className="flex gap-3 px-4 py-3 group ai-message-in">
                 <div className="shrink-0 mt-0.5"><div className="h-7 w-7 rounded-lg bg-blue-500/10 border border-blue-500/20 flex items-center justify-center"><MessageSquare className="h-3.5 w-3.5 text-blue-600 dark:text-blue-400" /></div></div>
                 <div className="flex-1 min-w-0">
+                    {/* Context chips */}
+                    {message.context && message.context.length > 0 && (
+                        <div className="flex flex-wrap gap-1.5 mb-2">
+                            {message.context.map((ctx) => {
+                                const Icon = ctx.kind === "sql" ? Database : FileText;
+                                return (
+                                    <div key={ctx.id} className="inline-flex items-center gap-1.5 rounded-full border border-border/30 bg-muted/20 px-2 py-0.5 text-[10px] text-muted-foreground/80">
+                                        <Icon className="h-3 w-3" />
+                                        <span className="truncate max-w-[160px]">{ctx.label}</span>
+                                        {ctx.truncated && <span className="text-[9px] text-amber-500/80">truncated</span>}
+                                    </div>
+                                );
+                            })}
+                        </div>
+                    )}
                     {/* Image previews */}
                     {message.images && message.images.length > 0 && (
                         <div className="flex gap-2 mb-2 flex-wrap">
@@ -158,7 +237,7 @@ function ChatMessageBubble({ message, onRegenerate, onEdit, onInsertSql, isLast 
                         <div className="space-y-2">
                             <textarea ref={editRef} value={editVal} onChange={(e) => setEditVal(e.target.value)}
                                 onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); if (editVal.trim() && editVal.trim() !== message.content.trim()) onEdit?.(editVal.trim()); setEditing(false); } if (e.key === "Escape") { setEditVal(message.content); setEditing(false); } }}
-                                className="w-full rounded-lg border border-border/40 bg-muted/20 px-3 py-2 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500/40" rows={3} />
+                                className="w-full rounded-md border border-border/30 bg-muted/15 px-2.5 py-1.5 text-[13px] leading-snug resize-none focus:outline-none focus:ring-1 focus:ring-emerald-500/35" rows={2} />
                             <div className="flex items-center gap-2">
                                 <Button size="sm" onClick={() => { if (editVal.trim() && editVal.trim() !== message.content.trim()) onEdit?.(editVal.trim()); setEditing(false); }} className="h-6 px-2 text-xs bg-emerald-600 hover:bg-emerald-700">Save & Regenerate</Button>
                                 <Button size="sm" variant="ghost" onClick={() => { setEditVal(message.content); setEditing(false); }} className="h-6 px-2 text-xs">Cancel</Button>
@@ -338,7 +417,21 @@ function HistorySidebar({ conversations, activeId, onSelect, onDelete, onCreate,
 
 // ── Main Chat Panel ──────────────────────────────────────────────────────────
 
-export function AIChatPanel() {
+type CursorContextResult = {
+    text: string;
+    kind: "selection" | "statement" | "full";
+    range?: { startLine: number; endLine: number };
+};
+
+export function AIChatPanel({
+    variant = "full",
+    getCursorContext,
+    registerAddContextHandler,
+}: {
+    variant?: "full" | "sidebar";
+    getCursorContext?: () => CursorContextResult | null;
+    registerAddContextHandler?: (handler: (() => void) | null) => void;
+}) {
     const {
         conversations, activeConversationId, isStreaming, schemaTableCount,
         createConversation, setActiveConversation, deleteConversation,
@@ -346,36 +439,282 @@ export function AIChatPanel() {
         stopStreaming, insertSqlToEditor, refreshSchema, clearAll,
         togglePinConversation, exportConversation,
     } = useAIChatStore();
-    const { isConnected } = useConnectionStore();
+    const { isConnected, connectionId } = useConnectionStore(useShallow((s) => ({
+        isConnected: s.isConnected,
+        connectionId: s.connectionId,
+    })));
+    const { tabs, activeTabId } = useQueryStore(useShallow((s) => ({
+        tabs: s.tabs,
+        activeTabId: s.activeTabId,
+    })));
+    const { queryFiles, activeSqlFileId } = useQueryFilesStore(useShallow((s) => ({
+        queryFiles: s.files,
+        activeSqlFileId: s.activeFileId,
+    })));
+    const { ideNodes, getActiveWorkspaceFile } = useIdeFsStore(useShallow((s) => ({
+        ideNodes: s.nodes,
+        getActiveWorkspaceFile: s.getActiveFile,
+    })));
 
     const activeConv = conversations.find((c) => c.id === activeConversationId);
     const messages = activeConv?.messages ?? [];
 
     const [inputValue, setInputValue] = useState("");
-    const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+    const [sidebarCollapsed, setSidebarCollapsed] = useState(variant === "sidebar");
     const [templateBrowserOpen, setTemplateBrowserOpen] = useState(false);
     const [pendingImages, setPendingImages] = useState<ImageAttachment[]>([]);
+    const [contextItems, setContextItems] = useState<ChatContextItem[]>([]);
+    const [contextSearch, setContextSearch] = useState("");
     const inputRef = useRef<HTMLTextAreaElement>(null);
     const scrollRef = useRef<HTMLDivElement>(null);
     const fileInputRef = useRef<HTMLInputElement>(null);
+    const contextFileInputRef = useRef<HTMLInputElement>(null);
     const featured = useMemo(() => getFeaturedTemplates(), []);
+    const isSidebar = variant === "sidebar";
+    const activeTab = useMemo(() => tabs.find((t) => t.id === activeTabId) ?? null, [tabs, activeTabId]);
+    const activeSqlFile = useMemo(() => queryFiles.find((f) => f.id === activeSqlFileId) ?? null, [queryFiles, activeSqlFileId]);
+    const activeWorkspaceFile = useMemo(() => {
+        if (!connectionId) return null;
+        const activeId = getActiveWorkspaceFile(connectionId);
+        return activeId ? (ideNodes[activeId] ?? null) : null;
+    }, [connectionId, getActiveWorkspaceFile, ideNodes]);
+
+    const openTabs = useMemo(() => tabs.filter((t) => t.sql?.trim().length > 0), [tabs]);
+    const workspaceFiles = useMemo(() => {
+        if (!connectionId) return [] as FsNode[];
+        return Object.values(ideNodes)
+            .filter((n) => n.connectionId === connectionId && n.type === "file")
+            .sort((a, b) => a.name.localeCompare(b.name));
+    }, [ideNodes, connectionId]);
+
+    const normalizedSearch = contextSearch.trim().toLowerCase();
+    const matchesSearch = useCallback((value: string) => {
+        if (!normalizedSearch) return true;
+        return value.toLowerCase().includes(normalizedSearch);
+    }, [normalizedSearch]);
+
+    const filteredTabs = useMemo(
+        () => openTabs.filter((t) => matchesSearch(t.title)),
+        [openTabs, matchesSearch]
+    );
+    const filteredSqlFiles = useMemo(
+        () => queryFiles.filter((f) => matchesSearch(f.name)),
+        [queryFiles, matchesSearch]
+    );
+    const filteredWorkspaceFiles = useMemo(
+        () => workspaceFiles.filter((f) => matchesSearch(f.name)),
+        [workspaceFiles, matchesSearch]
+    );
+
+    const contextStats = useMemo(() => {
+        const totalChars = contextItems.reduce((sum, item) => sum + (item.content?.length ?? 0), 0);
+        return { count: contextItems.length, totalChars };
+    }, [contextItems]);
+    const contextIdSet = useMemo(() => new Set(contextItems.map((item) => item.id)), [contextItems]);
 
     useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, isStreaming]);
     useEffect(() => { if (isConnected) refreshSchema(); }, [isConnected, refreshSchema]);
-    useEffect(() => {
-        const h = (e: KeyboardEvent) => { if ((e.metaKey || e.ctrlKey) && e.key === "j") { e.preventDefault(); inputRef.current?.focus(); } };
-        window.addEventListener("keydown", h); return () => window.removeEventListener("keydown", h);
+    useEffect(() => { if (inputRef.current) { inputRef.current.style.height = "auto"; inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 96) + "px"; } }, [inputValue]);
+
+    const MAX_CONTEXT_FILE_BYTES = 300 * 1024;
+    const MAX_CONTEXT_FILE_CHARS = 200_000;
+
+    const upsertContextItem = useCallback((item: ChatContextItem) => {
+        setContextItems((prev) => {
+            const idx = prev.findIndex((p) => p.id === item.id);
+            if (idx === -1) return [...prev, item];
+            const next = [...prev];
+            next[idx] = { ...prev[idx], ...item };
+            return next;
+        });
     }, []);
-    useEffect(() => { if (inputRef.current) { inputRef.current.style.height = "auto"; inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 120) + "px"; } }, [inputValue]);
+
+    const removeContextItem = useCallback((id: string) => {
+        setContextItems((prev) => prev.filter((item) => item.id !== id));
+    }, []);
+
+    const normalizeContextContent = useCallback((content: string) => {
+        const trimmed = content.trim();
+        if (trimmed.length <= MAX_CONTEXT_FILE_CHARS) return { text: trimmed, truncated: false };
+        return { text: trimmed.slice(0, MAX_CONTEXT_FILE_CHARS), truncated: true };
+    }, []);
+
+    const addActiveQueryContext = useCallback(() => {
+        if (!activeTab?.sql?.trim()) { toast.error("No active query to attach"); return; }
+        const cursorContext = getCursorContext?.();
+        const content = cursorContext?.text?.trim() ? cursorContext.text : activeTab.sql;
+        const rangeSuffix = cursorContext?.range
+            ? ` (${cursorContext.range.startLine}-${cursorContext.range.endLine})`
+            : "";
+        const label = `${activeTab.title}${rangeSuffix}`;
+        const { text, truncated } = normalizeContextContent(content);
+        upsertContextItem({
+            id: `tab:${activeTab.id}`,
+            label,
+            kind: "sql",
+            content: text,
+            language: "sql",
+            source: activeTab.title,
+            truncated,
+        });
+        if (cursorContext?.kind === "selection") {
+            toast.success("Selection added to context");
+        } else if (cursorContext?.kind === "statement") {
+            toast.success("Cursor statement added to context");
+        } else {
+            toast.success("Active query added to context");
+        }
+    }, [activeTab, getCursorContext, normalizeContextContent, upsertContextItem]);
+
+    useEffect(() => {
+        registerAddContextHandler?.(addActiveQueryContext);
+        return () => registerAddContextHandler?.(null);
+    }, [addActiveQueryContext, registerAddContextHandler]);
+
+    useEffect(() => {
+        const h = (e: KeyboardEvent) => {
+            if (e.defaultPrevented) return;
+            const key = e.key.toLowerCase();
+            if ((e.metaKey || e.ctrlKey) && key === "j") {
+                e.preventDefault();
+                inputRef.current?.focus();
+            }
+            if ((e.metaKey || e.ctrlKey) && key === "l") {
+                e.preventDefault();
+                addActiveQueryContext();
+            }
+        };
+        window.addEventListener("keydown", h);
+        return () => window.removeEventListener("keydown", h);
+    }, [addActiveQueryContext]);
+
+    const addTabContext = useCallback((tabId: string, title: string, sql: string) => {
+        if (!sql.trim()) { toast.warning(`"${title}" is empty`); return; }
+        const { text, truncated } = normalizeContextContent(sql);
+        const rangeSuffix = formatLineRange(text);
+        upsertContextItem({
+            id: `tab:${tabId}`,
+            label: `${title}${rangeSuffix}`,
+            kind: "sql",
+            content: text,
+            language: "sql",
+            source: title,
+            truncated,
+        });
+    }, [normalizeContextContent, upsertContextItem]);
+
+    const addSqlFileContext = useCallback((file: SqlFile) => {
+        if (!file.sql.trim()) { toast.warning(`"${file.name}" is empty`); return; }
+        const { text, truncated } = normalizeContextContent(file.sql);
+        const rangeSuffix = formatLineRange(text);
+        upsertContextItem({
+            id: `sqlfile:${file.id}`,
+            label: `${file.name}${rangeSuffix}`,
+            kind: "sql",
+            content: text,
+            language: "sql",
+            source: file.name,
+            truncated,
+        });
+    }, [normalizeContextContent, upsertContextItem]);
+
+    const addWorkspaceFileContext = useCallback((file: FsNode) => {
+        if (!file.content.trim()) { toast.warning(`"${file.name}" is empty`); return; }
+        const { text, truncated } = normalizeContextContent(file.content);
+        const rangeSuffix = formatLineRange(text);
+        upsertContextItem({
+            id: `wsfile:${file.id}`,
+            label: `${file.name}${rangeSuffix}`,
+            kind: "file",
+            content: text,
+            language: inferLanguage(file.name),
+            source: file.name,
+            truncated,
+        });
+    }, [normalizeContextContent, upsertContextItem]);
+
+    const handleAddAllSqlFiles = useCallback(() => {
+        if (queryFiles.length === 0) { toast.error("No SQL files available"); return; }
+        queryFiles.forEach((file) => {
+            if (!file.sql.trim()) return;
+            const { text, truncated } = normalizeContextContent(file.sql);
+            const rangeSuffix = formatLineRange(text);
+            upsertContextItem({
+                id: `sqlfile:${file.id}`,
+                label: `${file.name}${rangeSuffix}`,
+                kind: "sql",
+                content: text,
+                language: "sql",
+                source: file.name,
+                truncated,
+            });
+        });
+        toast.success("SQL files added to context");
+    }, [normalizeContextContent, queryFiles, upsertContextItem]);
+
+    const handleAddAllOpenTabs = useCallback(() => {
+        if (openTabs.length === 0) { toast.error("No open query tabs"); return; }
+        openTabs.forEach((tab) => {
+            if (!tab.sql.trim()) return;
+            const { text, truncated } = normalizeContextContent(tab.sql);
+            const rangeSuffix = formatLineRange(text);
+            upsertContextItem({
+                id: `tab:${tab.id}`,
+                label: `${tab.title}${rangeSuffix}`,
+                kind: "sql",
+                content: text,
+                language: "sql",
+                source: tab.title,
+                truncated,
+            });
+        });
+        toast.success("Open tabs added to context");
+    }, [normalizeContextContent, openTabs, upsertContextItem]);
+
+    const handleContextFileUpload = useCallback((files: File[] | FileList | null) => {
+        if (!files) return;
+        Array.from(files).forEach((file) => {
+            const ext = getFileExtension(file.name);
+            const isTextType = file.type.startsWith("text/") || CONTEXT_TEXT_EXTS.has(ext);
+            if (!isTextType) { toast.error(`Unsupported file: ${file.name}`); return; }
+            if (file.size > MAX_CONTEXT_FILE_BYTES) { toast.error(`"${file.name}" exceeds ${formatBytes(MAX_CONTEXT_FILE_BYTES)}`); return; }
+            const reader = new FileReader();
+            reader.onload = () => {
+                const content = String(reader.result ?? "");
+                if (!content.trim()) { toast.warning(`"${file.name}" is empty`); return; }
+                const { text, truncated } = normalizeContextContent(content);
+                const rangeSuffix = formatLineRange(text);
+                upsertContextItem({
+                    id: `upload:${file.name}:${Date.now()}`,
+                    label: `${file.name}${rangeSuffix}`,
+                    kind: "file",
+                    content: text,
+                    language: inferLanguage(file.name),
+                    source: file.name,
+                    truncated,
+                });
+                toast.success(`Added ${file.name} to context`);
+            };
+            reader.readAsText(file);
+        });
+    }, [normalizeContextContent, upsertContextItem]);
+
+    const hasContext = useMemo(
+        () => contextItems.some((item) => item.content && item.content.trim()),
+        [contextItems]
+    );
 
     const handleSend = useCallback(async () => {
-        const content = inputValue.trim();
+        let content = inputValue.trim();
+        if (!content && hasContext) {
+            content = "Analyze the attached context and respond with clear, actionable guidance.";
+        }
         if (!content || isStreaming) return;
         setInputValue("");
         const imgs = pendingImages.length > 0 ? [...pendingImages] : undefined;
         setPendingImages([]);
-        await sendMessage(content, imgs);
-    }, [inputValue, isStreaming, sendMessage, pendingImages]);
+        await sendMessage(content, imgs, contextItems);
+    }, [contextItems, hasContext, inputValue, isStreaming, sendMessage, pendingImages]);
 
     const handleImageUpload = useCallback((files: FileList | null) => {
         if (!files) return;
@@ -406,8 +745,18 @@ export function AIChatPanel() {
 
     const handleDrop = useCallback((e: React.DragEvent) => {
         e.preventDefault();
-        handleImageUpload(e.dataTransfer.files);
-    }, [handleImageUpload]);
+        const files = Array.from(e.dataTransfer.files ?? []);
+        const imageFiles = files.filter((f) => f.type.startsWith("image/"));
+        const textFiles = files.filter((f) => !f.type.startsWith("image/"));
+        if (imageFiles.length > 0) {
+            const dt = new DataTransfer();
+            imageFiles.forEach((f) => dt.items.add(f));
+            handleImageUpload(dt.files);
+        }
+        if (textFiles.length > 0) {
+            handleContextFileUpload(textFiles);
+        }
+    }, [handleContextFileUpload, handleImageUpload]);
 
     const handleExport = useCallback(() => {
         if (!activeConversationId) return;
@@ -415,6 +764,8 @@ export function AIChatPanel() {
         navigator.clipboard.writeText(md);
         toast.success("Conversation exported to clipboard as Markdown");
     }, [activeConversationId, exportConversation]);
+
+    const canSend = Boolean(inputValue.trim() || pendingImages.length > 0 || hasContext);
 
     return (
         <div className="flex h-full bg-background">
@@ -434,11 +785,32 @@ export function AIChatPanel() {
                     </div>
                     <div className="flex items-center gap-1.5">
                         {activeConv && <ModelSelector model={activeConv.model} onChange={switchModel} disabled={isStreaming} />}
-                        {activeConv && (
-                            <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground/50 hover:text-foreground" onClick={handleExport} title="Export as Markdown">
-                                <Download className="h-3.5 w-3.5" />
-                            </Button>
-                        )}
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                                <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground/50 hover:text-foreground" title="More options">
+                                    <MoreHorizontal className="h-3.5 w-3.5" />
+                                </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="w-48">
+                                <DropdownMenuItem onClick={() => setSidebarCollapsed((v) => !v)}>
+                                    {sidebarCollapsed ? "Show history" : "Hide history"}
+                                </DropdownMenuItem>
+                                {activeConv && (
+                                    <DropdownMenuItem onClick={handleExport}>
+                                        Export Markdown
+                                    </DropdownMenuItem>
+                                )}
+                                {activeConv && (
+                                    <DropdownMenuItem onClick={() => { if (confirm(`Delete "${activeConv.title}"?`)) deleteConversation(activeConv.id); }}>
+                                        Delete conversation
+                                    </DropdownMenuItem>
+                                )}
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem variant="destructive" onClick={() => { if (confirm("Clear all conversations?")) clearAll(); }}>
+                                    Clear all history
+                                </DropdownMenuItem>
+                            </DropdownMenuContent>
+                        </DropdownMenu>
                         <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground/50 hover:text-foreground" onClick={() => createConversation()} title="New chat"><Plus className="h-3.5 w-3.5" /></Button>
                     </div>
                 </div>
@@ -450,9 +822,9 @@ export function AIChatPanel() {
                             <div className="h-16 w-16 rounded-2xl bg-primary/10 border border-primary/10 flex items-center justify-center mb-4"><Sparkles className="h-7 w-7 text-primary/70" /></div>
                             <h3 className="text-lg font-semibold text-foreground/80 mb-1">Ask Nova anything</h3>
                             <p className="text-xs text-muted-foreground/50 text-center max-w-[280px] mb-6">Generate SQL queries, analyze your schema, optimize performance, and more.</p>
-                            <div className="grid grid-cols-2 gap-2 max-w-md w-full">
+                            <div className={cn("grid gap-2 max-w-md w-full", isSidebar ? "grid-cols-1" : "grid-cols-2")}>
                                 {featured.map((t) => (
-                                    <button key={t.id} onClick={() => { setInputValue(t.prompt); setTimeout(() => sendMessage(t.prompt), 50); }} disabled={isStreaming}
+                                    <button key={t.id} onClick={() => { setInputValue(t.prompt); setTimeout(() => sendMessage(t.prompt, undefined, contextItems), 50); }} disabled={isStreaming}
                                         className="flex items-start gap-2 px-3 py-2.5 rounded-lg border border-border/20 bg-card/30 hover:bg-card/60 hover:border-border/40 transition-all text-left group">
                                         <span className="text-sm shrink-0 mt-0.5">{t.icon}</span>
                                         <span className="text-xs text-muted-foreground/70 group-hover:text-foreground/80 leading-relaxed">{t.title}</span>
@@ -476,40 +848,218 @@ export function AIChatPanel() {
 
                 {/* Input Area */}
                 <div className="shrink-0 border-t border-border/20 bg-card/10" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
-                    {/* Pending Images */}
                     {pendingImages.length > 0 && (
-                        <div className="flex gap-2 px-4 pt-3 flex-wrap">
-                            {pendingImages.map((img, i) => (
-                                <div key={i} className="relative w-16 h-16 rounded-lg border border-border/30 overflow-hidden bg-muted/10">
-                                    <img src={img.previewUrl} alt="Upload" className="w-full h-full object-cover" />
-                                    <button onClick={() => setPendingImages((p) => p.filter((_, j) => j !== i))}
-                                        className="absolute top-0.5 right-0.5 p-0.5 rounded-full bg-black/60 text-white hover:bg-black/80 transition-colors"><X className="h-3 w-3" /></button>
-                                </div>
-                            ))}
+                        <div className="px-4 pt-3">
+                            <div className="flex gap-2 flex-wrap">
+                                {pendingImages.map((img, i) => (
+                                    <div key={i} className="relative w-16 h-16 rounded-lg border border-border/30 overflow-hidden bg-muted/10">
+                                        <img src={img.previewUrl} alt="Upload" className="w-full h-full object-cover" />
+                                        <button onClick={() => setPendingImages((p) => p.filter((_, j) => j !== i))}
+                                            className="absolute top-0.5 right-0.5 p-0.5 rounded-full bg-black/60 text-white hover:bg-black/80 transition-colors"><X className="h-3 w-3" /></button>
+                                    </div>
+                                ))}
+                            </div>
                         </div>
                     )}
-                    <div className="px-4 py-3">
-                        <div className="flex items-end gap-2">
+                    <div className="px-3 py-2">
+                        <div className="flex items-end gap-1.5">
+                            {/* Context Picker */}
+                            <Popover>
+                                <PopoverTrigger asChild>
+                                    <button className="h-8 w-8 p-0 shrink-0 flex items-center justify-center rounded-md border border-border/25 text-muted-foreground/40 hover:text-foreground hover:border-border/50 hover:bg-muted/20 transition-all" title="Add context">
+                                        <Layers className="h-4 w-4" />
+                                    </button>
+                                </PopoverTrigger>
+                                <PopoverContent align="start" className="w-96 p-3">
+                                    <div className="flex items-center justify-between">
+                                        <span className="text-xs font-semibold text-foreground/80">Context</span>
+                                        <button onClick={() => setContextItems([])} className="text-[10px] text-muted-foreground/60 hover:text-foreground">Clear</button>
+                                    </div>
+                                    <div className="mt-2 grid grid-cols-2 gap-2">
+                                        <Button size="sm" variant="outline" className="h-7 text-[11px] justify-between" onClick={addActiveQueryContext} disabled={!activeTab?.sql?.trim()}>
+                                            <span>Active Query</span>
+                                            <kbd className="ml-2 inline-flex h-4 items-center rounded border border-border/30 bg-muted/20 px-1 font-mono text-[9px]">⌘L</kbd>
+                                        </Button>
+                                        <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => activeSqlFile && addSqlFileContext(activeSqlFile)} disabled={!activeSqlFile}>
+                                            Active SQL File
+                                        </Button>
+                                        <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={() => activeWorkspaceFile && addWorkspaceFileContext(activeWorkspaceFile)} disabled={!activeWorkspaceFile}>
+                                            Active Workspace File
+                                        </Button>
+                                        <Button size="sm" variant="outline" className="h-7 text-[11px]" onClick={handleAddAllSqlFiles} disabled={queryFiles.length === 0}>
+                                            All SQL Files
+                                        </Button>
+                                    </div>
+                                    <Button size="sm" variant="outline" className="mt-2 h-7 w-full text-[11px]" onClick={handleAddAllOpenTabs} disabled={openTabs.length === 0}>
+                                        All Open Tabs
+                                    </Button>
+                                    <Separator className="my-2" />
+                                    <Input
+                                        value={contextSearch}
+                                        onChange={(e) => setContextSearch(e.target.value)}
+                                        placeholder="Search tabs or files..."
+                                        className="h-7 text-xs"
+                                    />
+                                    {filteredTabs.length > 0 && (
+                                        <div className="mt-2">
+                                            <p className="text-[10px] uppercase tracking-wide text-muted-foreground/50 mb-1">Open tabs</p>
+                                            <ScrollArea className="h-20 pr-2">
+                                                <div className="space-y-1">
+                                                    {filteredTabs.slice(0, 8).map((tab) => {
+                                                        const id = `tab:${tab.id}`;
+                                                        const selected = contextIdSet.has(id);
+                                                        return (
+                                                            <button
+                                                                key={tab.id}
+                                                                onClick={() => addTabContext(tab.id, tab.title, tab.sql)}
+                                                                className={cn(
+                                                                    "w-full flex items-center gap-2 px-2 py-1 rounded-md text-left text-xs transition-colors",
+                                                                    selected ? "bg-primary/10 text-foreground" : "hover:bg-muted/40 text-muted-foreground/80"
+                                                                )}
+                                                            >
+                                                                <FileText className="h-3 w-3" />
+                                                                <span className="truncate flex-1">{tab.title}</span>
+                                                                {selected && <Check className="h-3 w-3 text-primary" />}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </ScrollArea>
+                                        </div>
+                                    )}
+                                    {filteredSqlFiles.length > 0 && (
+                                        <div className="mt-2">
+                                            <p className="text-[10px] uppercase tracking-wide text-muted-foreground/50 mb-1">SQL files</p>
+                                            <ScrollArea className="h-20 pr-2">
+                                                <div className="space-y-1">
+                                                    {filteredSqlFiles.slice(0, 8).map((file) => {
+                                                        const id = `sqlfile:${file.id}`;
+                                                        const selected = contextIdSet.has(id);
+                                                        return (
+                                                            <button
+                                                                key={file.id}
+                                                                onClick={() => addSqlFileContext(file)}
+                                                                className={cn(
+                                                                    "w-full flex items-center gap-2 px-2 py-1 rounded-md text-left text-xs transition-colors",
+                                                                    selected ? "bg-primary/10 text-foreground" : "hover:bg-muted/40 text-muted-foreground/80"
+                                                                )}
+                                                            >
+                                                                <FileText className="h-3 w-3" />
+                                                                <span className="truncate flex-1">{file.name}</span>
+                                                                {selected && <Check className="h-3 w-3 text-primary" />}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </ScrollArea>
+                                        </div>
+                                    )}
+                                    {filteredWorkspaceFiles.length > 0 && (
+                                        <div className="mt-2">
+                                            <p className="text-[10px] uppercase tracking-wide text-muted-foreground/50 mb-1">Workspace files</p>
+                                            <ScrollArea className="h-24 pr-2">
+                                                <div className="space-y-1">
+                                                    {filteredWorkspaceFiles.slice(0, 8).map((file) => {
+                                                        const id = `wsfile:${file.id}`;
+                                                        const selected = contextIdSet.has(id);
+                                                        return (
+                                                            <button
+                                                                key={file.id}
+                                                                onClick={() => addWorkspaceFileContext(file)}
+                                                                className={cn(
+                                                                    "w-full flex items-center gap-2 px-2 py-1 rounded-md text-left text-xs transition-colors",
+                                                                    selected ? "bg-primary/10 text-foreground" : "hover:bg-muted/40 text-muted-foreground/80"
+                                                                )}
+                                                            >
+                                                                <FileText className="h-3 w-3" />
+                                                                <span className="truncate flex-1">{file.name}</span>
+                                                                {selected && <Check className="h-3 w-3 text-primary" />}
+                                                            </button>
+                                                        );
+                                                    })}
+                                                </div>
+                                            </ScrollArea>
+                                        </div>
+                                    )}
+                                </PopoverContent>
+                            </Popover>
+
+                            {/* File Upload (Context) */}
+                            <button onClick={() => contextFileInputRef.current?.click()} className="h-8 w-8 p-0 shrink-0 flex items-center justify-center rounded-md border border-border/25 text-muted-foreground/40 hover:text-foreground hover:border-border/50 hover:bg-muted/20 transition-all" title="Attach file as context">
+                                <Paperclip className="h-4 w-4" />
+                            </button>
+                            <input
+                                ref={contextFileInputRef}
+                                type="file"
+                                accept=".sql,.txt,.md,.json,.yaml,.yml,.csv,.log,.ts,.tsx,.js,.jsx,.py,.go,.rs,.java,.c,.cpp,.h,.hpp,.css,.scss,.html,.xml,.toml,.env,text/*"
+                                multiple
+                                className="hidden"
+                                onChange={(e) => { handleContextFileUpload(e.target.files); e.target.value = ""; }}
+                            />
+
                             {/* Image Upload */}
-                            <button onClick={() => fileInputRef.current?.click()} className="h-9 w-9 p-0 shrink-0 flex items-center justify-center rounded-lg border border-border/20 text-muted-foreground/40 hover:text-foreground hover:border-border/40 hover:bg-muted/20 transition-all" title="Attach image">
+                            <button onClick={() => fileInputRef.current?.click()} className="h-8 w-8 p-0 shrink-0 flex items-center justify-center rounded-md border border-border/25 text-muted-foreground/40 hover:text-foreground hover:border-border/50 hover:bg-muted/20 transition-all" title="Attach image">
                                 <ImageIcon className="h-4 w-4" />
                             </button>
                             <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={(e) => { handleImageUpload(e.target.files); e.target.value = ""; }} />
+
                             {/* Template Browser */}
-                            <button onClick={() => setTemplateBrowserOpen(true)} className="h-9 w-9 p-0 shrink-0 flex items-center justify-center rounded-lg border border-border/20 text-muted-foreground/40 hover:text-primary hover:border-primary/30 hover:bg-primary/5 transition-all" title="Prompt templates">
+                            <button onClick={() => setTemplateBrowserOpen(true)} className="h-8 w-8 p-0 shrink-0 flex items-center justify-center rounded-md border border-border/25 text-muted-foreground/40 hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-all" title="Prompt templates">
                                 <BookOpen className="h-4 w-4" />
                             </button>
-                            <div className="flex-1 relative">
-                                <textarea ref={inputRef} value={inputValue} onChange={(e) => setInputValue(e.target.value)} onPaste={handlePaste}
-                                    onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                                    placeholder="Ask about your database..." rows={1} disabled={isStreaming}
-                                    className={cn("w-full rounded-lg border border-border/30 bg-muted/10 px-3 py-2.5 text-sm resize-none focus:outline-none focus:ring-1 focus:ring-primary/40 focus:border-primary/30 placeholder:text-muted-foreground/30 disabled:opacity-50 max-h-[120px]")} />
+                            <div className="flex-1">
+                                <div className="rounded-md border border-border/25 bg-muted/5 focus-within:ring-1 focus-within:ring-primary/35 focus-within:border-primary/30">
+                                    <div className="flex flex-wrap gap-1.5 px-2.5 pt-1.5">
+                                        {contextItems.length > 0 ? (
+                                            contextItems.map((item) => {
+                                                const Icon = item.kind === "sql" ? Database : FileText;
+                                                return (
+                                                    <div key={item.id} className="group flex items-center gap-1.5 rounded-full border border-border/25 bg-background/40 px-2 py-[2px] text-[10px] text-muted-foreground/70">
+                                                        <Icon className="h-3 w-3" />
+                                                        <span className="max-w-[200px] truncate">{item.label}</span>
+                                                        {item.truncated && <span className="text-[9px] text-amber-500/80">truncated</span>}
+                                                        <button
+                                                            onClick={() => removeContextItem(item.id)}
+                                                            className="ml-1 rounded-full p-0.5 text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors"
+                                                            aria-label="Remove context"
+                                                        >
+                                                            <X className="h-3 w-3" />
+                                                        </button>
+                                                    </div>
+                                                );
+                                            })
+                                        ) : (
+                                            <div className="text-[10px] text-muted-foreground/40">
+                                                Context: press ⌘L to add active query or use the context picker.
+                                            </div>
+                                        )}
+                                    </div>
+                                    <textarea
+                                        ref={inputRef}
+                                        value={inputValue}
+                                        onChange={(e) => setInputValue(e.target.value)}
+                                        onPaste={handlePaste}
+                                        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
+                                        placeholder="Ask about your database or attach SQL/context..."
+                                        rows={1}
+                                        disabled={isStreaming}
+                                        className={cn("w-full bg-transparent border-0 px-2.5 py-1.5 text-[13px] leading-snug resize-none focus:outline-none placeholder:text-muted-foreground/30 disabled:opacity-50 max-h-[96px]")}
+                                    />
+                                </div>
+                                {contextStats.count > 0 && (
+                                    <div className="mt-2 flex items-center gap-2 text-[10px] text-muted-foreground/40">
+                                        <Layers className="h-3 w-3" />
+                                        <span>{contextStats.count} context items</span>
+                                        <span>• {contextStats.totalChars.toLocaleString()} chars</span>
+                                        <button onClick={() => setContextItems([])} className="ml-auto text-[10px] text-muted-foreground/50 hover:text-foreground">Clear context</button>
+                                    </div>
+                                )}
                             </div>
                             {isStreaming ? (
-                                <Button size="sm" variant="ghost" onClick={stopStreaming} className="h-9 w-9 p-0 shrink-0 text-destructive hover:bg-destructive/10"><Square className="h-4 w-4" /></Button>
+                                <Button size="sm" variant="ghost" onClick={stopStreaming} className="h-8 w-8 p-0 shrink-0 text-destructive hover:bg-destructive/10"><Square className="h-4 w-4" /></Button>
                             ) : (
-                                <Button size="sm" onClick={handleSend} disabled={!inputValue.trim() && pendingImages.length === 0}
-                                    className={cn("h-9 w-9 p-0 shrink-0 transition-all", (inputValue.trim() || pendingImages.length > 0) ? "bg-primary hover:bg-primary/90 text-primary-foreground" : "bg-muted/30 text-muted-foreground/30")}>
+                                <Button size="sm" onClick={handleSend} disabled={!canSend}
+                                    className={cn("h-8 w-8 p-0 shrink-0 transition-all", canSend ? "bg-primary hover:bg-primary/90 text-primary-foreground" : "bg-muted/30 text-muted-foreground/30")}>
                                     <Send className="h-4 w-4" />
                                 </Button>
                             )}
@@ -521,8 +1071,9 @@ export function AIChatPanel() {
                             {activeConv && <div className="flex items-center gap-1"><Zap className="h-3 w-3 text-amber-600/70 dark:text-amber-400/60" /><span>{GEMINI_MODELS[activeConv.model].displayName}</span></div>}
                         </div>
                         <div className="flex items-center gap-2">
-                            <span className="text-muted-foreground/25">Paste or drag images</span>
+                            <span className="text-muted-foreground/25">Paste or drag files/images</span>
                             <kbd className="inline-flex h-4 items-center rounded border border-border/20 bg-muted/20 px-1 font-mono text-[9px]">⌘J</kbd>
+                            <kbd className="inline-flex h-4 items-center rounded border border-border/20 bg-muted/20 px-1 font-mono text-[9px]">⌘L</kbd>
                         </div>
                     </div>
                 </div>

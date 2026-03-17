@@ -1,7 +1,7 @@
 use deadpool_postgres::Pool;
 use log::{debug, warn};
 use rust_decimal::Decimal;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
 use std::io::{self as io, Write};
 use std::sync::Arc;
@@ -109,8 +109,6 @@ fn convert_cell(row: &Row, idx: usize, pg_type: &Type) -> CellValue {
             Ok(Some(v)) => CellValue::Time(v.format("%H:%M:%S%.f").to_string()),
             _ => CellValue::Null,
         },
-        // INTERVAL: tokio-postgres does not expose a native Rust type for this;
-        // fall through to the generic String fallback below.
         &Type::JSON | &Type::JSONB => match row.try_get::<_, Option<serde_json::Value>>(idx) {
             Ok(Some(v)) => CellValue::Json(v),
             _ => CellValue::Null,
@@ -123,7 +121,13 @@ fn convert_cell(row: &Row, idx: usize, pg_type: &Type) -> CellValue {
             Ok(Some(v)) => CellValue::Int64(v as i64),
             _ => CellValue::Null,
         },
-        // Generic fallback: try text representation
+        // INTERVAL: no native Rust type in tokio-postgres; read as text.
+        &Type::INTERVAL => match row.try_get::<_, Option<String>>(idx) {
+            Ok(Some(v)) => CellValue::String(v),
+            _ => CellValue::Null,
+        },
+        // Custom types (e.g. PostgreSQL enums): wire protocol sends as text; read as String
+        // so enum and other user-defined types display and edit correctly.
         _ => match row.try_get::<_, Option<String>>(idx) {
             Ok(Some(v)) => CellValue::String(v),
             _ => CellValue::Null,
@@ -183,6 +187,186 @@ fn pg_type_to_string(pg_type: &Type) -> String {
         &Type::OID => "oid".to_string(),
         other => other.name().to_string(),
     }
+}
+
+fn normalize_type_name(data_type: &str) -> String {
+    let lower = data_type.trim().to_lowercase();
+    let base = lower.split('(').next().unwrap_or(&lower).trim();
+    base.split('.').last().unwrap_or(base).trim().to_string()
+}
+
+fn is_geometry_type(data_type: &str) -> bool {
+    let lower = data_type.to_lowercase();
+    lower.starts_with("geometry") || lower.starts_with("geography")
+}
+
+fn is_native_cell_type(base: &str) -> bool {
+    matches!(
+        base,
+        "boolean"
+            | "bool"
+            | "smallint"
+            | "int2"
+            | "integer"
+            | "int4"
+            | "bigint"
+            | "int8"
+            | "real"
+            | "float4"
+            | "double precision"
+            | "float8"
+            | "numeric"
+            | "decimal"
+            | "text"
+            | "varchar"
+            | "character varying"
+            | "character"
+            | "char"
+            | "bpchar"
+            | "name"
+            | "uuid"
+            | "timestamp"
+            | "timestamp without time zone"
+            | "timestamp with time zone"
+            | "timestamptz"
+            | "date"
+            | "time"
+            | "time without time zone"
+            | "json"
+            | "jsonb"
+            | "bytea"
+            | "oid"
+            | "interval"
+    )
+}
+
+fn should_cast_to_text(data_type: &str, is_enum: bool) -> bool {
+    if is_enum {
+        return true;
+    }
+    let lowered = data_type.trim().to_lowercase();
+    if lowered.contains('[') && lowered.contains(']') {
+        return true;
+    }
+    let base = normalize_type_name(data_type);
+    if base.is_empty() {
+        return false;
+    }
+    if base.ends_with("[]") {
+        return true;
+    }
+    if base.contains("range") {
+        return true;
+    }
+    if matches!(
+        base.as_str(),
+        "inet" | "cidr" | "macaddr" | "macaddr8" | "point" | "line" | "lseg" | "box" | "path"
+            | "polygon"
+            | "circle"
+    ) {
+        return true;
+    }
+    if base == "interval" {
+        return true;
+    }
+    !is_native_cell_type(&base)
+}
+
+fn build_select_list(
+    columns: &[ColumnInfo],
+    enum_labels_by_column: &HashMap<String, Vec<String>>,
+) -> String {
+    columns
+        .iter()
+        .map(|c| {
+            let safe_name = sanitize_identifier(&c.name);
+            let quoted = format!("\"{}\"", safe_name);
+            if is_geometry_type(&c.data_type) {
+                format!("ST_AsGeoJSON({})::text AS {}", quoted, quoted)
+            } else if should_cast_to_text(&c.data_type, enum_labels_by_column.contains_key(&c.name))
+            {
+                format!("{}::text AS {}", quoted, quoted)
+            } else {
+                quoted
+            }
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+async fn fetch_enum_labels_by_column(
+    client: &tokio_postgres::Client,
+    schema: &str,
+    table: &str,
+) -> HashMap<String, Vec<String>> {
+    let rows = match client
+        .query(
+            "SELECT a.attname, a.atttypid
+             FROM pg_class c
+             JOIN pg_namespace n ON n.oid = c.relnamespace
+             JOIN pg_attribute a ON a.attrelid = c.oid
+             WHERE n.nspname = $1 AND c.relname = $2
+               AND a.attnum > 0 AND NOT a.attisdropped
+             ORDER BY a.attnum",
+            &[&schema, &table],
+        )
+        .await
+    {
+        Ok(rows) => rows,
+        Err(_) => return HashMap::new(),
+    };
+
+    let type_oids: Vec<u32> = rows.iter().map(|r| r.get::<_, u32>(1)).collect();
+    let name_and_oid: Vec<(String, u32)> = rows
+        .iter()
+        .map(|r| (r.get::<_, String>(0), r.get::<_, u32>(1)))
+        .collect();
+
+    let enum_oids: Vec<u32> = if type_oids.is_empty() {
+        vec![]
+    } else {
+        match client
+            .query(
+                "SELECT t.oid FROM pg_type t WHERE t.oid = ANY($1) AND t.typtype = 'e'",
+                &[&type_oids],
+            )
+            .await
+        {
+            Ok(r) => r.iter().map(|row| row.get::<_, u32>(0)).collect(),
+            Err(_) => vec![],
+        }
+    };
+
+    let oid_to_labels: HashMap<u32, Vec<String>> = if enum_oids.is_empty() {
+        HashMap::new()
+    } else {
+        match client
+            .query(
+                "SELECT e.enumtypid, e.enumlabel FROM pg_enum e
+                 WHERE e.enumtypid = ANY($1) ORDER BY e.enumtypid, e.enumsortorder",
+                &[&enum_oids],
+            )
+            .await
+        {
+            Ok(enum_rows) => {
+                let mut map: HashMap<u32, Vec<String>> = HashMap::new();
+                for row in &enum_rows {
+                    let oid: u32 = row.get(0);
+                    let label: String = row.get(1);
+                    map.entry(oid).or_default().push(label);
+                }
+                map
+            }
+            Err(_) => HashMap::new(),
+        }
+    };
+
+    name_and_oid
+        .into_iter()
+        .filter_map(|(name, oid)| {
+            oid_to_labels.get(&oid).cloned().map(|labels| (name, labels))
+        })
+        .collect()
 }
 
 // ──────────────────────────────────────────────────────────────────────────────
@@ -1079,34 +1263,13 @@ pub async fn get_table_data(
     };
 
     let columns_meta = get_columns(pool, schema, table).await.unwrap_or_default();
-    let use_geom_select = !columns_meta.is_empty();
-    let geom_set: std::collections::HashSet<String> = if use_geom_select {
-        columns_meta
-            .iter()
-            .filter(|c| {
-                let lower = c.data_type.to_lowercase();
-                lower.starts_with("geometry") || lower.starts_with("geography")
-            })
-            .map(|c| c.name.to_lowercase())
-            .collect()
-    } else {
-        std::collections::HashSet::new()
-    };
 
-    let (query, columns): (String, Vec<ResultColumn>) = if use_geom_select {
-        let select_list: String = columns_meta
-            .iter()
-            .map(|c| {
-                let safe_name = sanitize_identifier(&c.name);
-                let quoted = format!("\"{}\"", safe_name);
-                if geom_set.contains(&c.name.to_lowercase()) {
-                    format!("ST_AsGeoJSON({})::text AS {}", quoted, quoted)
-                } else {
-                    quoted
-                }
-            })
-            .collect::<Vec<_>>()
-            .join(", ");
+    // Fetch enum labels for columns that use custom enum types (one batch of queries).
+    let enum_labels_by_column =
+        fetch_enum_labels_by_column(&client, schema, table).await;
+
+    let (query, columns): (String, Vec<ResultColumn>) = if !columns_meta.is_empty() {
+        let select_list: String = build_select_list(&columns_meta, &enum_labels_by_column);
         let order_clause = if let Some(col) = sort_column {
             let safe_col = sanitize_identifier(col);
             let dir = match sort_direction {
@@ -1147,6 +1310,7 @@ pub async fn get_table_data(
             .map(|c| ResultColumn {
                 name: c.name.clone(),
                 data_type: c.data_type.clone(),
+                enum_labels: enum_labels_by_column.get(&c.name).cloned(),
             })
             .collect();
         (q, cols)
@@ -1179,9 +1343,13 @@ pub async fn get_table_data(
             let cols: Vec<ResultColumn> = rows[0]
                 .columns()
                 .iter()
-                .map(|col| ResultColumn {
-                    name: col.name().to_string(),
-                    data_type: pg_type_to_string(col.type_()),
+                .map(|col| {
+                    let name = col.name().to_string();
+                    ResultColumn {
+                        name: name.clone(),
+                        data_type: pg_type_to_string(col.type_()),
+                        enum_labels: enum_labels_by_column.get(&name).cloned(),
+                    }
                 })
                 .collect();
             let data = rows.iter().map(|row| row_to_cells(row)).collect();
@@ -1284,6 +1452,7 @@ pub async fn get_table_data_geojson(
         .map(|c| ResultColumn {
             name: c.name,
             data_type: c.data_type,
+            enum_labels: None,
         })
         .collect();
 
@@ -1554,6 +1723,7 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
                             .map(|col| ResultColumn {
                                 name: col.name().to_string(),
                                 data_type: pg_type_to_string(col.type_()),
+                                enum_labels: None,
                             })
                             .collect()
                     } else {
@@ -1600,6 +1770,7 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
                         columns: vec![ResultColumn {
                             name: "affected_rows".to_string(),
                             data_type: "bigint".to_string(),
+                            enum_labels: None,
                         }],
                         rows: vec![vec![CellValue::Int64(affected as i64)]],
                         row_count: 1,
@@ -1662,6 +1833,7 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
                             .map(|col| ResultColumn {
                                 name: col.name().to_string(),
                                 data_type: pg_type_to_string(col.type_()),
+                                enum_labels: None,
                             })
                             .collect()
                     } else {
@@ -1739,6 +1911,7 @@ pub async fn execute_query(pool: &Arc<Pool>, sql: &str) -> Result<QueryResult, S
             columns: vec![ResultColumn {
                 name: "statements".to_string(),
                 data_type: "int8".to_string(),
+                enum_labels: None,
             }],
             rows: vec![vec![CellValue::Int64(n as i64)]],
             row_count: 1,
@@ -3114,32 +3287,48 @@ pub async fn delete_database_user(
 
 /// Map pg_catalog.format_type output to a safe PostgreSQL cast type for bind params.
 /// Handles types with precision/length e.g. "numeric(10,2)", "character varying(255)".
-fn pg_cast_type(data_type: &str) -> &'static str {
-    let lower = data_type.trim().to_lowercase();
-    let base: &str = lower
+/// Returns the type name to use after :: in SET/WHERE (e.g. "text", "uuid", "\"public\".\"driver_status\"").
+fn pg_cast_type_expr(data_type: &str) -> String {
+    let trimmed = data_type.trim();
+    let base = trimmed
         .split('(')
         .next()
         .map(|s| s.trim())
-        .unwrap_or(lower.as_str());
+        .unwrap_or(trimmed);
     if base.is_empty() {
-        return "text";
+        return "text".to_string();
     }
-    match base {
-        "smallint" | "int2" => "smallint",
-        "integer" | "int4" => "integer",
-        "bigint" | "int8" => "bigint",
-        "real" | "float4" => "real",
-        "double precision" | "float8" => "double precision",
-        "numeric" | "decimal" => "numeric",
-        "boolean" | "bool" => "boolean",
-        "text" | "character varying" | "varchar" | "character" | "char" | "bpchar" => "text",
-        "uuid" => "uuid",
-        "date" => "date",
-        "time without time zone" | "time" => "time",
-        "timestamp without time zone" | "timestamp" => "timestamp",
-        "timestamp with time zone" | "timestamptz" => "timestamptz",
-        "json" | "jsonb" => "jsonb",
-        _ => "text",
+    let lower = base.to_lowercase();
+    let builtin: Option<&'static str> = match lower.as_str() {
+        "smallint" | "int2" => Some("smallint"),
+        "integer" | "int4" => Some("integer"),
+        "bigint" | "int8" => Some("bigint"),
+        "real" | "float4" => Some("real"),
+        "double precision" | "float8" => Some("double precision"),
+        "numeric" | "decimal" => Some("numeric"),
+        "boolean" | "bool" => Some("boolean"),
+        "text" | "character varying" | "varchar" | "character" | "char" | "bpchar" => Some("text"),
+        "uuid" => Some("uuid"),
+        "date" => Some("date"),
+        "time without time zone" | "time" => Some("time"),
+        "timestamp without time zone" | "timestamp" => Some("timestamp"),
+        "timestamp with time zone" | "timestamptz" => Some("timestamptz"),
+        "json" | "jsonb" => Some("jsonb"),
+        _ => None,
+    };
+    if let Some(t) = builtin {
+        return t.to_string();
+    }
+    // Custom types (e.g. enums): use the type name with proper quoting so UPDATE/INSERT accept the value.
+    // format_type can return "driver_status" or "public.driver_status".
+    if base.contains('.') {
+        let parts: Vec<String> = base
+            .split('.')
+            .map(|p| format!("\"{}\"", p.trim().replace('"', "\"\"")))
+            .collect();
+        parts.join(".")
+    } else {
+        format!("\"{}\"", base.replace('"', "\"\""))
     }
 }
 
@@ -3177,7 +3366,7 @@ pub async fn update_table_row(
         .enumerate()
         .map(|(i, (col, _))| {
             let safe_col = sanitize_identifier(col);
-            let cast = pg_cast_type(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
+            let cast = pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
             format!("\"{}\" = ${}::{}", safe_col, i + 1, cast)
         })
         .collect();
@@ -3189,7 +3378,7 @@ pub async fn update_table_row(
         .map(|(i, col)| {
             let safe_col = sanitize_identifier(col);
             let param_idx = updates.len() + i + 1;
-            let cast = pg_cast_type(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
+            let cast = pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
             format!("\"{}\" = ${}::{}", safe_col, param_idx, cast)
         })
         .collect();
@@ -3259,7 +3448,7 @@ pub async fn insert_table_row(
         .iter()
         .enumerate()
         .map(|(i, (col, _))| {
-            let cast = pg_cast_type(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
+            let cast = pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
             format!("${}::{}", i + 1, cast)
         })
         .collect();
@@ -3330,7 +3519,7 @@ pub async fn insert_table_rows_bulk(
             .enumerate()
             .map(|(i, (col, _))| {
                 let cast =
-                    pg_cast_type(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
+                    pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
                 format!("${}::{}", i + 1, cast)
             })
             .collect();
@@ -3394,7 +3583,7 @@ pub async fn delete_table_rows(
                 .map(|(col_i, col)| {
                     let param_idx = start + col_i + 1;
                     let cast =
-                        pg_cast_type(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
+                        pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
                     format!("${}::{}", param_idx, cast)
                 })
                 .collect();
@@ -3451,6 +3640,15 @@ pub async fn search_table_data(
     let safe_table = sanitize_identifier(table);
     let safe_col = sanitize_identifier(column);
 
+    let columns_meta = get_columns(pool, schema, table).await.unwrap_or_default();
+    let enum_labels_by_column =
+        fetch_enum_labels_by_column(&client, schema, table).await;
+    let select_list = if columns_meta.is_empty() {
+        "*".to_string()
+    } else {
+        build_select_list(&columns_meta, &enum_labels_by_column)
+    };
+
     let safe_op: &str = match operator.to_uppercase().trim() {
         "=" => "=",
         "!=" | "<>" => "!=",
@@ -3472,13 +3670,13 @@ pub async fn search_table_data(
 
     let query = if is_null_op {
         format!(
-            "SELECT * FROM \"{}\".\"{}\" WHERE \"{}\" {} LIMIT {}",
-            safe_schema, safe_table, safe_col, safe_op, limit
+            "SELECT {} FROM \"{}\".\"{}\" WHERE \"{}\" {} LIMIT {}",
+            select_list, safe_schema, safe_table, safe_col, safe_op, limit
         )
     } else {
         format!(
-            "SELECT * FROM \"{}\".\"{}\" WHERE \"{}\" {} $1 LIMIT {}",
-            safe_schema, safe_table, safe_col, safe_op, limit
+            "SELECT {} FROM \"{}\".\"{}\" WHERE \"{}\" {} $1 LIMIT {}",
+            select_list, safe_schema, safe_table, safe_col, safe_op, limit
         )
     };
 
@@ -3496,13 +3694,23 @@ pub async fn search_table_data(
             .map_err(|e| format!("Query error: {}", e))?
     };
 
-    let columns: Vec<ResultColumn> = if !rows.is_empty() {
+    let columns: Vec<ResultColumn> = if !columns_meta.is_empty() {
+        columns_meta
+            .iter()
+            .map(|c| ResultColumn {
+                name: c.name.clone(),
+                data_type: c.data_type.clone(),
+                enum_labels: enum_labels_by_column.get(&c.name).cloned(),
+            })
+            .collect()
+    } else if !rows.is_empty() {
         rows[0]
             .columns()
             .iter()
             .map(|col| ResultColumn {
                 name: col.name().to_string(),
                 data_type: pg_type_to_string(col.type_()),
+                enum_labels: None,
             })
             .collect()
     } else {
@@ -4589,6 +4797,15 @@ pub async fn search_table_data_multi(
     let safe_schema = sanitize_identifier(schema);
     let safe_table = sanitize_identifier(table);
 
+    let columns_meta = get_columns(pool, schema, table).await.unwrap_or_default();
+    let enum_labels_by_column =
+        fetch_enum_labels_by_column(&client, schema, table).await;
+    let select_list = if columns_meta.is_empty() {
+        "*".to_string()
+    } else {
+        build_select_list(&columns_meta, &enum_labels_by_column)
+    };
+
     const VALID_OPS: &[&str] = &[
         "=",
         "!=",
@@ -4676,29 +4893,43 @@ pub async fn search_table_data_multi(
     // DATA
     let offset = (page.saturating_sub(1)) as i64 * limit as i64;
     let data_sql = format!(
-        "SELECT * FROM \"{}\".\"{}\" {} {} LIMIT {} OFFSET {}",
-        safe_schema, safe_table, where_clause, order_clause, limit, offset
+        "SELECT {} FROM \"{}\".\"{}\" {} {} LIMIT {} OFFSET {}",
+        select_list, safe_schema, safe_table, where_clause, order_clause, limit, offset
     );
 
-    // Use prepare to get column metadata even for empty result sets
-    let stmt = client
-        .prepare(&data_sql)
-        .await
-        .map_err(|e| format!("Prepare error: {}", e))?;
-
-    let columns: Vec<ResultColumn> = stmt
-        .columns()
-        .iter()
-        .map(|col| ResultColumn {
-            name: col.name().to_string(),
-            data_type: pg_type_to_string(col.type_()),
-        })
-        .collect();
+    let columns_from_meta: Vec<ResultColumn> = if !columns_meta.is_empty() {
+        columns_meta
+            .iter()
+            .map(|c| ResultColumn {
+                name: c.name.clone(),
+                data_type: c.data_type.clone(),
+                enum_labels: enum_labels_by_column.get(&c.name).cloned(),
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let rows = client
-        .query(&stmt, &[])
+        .query(&data_sql, &[])
         .await
         .map_err(|e| format!("Query error: {}", e))?;
+
+    let columns: Vec<ResultColumn> = if !columns_from_meta.is_empty() {
+        columns_from_meta
+    } else if !rows.is_empty() {
+        rows[0]
+            .columns()
+            .iter()
+            .map(|col| ResultColumn {
+                name: col.name().to_string(),
+                data_type: pg_type_to_string(col.type_()),
+                enum_labels: None,
+            })
+            .collect()
+    } else {
+        Vec::new()
+    };
 
     let data: Vec<Vec<CellValue>> = rows.iter().map(|row| row_to_cells(row)).collect();
     let row_count = data.len();

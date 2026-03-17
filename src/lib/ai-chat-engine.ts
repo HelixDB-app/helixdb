@@ -168,7 +168,8 @@ export async function fetchSchemaMetadata(
 
 // ── System Prompt Builder ────────────────────────────────────────────────────
 
-function buildSystemPrompt(compressedSchema: string): string {
+function buildSystemPrompt(compressedSchema: string, extraContext?: string): string {
+    const contextBlock = extraContext?.trim() ? `\n${extraContext.trim()}\n` : "";
     return `You are Nova, an expert PostgreSQL assistant embedded inside pgStudio (HelixDB).
 You help developers write, debug, optimize, and understand SQL queries.
 
@@ -176,6 +177,7 @@ DATABASE SCHEMA (compressed format — T:schema.table|C:column(type,flags)):
 ═══════════════════════════════════════════════════════════════════════════
 ${compressedSchema}
 ═══════════════════════════════════════════════════════════════════════════
+${contextBlock}
 
 FLAGS LEGEND: pk=primary key, fk→table.col=foreign key reference, null=nullable
 
@@ -195,6 +197,7 @@ OUTPUT RULES:
 6. For complex queries, break down the logic step by step.
 7. If the user's request is ambiguous, ask a clarifying question.
 8. When suggesting improvements, explain WHY they help.
+9. If the user provides a CONTEXT section with SQL or code, treat it as authoritative and base your answer on it.
 
 RESPONSE STYLE:
 - Be concise and professional
@@ -508,7 +511,8 @@ export class AIChatEngine {
         model: GeminiModelId,
         apiKey: string,
         onChunk: (text: string) => void,
-        images?: ImageAttachment[]
+        images?: ImageAttachment[],
+        contextText?: string
     ): Promise<string> {
         if (!apiKey) {
             throw new AIError(
@@ -539,7 +543,7 @@ export class AIChatEngine {
             parts: buildParts(turn),
         }));
 
-        const systemPrompt = buildSystemPrompt(compressedSchema);
+        const systemPrompt = buildSystemPrompt(compressedSchema, contextText);
 
         // Cancel any in-flight request
         this.abortController?.abort();
@@ -601,7 +605,8 @@ export class AIChatEngine {
         compressedSchema: string,
         model: GeminiModelId,
         apiKey: string,
-        onChunk: (text: string) => void
+        onChunk: (text: string) => void,
+        contextText?: string
     ): Promise<string> {
         const history = this.conversations.get(conversationId);
         if (!history || history.length < 2) {
@@ -625,7 +630,7 @@ export class AIChatEngine {
             parts: buildParts(turn),
         }));
 
-        const systemPrompt = buildSystemPrompt(compressedSchema);
+        const systemPrompt = buildSystemPrompt(compressedSchema, contextText);
 
         this.abortController?.abort();
         this.abortController = new AbortController();
@@ -681,7 +686,8 @@ export class AIChatEngine {
         compressedSchema: string,
         model: GeminiModelId,
         apiKey: string,
-        onChunk: (text: string) => void
+        onChunk: (text: string) => void,
+        contextText?: string
     ): Promise<string> {
         const history = this.conversations.get(conversationId);
         if (!history) {
@@ -698,7 +704,7 @@ export class AIChatEngine {
             parts: buildParts(turn),
         }));
 
-        const systemPrompt = buildSystemPrompt(compressedSchema);
+        const systemPrompt = buildSystemPrompt(compressedSchema, contextText);
 
         this.abortController?.abort();
         this.abortController = new AbortController();

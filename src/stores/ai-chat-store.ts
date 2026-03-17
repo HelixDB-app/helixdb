@@ -28,6 +28,7 @@ export interface ChatMessage {
     timestamp: number;
     isStreaming?: boolean;
     images?: { mimeType: string; previewUrl: string }[]; // For display only (no base64 in store)
+    context?: ChatContextItem[];
 }
 
 export interface Conversation {
@@ -49,6 +50,17 @@ export interface PromptTemplate {
     isCustom?: boolean;
 }
 
+export interface ChatContextItem {
+    id: string;
+    label: string;
+    kind: "sql" | "file" | "code" | "text";
+    content?: string;
+    language?: string;
+    source?: string;
+    size?: number;
+    truncated?: boolean;
+}
+
 interface AIChatState {
     conversations: Conversation[];
     activeConversationId: string | null;
@@ -62,7 +74,7 @@ interface AIChatState {
     createConversation: (model?: GeminiModelId) => string;
     setActiveConversation: (id: string) => void;
     deleteConversation: (id: string) => void;
-    sendMessage: (content: string, images?: ImageAttachment[]) => Promise<void>;
+    sendMessage: (content: string, images?: ImageAttachment[], context?: ChatContextItem[]) => Promise<void>;
     regenerateResponse: (messageId: string) => Promise<void>;
     editMessage: (messageId: string, newContent: string) => Promise<void>;
     switchModel: (model: GeminiModelId) => void;
@@ -85,6 +97,53 @@ function genId(): string {
 function generateTitle(firstMessage: string): string {
     const cleaned = firstMessage.trim().slice(0, 50);
     return cleaned.length < firstMessage.trim().length ? cleaned + "…" : cleaned;
+}
+
+const MAX_CONTEXT_ITEM_CHARS = 12000;
+const MAX_CONTEXT_TOTAL_CHARS = 60000;
+
+function buildContextBlock(items?: ChatContextItem[]): { text: string; summaries: ChatContextItem[] } {
+    if (!items || items.length === 0) return { text: "", summaries: [] };
+
+    const sections: string[] = [];
+    const summaries: ChatContextItem[] = [];
+    let remaining = MAX_CONTEXT_TOTAL_CHARS;
+
+    for (const item of items) {
+        const raw = (item.content ?? "").trim();
+        if (!raw) continue;
+
+        let text = raw;
+        let truncated = false;
+
+        if (text.length > MAX_CONTEXT_ITEM_CHARS) {
+            text = text.slice(0, MAX_CONTEXT_ITEM_CHARS);
+            truncated = true;
+        }
+        if (text.length > remaining) {
+            text = text.slice(0, Math.max(0, remaining));
+            truncated = true;
+        }
+
+        if (!text) break;
+
+        remaining -= text.length;
+        const header = item.source ? `${item.label} — ${item.source}` : item.label;
+        const language = item.language ?? (item.kind === "sql" ? "sql" : "text");
+        sections.push(`### ${header}\n\`\`\`${language}\n${text}\n\`\`\``);
+        summaries.push({
+            ...item,
+            content: text,
+            size: raw.length,
+            truncated: truncated || item.truncated,
+        });
+
+        if (remaining <= 0) break;
+    }
+
+    if (sections.length === 0) return { text: "", summaries: [] };
+    const text = `\n\nCONTEXT (project files & SQL scripts):\n${sections.join("\n\n")}\n`;
+    return { text, summaries };
 }
 
 // ── Store ────────────────────────────────────────────────────────────────────
@@ -135,7 +194,7 @@ export const useAIChatStore = create<AIChatState>()(
                 });
             },
 
-            sendMessage: async (content: string, images?: ImageAttachment[]) => {
+            sendMessage: async (content: string, images?: ImageAttachment[], context?: ChatContextItem[]) => {
                 const state = get();
                 let convId = state.activeConversationId;
 
@@ -158,12 +217,15 @@ export const useAIChatStore = create<AIChatState>()(
                     previewUrl: img.previewUrl ?? `data:${img.mimeType};base64,${img.base64.slice(0, 100)}`,
                 }));
 
+                const { text: contextBlock, summaries: contextSummary } = buildContextBlock(context);
+
                 const userMsg: ChatMessage = {
                     id: genId(),
                     role: "user",
                     content,
                     timestamp: Date.now(),
                     images: imageDisplayData,
+                    context: contextSummary.length > 0 ? contextSummary : undefined,
                 };
 
                 const assistantMsg: ChatMessage = {
@@ -214,7 +276,8 @@ export const useAIChatStore = create<AIChatState>()(
                                 ),
                             }));
                         },
-                        images
+                        images,
+                        contextBlock
                     );
 
                     set((s) => ({
@@ -291,6 +354,8 @@ export const useAIChatStore = create<AIChatState>()(
                 }));
 
                 try {
+                    const lastUserMsg = [...trimmedMessages].reverse().find((m) => m.role === "user");
+                    const { text: contextBlock } = buildContextBlock(lastUserMsg?.context);
                     const fullResponse = await aiChatEngine.regenerateLastResponse(
                         convId, schema, conv.model, apiKey,
                         (chunk) => {
@@ -301,7 +366,8 @@ export const useAIChatStore = create<AIChatState>()(
                                         : c
                                 ),
                             }));
-                        }
+                        },
+                        contextBlock
                     );
                     set((s) => ({
                         isStreaming: false,
@@ -339,7 +405,13 @@ export const useAIChatStore = create<AIChatState>()(
                 const schema = get().cachedSchema ?? "No schema available.";
 
                 const trimmedMessages = conv.messages.slice(0, msgIndex);
-                const editedMsg: ChatMessage = { ...conv.messages[msgIndex], content: newContent };
+                const originalContext = conv.messages[msgIndex]?.context;
+                const { text: contextBlock, summaries: contextSummary } = buildContextBlock(originalContext);
+                const editedMsg: ChatMessage = {
+                    ...conv.messages[msgIndex],
+                    content: newContent,
+                    context: contextSummary.length > 0 ? contextSummary : originalContext,
+                };
                 const assistantMsg: ChatMessage = {
                     id: genId(), role: "assistant", content: "", timestamp: Date.now(), isStreaming: true,
                 };
@@ -366,7 +438,8 @@ export const useAIChatStore = create<AIChatState>()(
                                         : c
                                 ),
                             }));
-                        }
+                        },
+                        contextBlock
                     );
                     set((s) => ({
                         isStreaming: false,
@@ -410,7 +483,13 @@ export const useAIChatStore = create<AIChatState>()(
             },
 
             insertSqlToEditor: (sql: string) => {
-                useQueryStore.getState().addTab("AI Generated", sql);
+                const queryStore = useQueryStore.getState();
+                const activeTabId = queryStore.activeTabId;
+                if (!activeTabId) {
+                    queryStore.addTab("AI Generated", sql);
+                    return;
+                }
+                queryStore.updateSql(activeTabId, sql);
             },
 
             refreshSchema: async () => {
@@ -455,7 +534,11 @@ export const useAIChatStore = create<AIChatState>()(
                 const lines = [`# ${conv.title}`, `*Model: ${conv.model} · ${new Date(conv.createdAt).toLocaleString()}*`, ""];
                 for (const msg of conv.messages) {
                     if (msg.role === "user") {
-                        lines.push(`## You`, "", msg.content, "");
+                        lines.push(`## You`, "");
+                        if (msg.context && msg.context.length > 0) {
+                            lines.push(`*Context:* ${msg.context.map((c) => c.label).join(", ")}`, "");
+                        }
+                        lines.push(msg.content, "");
                     } else if (msg.role === "assistant") {
                         lines.push(`## Nova AI`, "", msg.content, "");
                     }
@@ -486,7 +569,11 @@ export const useAIChatStore = create<AIChatState>()(
             partialize: (state) => ({
                 conversations: state.conversations.map((c) => ({
                     ...c,
-                    messages: c.messages.map((m) => ({ ...m, isStreaming: false })),
+                    messages: c.messages.map((m) => ({
+                        ...m,
+                        isStreaming: false,
+                        context: m.context?.map(({ content, ...rest }) => rest),
+                    })),
                 })),
                 activeConversationId: state.activeConversationId,
                 customTemplates: state.customTemplates,

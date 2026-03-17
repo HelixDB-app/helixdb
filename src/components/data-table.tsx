@@ -317,11 +317,18 @@ function getRowPkValues(
 function validateCell(
     value: string,
     dataType: string,
-    isNullable: boolean
+    isNullable: boolean,
+    enumLabels?: string[] | null
 ): string | null {
     const t = dataType.toLowerCase();
     const trimmed = value.trim();
     if (trimmed === "") return isNullable ? null : "Required";
+    if (enumLabels && enumLabels.length > 0) {
+        if (!enumLabels.includes(trimmed)) {
+            return `Must be one of: ${enumLabels.slice(0, 8).join(", ")}${enumLabels.length > 8 ? "…" : ""}`;
+        }
+        return null;
+    }
     if (t.includes("int") || t === "smallint" || t === "bigint" || t === "serial" || t === "bigserial") {
         const n = Number(trimmed);
         if (Number.isNaN(n) || !Number.isInteger(n)) return "Invalid integer";
@@ -647,7 +654,12 @@ export function DataTable() {
         const col = result.columns.find((c) => c.name === colName);
         const colInfo = tableColumns.find((c) => c.name === colName);
         if (col) {
-            const err = validateCell(editingValue, col.data_type, colInfo?.is_nullable ?? true);
+            const err = validateCell(
+                editingValue,
+                col.data_type,
+                colInfo?.is_nullable ?? true,
+                col.enum_labels ?? undefined
+            );
             if (err) { setCellError(err); return; }
         }
         setCellError(null);
@@ -1175,6 +1187,11 @@ export function DataTable() {
                                                             >
                                                                 {col.name}
                                                             </span>
+                                                            {col.enum_labels?.length ? (
+                                                                <Badge variant="secondary" className="text-[9px] font-normal px-1 py-0 opacity-70 group-hover:opacity-100">
+                                                                    enum
+                                                                </Badge>
+                                                            ) : null}
                                                             <span className="text-[9px] font-mono text-muted-foreground/30 hidden group-hover:inline">{col.data_type}</span>
                                                             {sortColumn === col.name ? (
                                                                 sortDirection === "ASC"
@@ -1287,6 +1304,14 @@ export function DataTable() {
 
                                                         // ── Editing cell ──────────────────────────────────
                                                         if (isThisCellEditing) {
+                                                            const enumLabels = col.enum_labels?.length
+                                                                ? col.enum_labels
+                                                                : null;
+                                                            const isNullable = colInfo?.is_nullable ?? true;
+                                                            const lowerType = col.data_type.toLowerCase();
+                                                            const isBoolType = lowerType === "bool" || lowerType === "boolean";
+                                                            const selectValue =
+                                                                editingValue === "" ? "__null__" : editingValue;
                                                             return (
                                                                 <TableCell
                                                                     key={colIdx}
@@ -1295,32 +1320,117 @@ export function DataTable() {
                                                                 >
                                                                     <div className="flex items-center gap-1">
                                                                         <div className="flex-1 min-w-0">
-                                                                            <Input
-                                                                                autoFocus
-                                                                                value={editingValue}
-                                                                                onChange={(e) => {
-                                                                                    setEditingValue(e.target.value);
-                                                                                    if (cellError) setCellError(null);
-                                                                                }}
-                                                                                onKeyDown={(e) => {
-                                                                                    if (e.key === "Enter") {
-                                                                                        e.preventDefault();
-                                                                                        preventBlurSaveRef.current = true;
-                                                                                        saveCellEdit().finally(() => {
-                                                                                            preventBlurSaveRef.current = false;
-                                                                                        });
-                                                                                    }
-                                                                                    if (e.key === "Escape") {
-                                                                                        e.preventDefault();
-                                                                                        cancelCellEdit();
-                                                                                    }
-                                                                                }}
-                                                                                onBlur={saveCellEdit}
-                                                                                className={cn(
-                                                                                    "h-7 text-xs font-mono w-full",
-                                                                                    cellError && "border-destructive focus-visible:ring-destructive"
-                                                                                )}
-                                                                            />
+                                                                            {enumLabels ? (
+                                                                                <Select
+                                                                                    value={selectValue}
+                                                                                    onValueChange={(v) => {
+                                                                                        setEditingValue(
+                                                                                            v === "__null__" ? "" : v
+                                                                                        );
+                                                                                        if (cellError) setCellError(null);
+                                                                                    }}
+                                                                                    onOpenChange={(open) => {
+                                                                                        if (!open) saveCellEdit();
+                                                                                    }}
+                                                                                >
+                                                                                    <SelectTrigger
+                                                                                    className={cn(
+                                                                                        "h-7 text-xs font-mono w-full min-w-0",
+                                                                                        cellError &&
+                                                                                            "border-destructive focus-visible:ring-destructive"
+                                                                                    )}
+                                                                                    onKeyDown={(e) => {
+                                                                                        if (e.key === "Escape") {
+                                                                                            e.preventDefault();
+                                                                                            cancelCellEdit();
+                                                                                        }
+                                                                                    }}
+                                                                                    >
+                                                                                    <SelectValue placeholder="—" />
+                                                                                    </SelectTrigger>
+                                                                                    <SelectContent>
+                                                                                        {isNullable && (
+                                                                                            <SelectItem value="__null__">
+                                                                                                —
+                                                                                            </SelectItem>
+                                                                                        )}
+                                                                                        {enumLabels.map((label) => (
+                                                                                            <SelectItem
+                                                                                                key={label}
+                                                                                                value={label}
+                                                                                            >
+                                                                                                {label}
+                                                                                            </SelectItem>
+                                                                                        ))}
+                                                                                    </SelectContent>
+                                                                                </Select>
+                                                                            ) : isBoolType ? (
+                                                                                <Select
+                                                                                    value={selectValue}
+                                                                                    onValueChange={(v) => {
+                                                                                        setEditingValue(
+                                                                                            v === "__null__" ? "" : v
+                                                                                        );
+                                                                                        if (cellError) setCellError(null);
+                                                                                    }}
+                                                                                    onOpenChange={(open) => {
+                                                                                        if (!open) saveCellEdit();
+                                                                                    }}
+                                                                                >
+                                                                                    <SelectTrigger
+                                                                                        className={cn(
+                                                                                            "h-7 text-xs font-mono w-full min-w-0",
+                                                                                            cellError &&
+                                                                                                "border-destructive focus-visible:ring-destructive"
+                                                                                        )}
+                                                                                        onKeyDown={(e) => {
+                                                                                            if (e.key === "Escape") {
+                                                                                                e.preventDefault();
+                                                                                                cancelCellEdit();
+                                                                                            }
+                                                                                        }}
+                                                                                    >
+                                                                                        <SelectValue placeholder="—" />
+                                                                                    </SelectTrigger>
+                                                                                    <SelectContent>
+                                                                                        {isNullable && (
+                                                                                            <SelectItem value="__null__">
+                                                                                                —
+                                                                                            </SelectItem>
+                                                                                        )}
+                                                                                        <SelectItem value="true">true</SelectItem>
+                                                                                        <SelectItem value="false">false</SelectItem>
+                                                                                    </SelectContent>
+                                                                                </Select>
+                                                                            ) : (
+                                                                                <Input
+                                                                                    autoFocus
+                                                                                    value={editingValue}
+                                                                                    onChange={(e) => {
+                                                                                        setEditingValue(e.target.value);
+                                                                                        if (cellError) setCellError(null);
+                                                                                    }}
+                                                                                    onKeyDown={(e) => {
+                                                                                        if (e.key === "Enter") {
+                                                                                            e.preventDefault();
+                                                                                            preventBlurSaveRef.current = true;
+                                                                                            saveCellEdit().finally(() => {
+                                                                                                preventBlurSaveRef.current = false;
+                                                                                            });
+                                                                                        }
+                                                                                        if (e.key === "Escape") {
+                                                                                            e.preventDefault();
+                                                                                            cancelCellEdit();
+                                                                                        }
+                                                                                    }}
+                                                                                    onBlur={saveCellEdit}
+                                                                                    className={cn(
+                                                                                        "h-7 text-xs font-mono w-full",
+                                                                                        cellError &&
+                                                                                            "border-destructive focus-visible:ring-destructive"
+                                                                                    )}
+                                                                                />
+                                                                            )}
                                                                             {cellError && (
                                                                                 <p className="text-[10px] text-destructive mt-0.5 px-0.5">{cellError}</p>
                                                                             )}

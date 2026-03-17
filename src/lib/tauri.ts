@@ -45,6 +45,7 @@ import type {
     PgStatStatementsPage,
 } from "./types";
 import type { ExportRequest, ExportResult } from "./export-types";
+import type { SchemaProject } from "./schema-designer-types";
 
 /** Connect to a PostgreSQL database. Pass optional connectionId (e.g. saved connection id) to reuse it. */
 export async function dbConnect(
@@ -1184,6 +1185,31 @@ export async function notesDelete(id: string): Promise<QueryNote[]> {
 /** Search notes by keyword (case-insensitive on title + sql). */
 export async function notesSearch(query: string): Promise<QueryNote[]> {
     return invoke<QueryNote[]>("notes_search", { query });
+}
+
+
+// ─── Schema Designer (persisted via Rust core engine) ─────────────────────
+
+/** Load all schema designer projects */
+export async function schemaDesignerLoadAll(): Promise<SchemaProject[]> {
+    return invoke<SchemaProject[]>("schema_designer_load_all");
+}
+
+/** Get a single schema designer project */
+export async function schemaDesignerGetProject(id: string): Promise<SchemaProject | null> {
+    return invoke<SchemaProject | null>("schema_designer_get_project", { id });
+}
+
+/** Save or update a schema designer project. Returns updated project list. */
+export async function schemaDesignerSaveProject(
+    project: SchemaProject
+): Promise<SchemaProject[]> {
+    return invoke<SchemaProject[]>("schema_designer_save_project", { project });
+}
+
+/** Delete a schema designer project. Returns updated project list. */
+export async function schemaDesignerDeleteProject(id: string): Promise<SchemaProject[]> {
+    return invoke<SchemaProject[]>("schema_designer_delete_project", { id });
 }
 
 

@@ -51,7 +51,7 @@ rusqlite = { version = "0.32", features = ["bundled"] }
 keyring = { version = "3", features = ["apple-native", "windows-native", "sync-secret-service"] }
 
 # Git operations
-git2 = { version = "0.19", default-features = false, features = ["https"] }
+git2 = { version = "0.19", default-features = false, features = ["https", "vendored-openssl"] }
 
 # Runtime .env loading
 dotenvy = "0.15"

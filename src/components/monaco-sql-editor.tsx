@@ -76,6 +76,12 @@ export interface MonacoSqlEditorProps {
         column: number;
         selection?: CollaborationSelection | null;
     }) => void;
+    /** Triggered when Cmd+L is pressed in the editor to add cursor/selection context to AI. */
+    onAddContextShortcut?: (payload: {
+        lineNumber: number;
+        column: number;
+        selection?: CollaborationSelection | null;
+    }) => void;
     /** Called once on mount with a function that can trigger any Monaco editor action by ID. */
     onRegisterActionTrigger?: (trigger: (actionId: string) => void) => void;
 }
@@ -107,6 +113,7 @@ export function MonacoSqlEditor({
     hideNextActionSuggestions = false,
     collaborators = [],
     onCursorActivity,
+    onAddContextShortcut,
     onRegisterActionTrigger,
 }: MonacoSqlEditorProps) {
     const { resolvedTheme } = useTheme();
@@ -964,6 +971,33 @@ export function MonacoSqlEditor({
                         ? editorInstance.getModel()?.getValueInRange(selection) ?? ""
                         : "";
                     triggerExplainRef.current(sql, selectedText || undefined);
+                },
+            });
+
+            // ── Add to AI context (Cmd+L) ─────────────────────────────────
+            editorInstance.addAction({
+                id: "ai-add-context",
+                label: "✦ Add to AI Context (Nova)",
+                keybindings: [monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyL],
+                contextMenuGroupId: "1_modification",
+                contextMenuOrder: 1.7,
+                run: () => {
+                    if (disabledRef.current) return;
+                    const position = editorInstance.getPosition();
+                    const selection = editorInstance.getSelection();
+                    if (!position) return;
+                    onAddContextShortcut?.({
+                        lineNumber: position.lineNumber,
+                        column: position.column,
+                        selection: selection
+                            ? {
+                                startLineNumber: selection.startLineNumber,
+                                startColumn: selection.startColumn,
+                                endLineNumber: selection.endLineNumber,
+                                endColumn: selection.endColumn,
+                            }
+                            : null,
+                    });
                 },
             });
 

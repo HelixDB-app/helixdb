@@ -32,6 +32,8 @@ pub struct SchemaColumn {
     #[serde(default)]
     pub is_primary_key: bool,
     #[serde(default)]
+    pub is_unique: bool,
+    #[serde(default)]
     pub foreign_key: Option<ForeignKeyRef>,
 }
 
@@ -44,6 +46,54 @@ pub struct SchemaIndex {
     pub unique: bool,
     #[serde(default)]
     pub method: String, // btree, hash, gin, gist
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaFunction {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub language: String,
+    #[serde(default)]
+    pub returns: String,
+    #[serde(default)]
+    pub definition: String,
+    #[serde(default)]
+    pub x: f64,
+    #[serde(default)]
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaTrigger {
+    pub id: String,
+    pub name: String,
+    pub table_id: String,
+    pub function_name: String,
+    #[serde(default)]
+    pub timing: String,
+    #[serde(default)]
+    pub events: Vec<String>,
+    #[serde(default)]
+    pub x: f64,
+    #[serde(default)]
+    pub y: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CanvasItem {
+    pub id: String,
+    pub kind: String, // note | image
+    pub x: f64,
+    pub y: f64,
+    #[serde(default)]
+    pub text: Option<String>,
+    #[serde(default)]
+    pub image_url: Option<String>,
+    #[serde(default)]
+    pub schedule: Option<String>,
+    #[serde(default)]
+    pub task: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -82,8 +132,16 @@ pub struct SchemaProject {
     pub tables: Vec<SchemaTable>,
     #[serde(default)]
     pub version_history: Vec<SchemaSnapshot>,
+    #[serde(default)]
+    pub functions: Vec<SchemaFunction>,
+    #[serde(default)]
+    pub triggers: Vec<SchemaTrigger>,
+    #[serde(default)]
+    pub canvas_items: Vec<CanvasItem>,
     pub created_at: String,
     pub updated_at: String,
+    #[serde(default)]
+    pub code: String,
 }
 
 // ── File Persistence ─────────────────────────────────────────────────────────
@@ -148,6 +206,10 @@ pub fn save_project(
         existing.description = project.description;
         existing.tables = project.tables;
         existing.version_history = project.version_history;
+        existing.functions = project.functions;
+        existing.triggers = project.triggers;
+        existing.canvas_items = project.canvas_items;
+        existing.code = project.code;
         existing.updated_at = project.updated_at;
     } else {
         file.projects.push(project);

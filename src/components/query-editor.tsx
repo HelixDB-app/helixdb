@@ -25,6 +25,7 @@ import { QueryReviewPanel } from "@/components/query-review-panel";
 import { format as formatSQL } from "sql-formatter";
 import { MonacoSqlEditor } from "@/components/monaco-sql-editor";
 import { DocumentBlockEditor } from "@/components/document-block-editor";
+import { AIChatPanel } from "@/components/ai-chat-panel";
 import { aiSuggestionEngine } from "@/lib/ai-suggestions";
 import { explainSql } from "@/lib/sql-explain-ai";
 import { getSqlReviewIntent, runSqlSafetyReview, type SqlReviewReport } from "@/lib/sql-review";
@@ -100,6 +101,7 @@ import {
     Shield,
     ShieldCheck,
     StickyNote,
+    Sparkles,
     Terminal,
     X,
 } from "lucide-react";
@@ -206,6 +208,180 @@ function getCachedColumns(cache: Record<string, string[]>, schema: string, table
     const scoped = cache[columnCacheKey(schema, table)];
     if (scoped) return scoped;
     return cache[table.toLowerCase()] ?? [];
+}
+
+// ── Cursor/Selection helpers ───────────────────────────────────────────────
+
+type CursorSelection = {
+    startLineNumber: number;
+    startColumn: number;
+    endLineNumber: number;
+    endColumn: number;
+};
+
+type CursorPayload = {
+    lineNumber: number;
+    column: number;
+    selection?: CursorSelection | null;
+};
+
+function clamp(num: number, min: number, max: number): number {
+    return Math.min(Math.max(num, min), max);
+}
+
+function normalizeSelection(selection: CursorSelection): CursorSelection {
+    const isReversed =
+        selection.startLineNumber > selection.endLineNumber ||
+        (selection.startLineNumber === selection.endLineNumber && selection.startColumn > selection.endColumn);
+    if (!isReversed) return selection;
+    return {
+        startLineNumber: selection.endLineNumber,
+        startColumn: selection.endColumn,
+        endLineNumber: selection.startLineNumber,
+        endColumn: selection.startColumn,
+    };
+}
+
+function getOffsetFromPosition(text: string, lineNumber: number, column: number): number {
+    const lines = text.split("\n");
+    if (lines.length === 0) return 0;
+    const safeLine = clamp(lineNumber, 1, lines.length);
+    let offset = 0;
+    for (let i = 0; i < safeLine - 1; i += 1) {
+        offset += lines[i].length + 1;
+    }
+    const lineText = lines[safeLine - 1] ?? "";
+    const safeColumn = clamp(column, 1, lineText.length + 1);
+    return offset + safeColumn - 1;
+}
+
+function getTextFromSelection(text: string, selection: CursorSelection): string {
+    const normalized = normalizeSelection(selection);
+    const start = getOffsetFromPosition(text, normalized.startLineNumber, normalized.startColumn);
+    const end = getOffsetFromPosition(text, normalized.endLineNumber, normalized.endColumn);
+    if (end <= start) return "";
+    return text.slice(start, end);
+}
+
+function findStatementRanges(sql: string): Array<{ start: number; end: number }> {
+    const ranges: Array<{ start: number; end: number }> = [];
+    let start = 0;
+    let i = 0;
+    let inSingle = false;
+    let inDouble = false;
+    let inLine = false;
+    let inBlock = false;
+    let dollarTag: string | null = null;
+
+    while (i < sql.length) {
+        const ch = sql[i];
+        const next = sql[i + 1];
+
+        if (inLine) {
+            if (ch === "\n") inLine = false;
+            i += 1;
+            continue;
+        }
+        if (inBlock) {
+            if (ch === "*" && next === "/") {
+                inBlock = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if (dollarTag) {
+            if (ch === "$" && sql.startsWith(dollarTag, i)) {
+                i += dollarTag.length;
+                dollarTag = null;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if (inSingle) {
+            if (ch === "'" && next === "'") {
+                i += 2;
+                continue;
+            }
+            if (ch === "'") {
+                inSingle = false;
+            }
+            i += 1;
+            continue;
+        }
+        if (inDouble) {
+            if (ch === "\"") inDouble = false;
+            i += 1;
+            continue;
+        }
+
+        if (ch === "-" && next === "-") {
+            inLine = true;
+            i += 2;
+            continue;
+        }
+        if (ch === "/" && next === "*") {
+            inBlock = true;
+            i += 2;
+            continue;
+        }
+        if (ch === "'") {
+            inSingle = true;
+            i += 1;
+            continue;
+        }
+        if (ch === "\"") {
+            inDouble = true;
+            i += 1;
+            continue;
+        }
+        if (ch === "$") {
+            const match = sql.slice(i).match(/^\$[A-Za-z0-9_]*\$/);
+            if (match) {
+                dollarTag = match[0];
+                i += dollarTag.length;
+                continue;
+            }
+        }
+        if (ch === ";") {
+            ranges.push({ start, end: i });
+            start = i + 1;
+            i += 1;
+            continue;
+        }
+        i += 1;
+    }
+
+    if (start < sql.length) {
+        ranges.push({ start, end: sql.length });
+    }
+    return ranges;
+}
+
+function getLineNumberAtOffset(text: string, offset: number): number {
+    let line = 1;
+    const limit = Math.min(offset, text.length);
+    for (let i = 0; i < limit; i += 1) {
+        if (text[i] === "\n") line += 1;
+    }
+    return line;
+}
+
+function getStatementAtOffset(sql: string, offset: number): { text: string; startOffset: number; endOffset: number } | null {
+    const ranges = findStatementRanges(sql);
+    const candidate = ranges.find((r) => offset >= r.start && offset <= r.end)
+        ?? [...ranges].reverse().find((r) => sql.slice(r.start, r.end).trim().length > 0);
+    if (!candidate) return null;
+
+    let start = candidate.start;
+    let end = candidate.end;
+    while (start < end && /\s/.test(sql[start])) start += 1;
+    while (end > start && /\s/.test(sql[end - 1])) end -= 1;
+    const text = sql.slice(start, end).trim();
+    if (!text) return null;
+    return { text, startOffset: start, endOffset: end };
 }
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -398,14 +574,20 @@ export function QueryEditor() {
 
     // ── UI state ───────────────────────────────────────────────────────────
     const [sidebarPanel, setSidebarPanel] = useState<SidebarPanel | null>("files");
-    const [notesOpen, setNotesOpen] = useState(false);
+    type RightPanelView = "ai" | "collaboration" | "notes";
+    const [rightPanelView, setRightPanelView] = useState<RightPanelView | null>(null);
     const [saveNoteOpen, setSaveNoteOpen] = useState(false);
     const [saveNoteTitle, setSaveNoteTitle] = useState("");
     const [saveNoteLoading, setSaveNoteLoading] = useState(false);
     const [editorFullScreen, setEditorFullScreen] = useState(false);
     const [runSqlFileOpen, setRunSqlFileOpen] = useState(false);
-    const [collaborationPanelOpen, setCollaborationPanelOpen] = useState(false);
     const runSqlFileInputRef = useRef<HTMLInputElement>(null);
+    const toggleRightPanel = useCallback((view: RightPanelView) => {
+        setRightPanelView((current) => (current === view ? null : view));
+    }, []);
+    const openRightPanel = useCallback((view: RightPanelView) => {
+        setRightPanelView(view);
+    }, []);
 
     // Editor split groups (VS Code-style groups within the query editor area)
     const editorGroupCounterRef = useRef(1);
@@ -427,6 +609,9 @@ export function QueryEditor() {
     const tabExecutionStateRef = useRef<Record<string, boolean>>({});
     const appliedRemoteResultAtRef = useRef<Record<string, number>>({});
     const [liveResultMetaByTab, setLiveResultMetaByTab] = useState<Record<string, LiveResultMeta>>({});
+    const cursorByTabRef = useRef<Record<string, CursorPayload>>({});
+    const aiContextHandlerRef = useRef<(() => void) | null>(null);
+    const pendingAiContextAddRef = useRef(false);
     useEffect(() => { tabFileMapRef.current = tabFileMap; }, [tabFileMap]);
 
     // ── Review state ───────────────────────────────────────────────────────
@@ -518,6 +703,68 @@ export function QueryEditor() {
         if (!reviewReport || !activeTab?.sql) return false;
         return normalizeSqlForCompare(reviewReport.sql) !== normalizeSqlForCompare(activeTab.sql);
     }, [reviewReport, activeTab?.sql]);
+
+    const getActiveCursorContext = useCallback((): { text: string; kind: "selection" | "statement" | "full"; range?: { startLine: number; endLine: number } } | null => {
+        if (!activeTabId) return null;
+        const tab = tabsById.get(activeTabId);
+        if (!tab) return null;
+        const cursor = cursorByTabRef.current[activeTabId];
+        if (cursor?.selection) {
+            const normalized = normalizeSelection(cursor.selection);
+            const selectedText = getTextFromSelection(tab.sql, normalized);
+            if (selectedText.trim()) {
+                return {
+                    text: selectedText,
+                    kind: "selection" as const,
+                    range: {
+                        startLine: normalized.startLineNumber,
+                        endLine: normalized.endLineNumber,
+                    },
+                };
+            }
+        }
+        if (cursor) {
+            const offset = getOffsetFromPosition(tab.sql, cursor.lineNumber, cursor.column);
+            const statement = getStatementAtOffset(tab.sql, offset);
+            if (statement?.text?.trim()) {
+                return {
+                    text: statement.text,
+                    kind: "statement" as const,
+                    range: {
+                        startLine: getLineNumberAtOffset(tab.sql, statement.startOffset),
+                        endLine: getLineNumberAtOffset(tab.sql, statement.endOffset),
+                    },
+                };
+            }
+        }
+        return {
+            text: tab.sql,
+            kind: "full" as const,
+            range: {
+                startLine: 1,
+                endLine: Math.max(1, tab.sql.split("\n").length),
+            },
+        };
+    }, [activeTabId, tabsById]);
+
+    const registerAiContextHandler = useCallback((handler: (() => void) | null) => {
+        aiContextHandlerRef.current = handler;
+        if (handler && pendingAiContextAddRef.current) {
+            pendingAiContextAddRef.current = false;
+            handler();
+        }
+    }, []);
+
+    const triggerAiContextAdd = useCallback((tabId: string, payload: CursorPayload) => {
+        cursorByTabRef.current[tabId] = payload;
+        openRightPanel("ai");
+        const handler = aiContextHandlerRef.current;
+        if (handler) {
+            handler();
+            return;
+        }
+        pendingAiContextAddRef.current = true;
+    }, [openRightPanel]);
 
     const schemaContextForAi = useMemo(() => {
         const schema = selectedSchema ?? "public";
@@ -643,7 +890,7 @@ export function QueryEditor() {
 
     useEffect(() => {
         if (collaborationStatus === "connected") {
-            setCollaborationPanelOpen(true);
+            setRightPanelView((current) => current ?? "collaboration");
         }
     }, [collaborationStatus]);
 
@@ -1337,11 +1584,18 @@ export function QueryEditor() {
                 handleExecute();
                 return;
             }
-            if ((e.metaKey || e.ctrlKey) && e.shiftKey && e.key === "N") { e.preventDefault(); setNotesOpen((o) => !o); }
+            const isShiftMod = (e.metaKey || e.ctrlKey) && e.shiftKey;
+            if (isShiftMod) {
+                if (isEditableTarget(e.target)) return;
+                const key = e.key.toUpperCase();
+                if (key === "N") { e.preventDefault(); toggleRightPanel("notes"); return; }
+                if (key === "A") { e.preventDefault(); toggleRightPanel("ai"); return; }
+                if (key === "C") { e.preventDefault(); toggleRightPanel("collaboration"); return; }
+            }
         };
         window.addEventListener("keydown", onKey);
         return () => window.removeEventListener("keydown", onKey);
-    }, [handleExecute]);
+    }, [handleExecute, toggleRightPanel]);
 
     // ── Explain ────────────────────────────────────────────────────────────
     const handleExplain = useCallback(async (tabId?: string, sql?: string) => {
@@ -1589,7 +1843,8 @@ export function QueryEditor() {
     );
 
     const handleCursorActivity = useCallback(
-        (tabId: string, payload: { lineNumber: number; column: number; selection?: { startLineNumber: number; startColumn: number; endLineNumber: number; endColumn: number } | null }) => {
+        (tabId: string, payload: CursorPayload) => {
+            cursorByTabRef.current[tabId] = payload;
             if (collaborationStatus !== "connected") return;
             const docKey = getCollaborationDocKey(tabId, tabFileMapRef.current);
             void publishCursor(docKey, {
@@ -1637,16 +1892,17 @@ export function QueryEditor() {
             }
 
             return (
-                <MonacoSqlEditor
-                    key={`${options.keyPrefix}-${tab.id}`}
-                    value={tab.sql}
-                    onChange={(value) => handleSqlChange(tab.id, value)}
-                    onCursorActivity={(cursor) => handleCursorActivity(tab.id, cursor)}
-                    onExecute={handleExecute}
-                    onReview={handleManualReview}
-                    onFormatSql={handleFormatSql}
-                    onFetchColumns={handleFetchColumns}
-                    onNextAction={handleNextAction}
+                    <MonacoSqlEditor
+                        key={`${options.keyPrefix}-${tab.id}`}
+                        value={tab.sql}
+                        onChange={(value) => handleSqlChange(tab.id, value)}
+                        onCursorActivity={(cursor) => handleCursorActivity(tab.id, cursor)}
+                        onAddContextShortcut={(cursor) => triggerAiContextAdd(tab.id, cursor)}
+                        onExecute={handleExecute}
+                        onReview={handleManualReview}
+                        onFormatSql={handleFormatSql}
+                        onFetchColumns={handleFetchColumns}
+                        onNextAction={handleNextAction}
                     reviewIssues={options.reviewIssues}
                     schemaContext={schemaContext}
                     collaborators={getCollaboratorsForTab(tab.id)}
@@ -1751,6 +2007,7 @@ export function QueryEditor() {
     }, []);
 
     const isSwitchingDb = useConnectionStore((s) => s.isSwitchingDatabase);
+    const rightPanelMode = rightPanelView;
 
     return (
         <div className="flex h-full overflow-hidden bg-background">
@@ -1957,9 +2214,9 @@ export function QueryEditor() {
                                 variant="outline"
                                 size="sm"
                                 className="h-6 border-cyan-500/30 bg-cyan-500/10 px-2 text-[10px] text-cyan-100 hover:bg-cyan-500/20"
-                                onClick={() => setCollaborationPanelOpen((value) => !value)}
+                                onClick={() => toggleRightPanel("collaboration")}
                             >
-                                {collaborationPanelOpen ? "Hide collaboration" : "Show collaboration"}
+                                {rightPanelView === "collaboration" ? "Hide collaboration" : "Show collaboration"}
                             </Button>
                         </div>
                     </div>
@@ -1992,19 +2249,6 @@ export function QueryEditor() {
                         onRunPending={handleRunAfterReview}
                         onCancelPending={() => setReviewPendingApproval(null)}
                     />
-                )}
-
-                {/* Notes panel */}
-                {notesOpen && (
-                    <div className="shrink-0 border-b border-border/20 overflow-hidden flex flex-col" style={{ height: "min(22rem, 40vh)" }}>
-                        <NotesPanel
-                            onInsertSql={(sql) => {
-                                if (activeTabId) { updateSql(activeTabId, sql); setNotesOpen(false); }
-                                else { addTab("From Note", sql); setNotesOpen(false); }
-                            }}
-                            onClose={() => setNotesOpen(false)}
-                        />
-                    </div>
                 )}
 
                 {activeTab ? (
@@ -2378,18 +2622,18 @@ export function QueryEditor() {
                     </div>
                 )}
 
-                {/* Notes panel toggle in tab bar area — sticky note button */}
+                {/* Notes toggle */}
                 {activeTab && (
                     <Tooltip>
                         <TooltipTrigger asChild>
                             <button
                                 className={cn(
                                     "fixed bottom-8 right-4 z-30 h-8 w-8 flex items-center justify-center rounded-full shadow-lg border transition-all",
-                                    notesOpen
+                                    rightPanelView === "notes"
                                         ? "bg-amber-500/15 border-amber-500/30 text-amber-400"
                                         : "bg-card/80 border-border/40 text-muted-foreground hover:text-foreground backdrop-blur-sm"
                                 )}
-                                onClick={() => setNotesOpen((o) => !o)}
+                                onClick={() => toggleRightPanel("notes")}
                             >
                                 <StickyNote className="h-3.5 w-3.5" />
                             </button>
@@ -2398,24 +2642,71 @@ export function QueryEditor() {
                     </Tooltip>
                 )}
 
-                {!collaborationPanelOpen && (
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <button
-                                className="fixed bottom-20 right-4 z-30 h-8 rounded-full border border-cyan-500/35 bg-cyan-500/15 px-3 text-[10px] font-semibold text-cyan-100 shadow-lg backdrop-blur-sm transition-colors hover:bg-cyan-500/25"
-                                onClick={() => setCollaborationPanelOpen(true)}
-                            >
-                                Collaboration
-                            </button>
-                        </TooltipTrigger>
-                        <TooltipContent side="left">Open collaboration panel</TooltipContent>
-                    </Tooltip>
-                )}
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <button
+                            className={cn(
+                                "fixed bottom-20 right-4 z-30 h-8 w-8 flex items-center justify-center rounded-full shadow-lg border transition-all backdrop-blur-sm",
+                                rightPanelView === "ai"
+                                    ? "bg-primary/15 border-primary/30 text-primary"
+                                    : "bg-card/80 border-border/40 text-muted-foreground hover:text-foreground"
+                            )}
+                            onClick={() => {
+                                toggleRightPanel("ai");
+                            }}
+                        >
+                            <Sparkles className="h-3.5 w-3.5" />
+                        </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">{rightPanelView === "ai" ? "Hide AI Assistant" : "Open AI Assistant"} (⌘⇧A)</TooltipContent>
+                </Tooltip>
+
+                <Tooltip>
+                    <TooltipTrigger asChild>
+                        <button
+                            className={cn(
+                                "fixed bottom-32 right-4 z-30 h-8 rounded-full border px-3 text-[10px] font-semibold shadow-lg backdrop-blur-sm transition-colors",
+                                rightPanelView === "collaboration"
+                                    ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-100"
+                                    : "bg-cyan-500/15 border-cyan-500/35 text-cyan-100 hover:bg-cyan-500/25"
+                            )}
+                            onClick={() => {
+                                toggleRightPanel("collaboration");
+                            }}
+                        >
+                            Collaboration
+                        </button>
+                    </TooltipTrigger>
+                    <TooltipContent side="left">{rightPanelView === "collaboration" ? "Hide collaboration panel" : "Open collaboration panel"} (⌘⇧C)</TooltipContent>
+                </Tooltip>
             </div>
 
-            {collaborationPanelOpen && (
-                <div className="w-[340px] shrink-0 border-l border-border/25">
-                    <CollaborationPanel connectionId={connectionId} />
+            {rightPanelMode && (
+                <div
+                    className={cn(
+                        "shrink-0 border-l border-border/25 h-full flex flex-col min-h-0",
+                        rightPanelMode === "collaboration" ? "w-[340px]" : rightPanelMode === "notes" ? "w-[360px]" : "w-[420px]"
+                    )}
+                >
+                    {rightPanelMode === "ai" && (
+                        <AIChatPanel
+                            variant="sidebar"
+                            getCursorContext={getActiveCursorContext}
+                            registerAddContextHandler={registerAiContextHandler}
+                        />
+                    )}
+                    {rightPanelMode === "collaboration" && (
+                        <CollaborationPanel connectionId={connectionId} />
+                    )}
+                    {rightPanelMode === "notes" && (
+                        <NotesPanel
+                            onInsertSql={(sql) => {
+                                if (activeTabId) { updateSql(activeTabId, sql); setRightPanelView(null); }
+                                else { addTab("From Note", sql); setRightPanelView(null); }
+                            }}
+                            onClose={() => setRightPanelView(null)}
+                        />
+                    )}
                 </div>
             )}
         </div>
