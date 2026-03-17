@@ -12,6 +12,7 @@ import { useCollaborationStore } from "@/stores/collaboration-store";
 import { authFetchProfile, authGetToken } from "@/lib/tauri";
 import { eventMatchesCombo, formatShortcut, isEditableTarget } from "@/lib/shortcut-keys";
 import { APP_NAME } from "@/lib/app-config";
+import { useLayoutStore } from "@/stores/layout-store";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import dynamic from "next/dynamic";
@@ -30,7 +31,7 @@ import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 // Heavy components loaded lazily to reduce initial bundle size
 const Sidebar = dynamic(() => import("@/components/sidebar").then((m) => ({ default: m.Sidebar })), { ssr: false });
-const DataTable = dynamic(() => import("@/components/data-table").then((m) => ({ default: m.DataTable })), { ssr: false });
+const TableLayoutView = dynamic(() => import("@/components/table-layout-view").then((m) => ({ default: m.TableLayoutView })), { ssr: false });
 const QueryEditor = dynamic(() => import("@/components/query-editor").then((m) => ({ default: m.QueryEditor })), { ssr: false });
 const SessionMonitor = dynamic(() => import("@/components/session-monitor").then((m) => ({ default: m.SessionMonitor })), { ssr: false });
 const IndexBuilder = dynamic(() => import("@/components/index-builder").then((m) => ({ default: m.IndexBuilder })), { ssr: false });
@@ -88,6 +89,7 @@ export default function Home() {
         connections,
         activeConnectionId,
     } = useConnectionStore();
+    const { openTab } = useLayoutStore();
     const getCombo = useShortcutsStore((s) => s.getCombo);
     const { user, isAuthenticated, setUser, setLoading: setAuthLoading } = useAuthStore();
     const handleCollabDeepLink = useCollaborationStore((s) => s.handleDeepLinkUrl);
@@ -647,7 +649,7 @@ export default function Home() {
 
                         <ResizablePanel defaultSize={80}>
                             <div className="h-full min-h-0" role="tabpanel" tabIndex={0} aria-label="Active view content">
-                                {activeView === "data" && <DataTable />}
+                                {activeView === "data" && <TableLayoutView />}
                                 {activeView === "query" && <QueryEditor />}
                                 {activeView === "tests" && <SqlUnitTestRunner />}
                                 {activeView === "sessions" && <SessionMonitor />}
@@ -677,7 +679,7 @@ export default function Home() {
                 onNavigateToData={() => setActiveView("data")}
                 onNavigateToTable={(schema, table) => {
                     setActiveView("data");
-                    selectTable(schema, table);
+                    openTab(schema, table);
                 }}
             />
 

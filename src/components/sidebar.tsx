@@ -5,6 +5,7 @@ import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useShallow } from "zustand/react/shallow";
 import { getSavedConnections } from "@/lib/tauri";
+import { useLayoutStore } from "@/stores/layout-store";
 import type { SavedConnection } from "@/lib/types";
 import { ConnectionEnvBadge } from "@/components/connection-env-badge";
 import { ConnectionSwitcher } from "@/components/connection-switcher";
@@ -579,6 +580,7 @@ export function Sidebar({
     const [sectionRenderLimit, setSectionRenderLimit] = useState<Record<string, number>>({});
 
     const [createDatabaseOpen, setCreateDatabaseOpen] = useState(false);
+    const { openTab } = useLayoutStore();
     const [dropDbName, setDropDbName] = useState<string | null>(null);
     const [isDroppingDb, setIsDroppingDb] = useState(false);
     const [docWriterOpen, setDocWriterOpen] = useState(false);
@@ -1089,7 +1091,7 @@ export function Sidebar({
                                                                     rowCount={tableItem.row_count}
                                                                     tableComment={tableItem.table_comment}
                                                                     isActive={selectedSchema === schemaName && selectedTable === tableItem.name}
-                                                                    onClick={() => { onSelectObject?.(); selectTable(schemaName, tableItem.name); }}
+                                                                    onClick={() => { onSelectObject?.(); openTab(schemaName, tableItem.name); }}
                                                                     onOpenManager={(tab) => setManagerDialog({ schema: schemaName, table: tableItem.name, tab })}
                                                                     onSeedData={(s, t) => setSeedDialog({ schema: s, table: t })}
                                                                 />
@@ -1122,7 +1124,7 @@ export function Sidebar({
                                                                             rowCount={viewItem.row_count}
                                                                             tableComment={viewItem.table_comment}
                                                                             isActive={selectedSchema === schemaName && selectedTable === viewItem.name}
-                                                                            onClick={() => { onSelectObject?.(); selectTable(schemaName, viewItem.name); }}
+                                                                            onClick={() => { onSelectObject?.(); openTab(schemaName, viewItem.name); }}
                                                                             onOpenManager={(tab) => setManagerDialog({ schema: schemaName, table: viewItem.name, tab })}
                                                                         />
                                                                     ))}

@@ -356,17 +356,18 @@ function formatRecentAge(openedAt: number): string {
 
 const BATCH_SIZE = 30;
 
-export function DataTable() {
+export function DataTable({ schema, table }: { schema: string; table: string }) {
     const {
         connectionId,
-        selectedSchema,
-        selectedTable,
         previewSelection,
         recentTables,
         selectTable,
         eventTriggers,
         refreshTrigger,
     } = useConnectionStore();
+
+    const selectedSchema = schema;
+    const selectedTable = table;
 
     // ── Core data ─────────────────────────────────────────────────────────────
     const [result, setResult] = useState<QueryResult | null>(null);
@@ -877,9 +878,9 @@ export function DataTable() {
         );
     }, [result, displayRows]);
 
-    const isTableView = previewSelection?.kind === "table" || previewSelection?.kind === "view";
-    const tableSchema = isTableView && previewSelection ? (previewSelection as { schema: string }).schema : "";
-    const tableNameForExport = isTableView && previewSelection ? (previewSelection as { name: string }).name : "";
+    const isTableView = true; // For tabbed interface, we always show table data based on props.
+    const tableSchema = schema;
+    const tableNameForExport = table;
 
     const handleExport = useCallback(
         (format: "csv" | "json") => {
@@ -898,56 +899,9 @@ export function DataTable() {
         [result, displayRows, tableNameForExport]
     );
 
-    // ── Empty / non-table states ──────────────────────────────────────────────
-    if (!previewSelection) {
-        return (
-            <div className="flex h-full flex-col items-center justify-center px-6 text-muted-foreground select-none">
-                <div className="flex flex-col items-center gap-3">
-                    <div className="h-16 w-16 rounded-2xl bg-muted/20 flex items-center justify-center">
-                        <Table2 className="h-8 w-8 opacity-20" />
-                    </div>
-                    <div className="text-center">
-                        <p className="text-sm font-medium text-muted-foreground/70">Select an object</p>
-                        <p className="text-xs mt-1 text-muted-foreground/40">
-                            Choose a table, view, function, type, or event trigger from the sidebar
-                        </p>
-                    </div>
-                </div>
-                {recentTables.length > 0 && (
-                    <div className="mt-8 w-full max-w-2xl rounded-xl border border-border/60 bg-card/40 p-3">
-                        <p className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground/55">
-                            Recent Tables
-                        </p>
-                        <div className="grid gap-1 md:grid-cols-2">
-                            {recentTables.slice(0, 8).map((item) => (
-                                <button
-                                    key={`${item.schema}.${item.table}`}
-                                    type="button"
-                                    onClick={() => selectTable(item.schema, item.table)}
-                                    className="flex items-center gap-2 rounded-md border border-transparent px-2 py-1.5 text-left text-muted-foreground/70 hover:border-border hover:bg-muted/40 hover:text-foreground transition-all"
-                                >
-                                    <Table2 className="h-3.5 w-3.5 shrink-0 text-emerald-400/80" />
-                                    <span className="truncate flex-1 font-mono text-xs">{item.table}</span>
-                                    <span className="shrink-0 text-[10px] text-muted-foreground/45">{item.schema}</span>
-                                    <span className="shrink-0 text-[10px] text-muted-foreground/45">{formatRecentAge(item.opened_at)}</span>
-                                </button>
-                            ))}
-                        </div>
-                    </div>
-                )}
-            </div>
-        );
-    }
-
-    if (!isTableView) {
-        return (
-            <ObjectPreviewPanel
-                connectionId={connectionId}
-                previewSelection={previewSelection}
-                eventTriggers={eventTriggers}
-            />
-        );
-    }
+    // ── Table data state ──────────────────────────────────────────────
+    // Previously, non-table selections (functions, triggers) were rendered here.
+    // They should now be handled separately. For now, we only render tables.
 
     if (error && !isLoading) {
         return (
