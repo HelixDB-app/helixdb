@@ -3367,7 +3367,9 @@ pub async fn update_table_row(
         .map(|(i, (col, _))| {
             let safe_col = sanitize_identifier(col);
             let cast = pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
-            format!("\"{}\" = ${}::{}", safe_col, i + 1, cast)
+            // Force params to be TEXT so we can pass strings, then cast to the target type.
+            // This avoids "error serializing parameter" for non-text columns (uuid, jsonb, etc).
+            format!("\"{}\" = ${}::text::{}", safe_col, i + 1, cast)
         })
         .collect();
     let set_clause = set_parts.join(", ");
@@ -3379,7 +3381,7 @@ pub async fn update_table_row(
             let safe_col = sanitize_identifier(col);
             let param_idx = updates.len() + i + 1;
             let cast = pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
-            format!("\"{}\" = ${}::{}", safe_col, param_idx, cast)
+            format!("\"{}\" = ${}::text::{}", safe_col, param_idx, cast)
         })
         .collect();
     let where_clause = where_parts.join(" AND ");
@@ -3449,7 +3451,7 @@ pub async fn insert_table_row(
         .enumerate()
         .map(|(i, (col, _))| {
             let cast = pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
-            format!("${}::{}", i + 1, cast)
+            format!("${}::text::{}", i + 1, cast)
         })
         .collect();
     let values_clause = placeholders.join(", ");
@@ -3520,7 +3522,8 @@ pub async fn insert_table_rows_bulk(
             .map(|(i, (col, _))| {
                 let cast =
                     pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
-                format!("${}::{}", i + 1, cast)
+                // Force params to be text then cast to target type to avoid serialization errors.
+                format!("${}::text::{}", i + 1, cast)
             })
             .collect();
         let values_clause = placeholders.join(", ");
@@ -3584,7 +3587,8 @@ pub async fn delete_table_rows(
                     let param_idx = start + col_i + 1;
                     let cast =
                         pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
-                    format!("${}::{}", param_idx, cast)
+                    // Force params to be text then cast to target type to avoid serialization errors.
+                    format!("${}::text::{}", param_idx, cast)
                 })
                 .collect();
             format!("({})", parts.join(", "))

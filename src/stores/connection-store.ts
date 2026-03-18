@@ -32,6 +32,7 @@ import {
     updateSavedConnectionDatabaseName,
 } from "@/lib/tauri";
 import { notifyNoInternetDetected } from "@/lib/network-errors";
+import { track } from "@/lib/analytics";
 
 type LoadStatus = "idle" | "loading" | "success" | "error";
 
@@ -617,11 +618,13 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
             clearAllPendingLoads();
             set({ isConnecting: true, connectionError: null, connectionString });
             try {
+                void track("db_connect_attempt", { has_saved_id: !!savedConnectionId });
                 const response: ConnectionResponse = await dbConnect(
                     connectionString,
                     savedConnectionId ?? undefined
                 );
                 const connId = response.connection_id;
+                void track("db_connect_success", { has_saved_id: !!savedConnectionId });
                 set({ isLoadingSchemas: true });
                 const schemas = await dbListSchemas(connId);
                 const publicSchema = schemas.find((s) => s.name === "public");
@@ -696,6 +699,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                     postConnectRedirectPending: false,
                     connectionError: parseConnectionError(String(error)),
                 });
+                void track("db_connect_error", { has_saved_id: !!savedConnectionId });
             }
         },
 

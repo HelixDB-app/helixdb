@@ -38,9 +38,9 @@ const features = [
     },
     {
         icon: Lock,
-        title: "Zero-Trust Security",
+        title: "Privacy-first",
         description:
-            "Credentials are stored encrypted on-device and never sent to any server. All connections are direct—no cloud relay, no telemetry.",
+            "Credentials are stored on-device and connections are direct—no cloud relay. Optional crash/diagnostic reporting can be enabled for beta support.",
         accent: "from-violet-500 to-purple-500",
         glow: "shadow-violet-500/20",
     },
@@ -190,9 +190,7 @@ export function WelcomeScreen({ onDismiss }: WelcomeScreenProps) {
                     <Shield className="h-4 w-4 shrink-0 text-violet-400 mt-0.5" />
                     <p className="text-xs text-muted-foreground leading-relaxed">
                         <span className="font-medium text-violet-300">Your data stays yours.</span>{" "}
-                        {APP_NAME} never collects usage data, never sends credentials remotely, and never
-                        requires an account. Everything runs locally—your database connections are
-                        between you and your server only.
+                        {APP_NAME} connects directly to your database (no proxy). For beta support, you can optionally enable lightweight crash/diagnostic reporting—never credentials.
                     </p>
                 </div>
 

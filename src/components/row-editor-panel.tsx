@@ -5,9 +5,19 @@ import { X, Check, Loader2, Database, AlertCircle } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
+import {
+    Select,
+    SelectContent,
+    SelectItem,
+    SelectTrigger,
+    SelectValue,
+} from "@/components/ui/select";
 import { toast } from "sonner";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { DateTimeInput } from "@/components/date-time-input";
 import { dbUpdateTableRow } from "@/lib/tauri";
+import { formatDbError } from "@/lib/db-errors";
+import { getDateTimeMode } from "@/lib/date-time";
 import type { CellValue, ResultColumn, ColumnInfo } from "@/lib/types";
 import { formatCellValue } from "@/lib/types";
 
@@ -104,8 +114,9 @@ export function RowEditorPanel({
             onSaveSuccess();
             onClose();
         } catch (err) {
-            setError(String(err));
-            toast.error("Failed to update row");
+            const parsed = formatDbError(err, "update");
+            setError(parsed.description ?? parsed.title);
+            toast.error(parsed.title, { description: parsed.description });
         } finally {
             setIsSaving(false);
         }
@@ -136,6 +147,12 @@ export function RowEditorPanel({
                         const isPk = pkColumnNames.includes(col.name);
                         const colInfo = tableColumnsInfo?.find(c => c.name === col.name);
                         const isNullable = colInfo?.is_nullable ?? true;
+                        const enumLabels = col.enum_labels?.length ? col.enum_labels : null;
+                        const lowerType = col.data_type.toLowerCase();
+                        const isBoolType = lowerType === "bool" || lowerType === "boolean";
+                        const dateTimeMode = getDateTimeMode(col.data_type);
+                        const currentValue = editValues[col.name] ?? "";
+                        const selectValue = currentValue === "" ? "__null__" : currentValue;
                         
                         return (
                             <div key={col.name} className="space-y-1.5">
@@ -155,12 +172,69 @@ export function RowEditorPanel({
                                         <span className="text-[10px] text-destructive/70">*</span>
                                     )}
                                 </Label>
-                                <Input
-                                    value={editValues[col.name] ?? ""}
-                                    onChange={(e) => setEditValues(prev => ({ ...prev, [col.name]: e.target.value }))}
-                                    className="h-8 text-xs font-mono bg-background focus-visible:ring-emerald-500/50"
-                                    placeholder={isNullable ? "NULL" : ""}
-                                />
+                                {enumLabels ? (
+                                    <Select
+                                        value={selectValue}
+                                        onValueChange={(v) =>
+                                            setEditValues((prev) => ({
+                                                ...prev,
+                                                [col.name]: v === "__null__" ? "" : v,
+                                            }))
+                                        }
+                                    >
+                                        <SelectTrigger className="h-8 text-xs font-mono bg-background focus-visible:ring-emerald-500/50">
+                                            <SelectValue placeholder="—" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {isNullable && <SelectItem value="__null__">—</SelectItem>}
+                                            {enumLabels.map((label) => (
+                                                <SelectItem key={label} value={label}>
+                                                    {label}
+                                                </SelectItem>
+                                            ))}
+                                        </SelectContent>
+                                    </Select>
+                                ) : isBoolType ? (
+                                    <Select
+                                        value={selectValue}
+                                        onValueChange={(v) =>
+                                            setEditValues((prev) => ({
+                                                ...prev,
+                                                [col.name]: v === "__null__" ? "" : v,
+                                            }))
+                                        }
+                                    >
+                                        <SelectTrigger className="h-8 text-xs font-mono bg-background focus-visible:ring-emerald-500/50">
+                                            <SelectValue placeholder="—" />
+                                        </SelectTrigger>
+                                        <SelectContent>
+                                            {isNullable && <SelectItem value="__null__">—</SelectItem>}
+                                            <SelectItem value="true">true</SelectItem>
+                                            <SelectItem value="false">false</SelectItem>
+                                        </SelectContent>
+                                    </Select>
+                                ) : dateTimeMode ? (
+                                    <DateTimeInput
+                                        value={currentValue}
+                                        mode={dateTimeMode}
+                                        onChange={(value) =>
+                                            setEditValues((prev) => ({ ...prev, [col.name]: value }))
+                                        }
+                                        inputClassName="h-8 text-xs font-mono bg-background focus-visible:ring-emerald-500/50"
+                                    />
+                                ) : (
+                                    <Input
+                                        value={currentValue}
+                                        onChange={(e) =>
+                                            setEditValues((prev) => ({
+                                                ...prev,
+                                                [col.name]: e.target.value,
+                                            }))
+                                        }
+                                        className="h-8 text-xs font-mono bg-background focus-visible:ring-emerald-500/50"
+                                        placeholder={isNullable ? "NULL" : ""}
+                                    />
+                                )}
                             </div>
                         );
                     })}

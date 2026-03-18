@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { dbInsertTableRow } from "@/lib/tauri";
 import type { ColumnInfo } from "@/lib/types";
+import { formatDbError } from "@/lib/db-errors";
 import { Loader2, Plus } from "lucide-react";
 import { toast } from "sonner";
 
@@ -141,7 +142,8 @@ export function InsertRowDialog({
             onOpenChange(false);
             onSuccess();
         } catch (e) {
-            toast.error(String(e));
+            const err = formatDbError(e, "insert");
+            toast.error(err.title, { description: err.description });
         } finally {
             setIsSubmitting(false);
         }

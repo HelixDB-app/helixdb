@@ -3,6 +3,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { useLayoutStore, LayoutNode, PaneNode, SplitNode, TableTab } from "@/stores/layout-store";
 import { useConnectionStore } from "@/stores/connection-store";
+import { useShortcutsStore } from "@/stores/shortcuts-store";
+import { eventMatchesCombo, isEditableTarget } from "@/lib/shortcut-keys";
 import { DataTable } from "@/components/data-table";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable";
 import { cn } from "@/lib/utils";
@@ -22,9 +24,62 @@ function formatRecentAge(timestamp: number | string) {
     return `${Math.floor(hours / 24)}d ago`;
 }
 
+function findPaneById(node: LayoutNode, paneId: string): PaneNode | null {
+    if (node.type === "pane") return node.id === paneId ? node : null;
+    for (const child of node.children) {
+        const found = findPaneById(child, paneId);
+        if (found) return found;
+    }
+    return null;
+}
+
 export function TableLayoutView() {
-    const { root, setSizes } = useLayoutStore();
+    const { root, setSizes, activePaneId, closeTab, closeOtherTabs, closeAllTabs, splitPane } = useLayoutStore();
     const { isConnected } = useConnectionStore();
+    const getCombo = useShortcutsStore((s) => s.getCombo);
+
+    useEffect(() => {
+        const handler = (e: KeyboardEvent) => {
+            if (isEditableTarget(e.target)) return;
+            const pane = activePaneId ? findPaneById(root, activePaneId) : null;
+            const activeTab = pane?.tabs.find((t) => t.id === pane.activeTabId) ?? null;
+
+            const actions: Array<{ combo: string; run: () => void }> = [
+                {
+                    combo: getCombo("tab_close"),
+                    run: () => { if (pane && activeTab) closeTab(pane.id, activeTab.id); },
+                },
+                {
+                    combo: getCombo("tab_close_others"),
+                    run: () => { if (pane && activeTab) closeOtherTabs(pane.id, activeTab.id); },
+                },
+                {
+                    combo: getCombo("tab_close_all"),
+                    run: () => { if (pane) closeAllTabs(pane.id); },
+                },
+                {
+                    combo: getCombo("tab_split_right"),
+                    run: () => { if (pane && activeTab) splitPane(pane.id, "horizontal", activeTab); },
+                },
+                {
+                    combo: getCombo("tab_split_down"),
+                    run: () => { if (pane && activeTab) splitPane(pane.id, "vertical", activeTab); },
+                },
+            ];
+
+            for (const action of actions) {
+                if (!action.combo) continue;
+                if (eventMatchesCombo(e, action.combo)) {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    action.run();
+                    break;
+                }
+            }
+        };
+        window.addEventListener("keydown", handler, true);
+        return () => window.removeEventListener("keydown", handler, true);
+    }, [root, activePaneId, closeTab, closeOtherTabs, closeAllTabs, splitPane, getCombo]);
 
     if (!isConnected) return null;
 
@@ -193,7 +248,7 @@ function PaneRenderer({ pane }: { pane: PaneNode }) {
     return (
         <div 
             className={cn(
-                "h-full w-full flex flex-col bg-background relative border",
+                "h-full w-full flex flex-col bg-background relative border group",
                 isActivePane ? "border-emerald-500/20" : "border-border/10"
             )}
             onClickCapture={() => setActivePane(pane.id)}
@@ -270,6 +325,21 @@ function PaneRenderer({ pane }: { pane: PaneNode }) {
                                         }}
                                     >
                                         Close to the Right
+                                    </ContextMenu.Item>
+                                    <ContextMenu.Separator className="h-px bg-border/40 my-1" />
+                                    <ContextMenu.Item
+                                        className="flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-xs outline-none hover:bg-muted focus:bg-muted"
+                                        onClick={() => splitPane(pane.id, "horizontal", tab)}
+                                    >
+                                        <Columns className="h-3.5 w-3.5" />
+                                        Split Right
+                                    </ContextMenu.Item>
+                                    <ContextMenu.Item
+                                        className="flex cursor-pointer select-none items-center gap-2 rounded-sm px-2 py-1.5 text-xs outline-none hover:bg-muted focus:bg-muted"
+                                        onClick={() => splitPane(pane.id, "vertical", tab)}
+                                    >
+                                        <Rows className="h-3.5 w-3.5" />
+                                        Split Down
                                     </ContextMenu.Item>
                                     <ContextMenu.Separator className="h-px bg-border/40 my-1" />
                                     <ContextMenu.Item 

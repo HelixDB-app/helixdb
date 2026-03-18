@@ -34,6 +34,7 @@ import {
 import { playNotificationSound } from "@/lib/notification-sound";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
+import { SchemaChangeConciergeDialog } from "@/components/schema-change-concierge-dialog";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -2625,6 +2626,7 @@ export default function MigrationStudioPage() {
     const [showRunSqlFile, setShowRunSqlFile] = useState(false);
     const [showApplyConfirm, setShowApplyConfirm] = useState(false);
     const [showBackup, setShowBackup] = useState(false);
+    const [showConcierge, setShowConcierge] = useState(false);
     const [showSuccess, setShowSuccess] = useState(false);
     const [applyElapsedMs, setApplyElapsedMs] = useState(0);
 
@@ -3114,6 +3116,15 @@ export default function MigrationStudioPage() {
                                                 color: store.dryRunResult?.success ? "text-emerald-400" : "text-blue-400",
                                             },
                                             {
+                                                icon: <WandSparkles className="h-3.5 w-3.5" />,
+                                                label: "Concierge checklist",
+                                                desc: "Heuristic risk scan + safe rollout tips",
+                                                action: () => setShowConcierge(true),
+                                                actionLabel: "Open",
+                                                done: false,
+                                                color: "text-cyan-400",
+                                            },
+                                            {
                                                 icon: <RotateCcw className="h-3.5 w-3.5" />,
                                                 label: "Rollback SQL ready",
                                                 desc: "Inverse SQL is generated",
@@ -3363,6 +3374,11 @@ export default function MigrationStudioPage() {
                         onClose={() => setShowBackup(false)}
                         targetConnectionId={targetConnectionId}
                         selectedSchemas={selectedSchemas}
+                    />
+                    <SchemaChangeConciergeDialog
+                        open={showConcierge}
+                        onOpenChange={setShowConcierge}
+                        sql={forwardSQL}
                     />
                 </>
             )}

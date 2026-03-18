@@ -52,6 +52,7 @@ import {
 } from "@/components/ui/select";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
+import { Checkbox } from "@/components/ui/checkbox";
 import {
     Tooltip,
     TooltipContent,
@@ -76,6 +77,7 @@ import {
     Type,
     Zap,
     Braces,
+    Columns,
     LayoutGrid,
     Trash2,
     GalleryVerticalEnd,
@@ -127,11 +129,14 @@ import {
     PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
+import { formatDbError } from "@/lib/db-errors";
 import { toast } from "sonner";
 import { InsertRowDialog } from "@/components/insert-row-dialog";
 import { SeedDataDialog } from "@/components/seed-data-dialog";
 import { FunctionEditInline } from "@/components/function-edit-dialog";
 import { RowEditorPanel } from "@/components/row-editor-panel";
+import { DateTimeInput } from "@/components/date-time-input";
+import { getDateTimeMode } from "@/lib/date-time";
 
 // ── Export / copy helpers ────────────────────────────────────────────────
 
@@ -435,11 +440,19 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
     // Debounced version — only updates 400 ms after last keystroke
     const [debouncedConditions, setDebouncedConditions] = useState<FilterConditionUI[]>([]);
 
+    // ── Column visibility state ──────────────────────────────────────────────
+    const [hiddenColumns, setHiddenColumns] = useState<Set<string>>(new Set());
+
     // ── Editing state (cell-level) ────────────────────────────────────────────
     const [tableColumns, setTableColumns] = useState<ColumnInfo[] | null>(null);
     const [selectedRowKeys, setSelectedRowKeys] = useState<Set<string>>(new Set());
     // The single cell currently being edited
     const [editingCell, setEditingCell] = useState<{
+        rowKey: string;
+        colName: string;
+        originalValue: string;
+    } | null>(null);
+    const editingCellRef = useRef<{
         rowKey: string;
         colName: string;
         originalValue: string;
@@ -451,6 +464,15 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
     const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
     const [insertDialogOpen, setInsertDialogOpen] = useState(false);
     const [seedDialogOpen, setSeedDialogOpen] = useState(false);
+    const [datePickerOpen, setDatePickerOpen] = useState(false);
+
+    useEffect(() => {
+        editingCellRef.current = editingCell;
+    }, [editingCell]);
+
+    useEffect(() => {
+        setDatePickerOpen(false);
+    }, [editingCell?.rowKey, editingCell?.colName]);
 
     // ── Row editor panel state ────────────────────────────────────────────────
     const [expandedRowKey, setExpandedRowKey] = useState<string | null>(null);
@@ -612,6 +634,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
         setFilterConditions([]);
         setDebouncedConditions([]);
         setExpandedRowKey(null);
+        setHiddenColumns(new Set());
     }, [selectedTable, selectedSchema]);
 
     useEffect(() => { fetchData(); }, [fetchData, refreshTrigger]);
@@ -639,18 +662,97 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
     }, [tableColumns]);
     const canEditDelete = pkColumnNames.length > 0;
 
+    const columnsForVisibility = useMemo(() => {
+        if (result?.columns?.length) {
+            return result.columns.map((c) => ({ name: c.name, data_type: c.data_type }));
+        }
+        if (tableColumns?.length) {
+            return tableColumns.map((c) => ({ name: c.name, data_type: c.data_type }));
+        }
+        return [];
+    }, [result?.columns, tableColumns]);
+
+    useEffect(() => {
+        if (columnsForVisibility.length === 0) return;
+        setHiddenColumns((prev) => {
+            const allowed = new Set(columnsForVisibility.map((c) => c.name));
+            const next = new Set([...prev].filter((name) => allowed.has(name)));
+            if (next.size === prev.size) {
+                let same = true;
+                for (const name of prev) {
+                    if (!next.has(name)) { same = false; break; }
+                }
+                if (same) return prev;
+            }
+            return next;
+        });
+    }, [columnsForVisibility]);
+
+    const visibleColumnIndexes = useMemo(() => {
+        if (!result?.columns?.length) return [];
+        return result.columns.reduce<number[]>((acc, col, idx) => {
+            if (!hiddenColumns.has(col.name)) acc.push(idx);
+            return acc;
+        }, []);
+    }, [result?.columns, hiddenColumns]);
+
+    const visibleColumns = useMemo(() => {
+        if (!result?.columns?.length) return [];
+        return visibleColumnIndexes.map((idx) => result.columns[idx]);
+    }, [visibleColumnIndexes, result?.columns]);
+
+    const visibleColumnCount = useMemo(() => {
+        if (columnsForVisibility.length === 0) return 0;
+        let count = 0;
+        for (const col of columnsForVisibility) if (!hiddenColumns.has(col.name)) count += 1;
+        return count;
+    }, [columnsForVisibility, hiddenColumns]);
+
+    const hiddenColumnCount = Math.max(0, columnsForVisibility.length - visibleColumnCount);
+
+    const setColumnVisibility = useCallback((name: string, visible: boolean) => {
+        setHiddenColumns((prev) => {
+            const next = new Set(prev);
+            if (visible) next.delete(name);
+            else next.add(name);
+            return next;
+        });
+    }, []);
+
+    const showAllColumns = useCallback(() => {
+        setHiddenColumns(new Set());
+    }, []);
+
+    const hideAllColumns = useCallback(() => {
+        if (columnsForVisibility.length === 0) return;
+        setHiddenColumns(new Set(columnsForVisibility.map((c) => c.name)));
+    }, [columnsForVisibility]);
+
+    const visibleRows = useMemo(() => {
+        if (!result?.columns?.length) return [];
+        return displayRows.map((row) =>
+            visibleColumnIndexes.map((idx) => row[idx] ?? { type: "Null" as const })
+        );
+    }, [displayRows, visibleColumnIndexes, result?.columns]);
+
     // ── Save cell edit ────────────────────────────────────────────────────────
-    const saveCellEdit = useCallback(async (): Promise<void> => {
-        if (preventBlurSaveRef.current) return;
+    const saveCellEdit = useCallback(async (source: "blur" | "explicit" = "blur"): Promise<void> => {
+        if (source === "blur" && preventBlurSaveRef.current) return;
         if (!editingCell || !connectionId || !selectedSchema || !selectedTable || !result || !tableColumns) {
             setEditingCell(null);
             return;
         }
         const { rowKey, colName, originalValue } = editingCell;
+        const isSameCellActive = () =>
+            editingCellRef.current?.rowKey === rowKey &&
+            editingCellRef.current?.colName === colName;
         // No change — dismiss silently
         if (editingValue === originalValue) {
-            setEditingCell(null);
-            setCellError(null);
+            if (isSameCellActive()) {
+                setEditingCell(null);
+                setEditingValue("");
+                setCellError(null);
+            }
             return;
         }
         // Validate
@@ -663,11 +765,17 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                 colInfo?.is_nullable ?? true,
                 col.enum_labels ?? undefined
             );
-            if (err) { setCellError(err); return; }
+            if (err) {
+                if (isSameCellActive()) setCellError(err);
+                return;
+            }
         }
-        setCellError(null);
+        if (isSameCellActive()) setCellError(null);
         const row = displayRows.find((r) => getRowKey(r, result.columns, pkColumnNames) === rowKey);
-        if (!row) { setEditingCell(null); return; }
+        if (!row) {
+            if (isSameCellActive()) setEditingCell(null);
+            return;
+        }
         setIsSaving(true);
         try {
             const pkValues = getRowPkValues(row, result.columns, pkColumnNames);
@@ -677,24 +785,45 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                 pkColumnNames, pkValues,
                 [{ column: colName, value }]
             );
-            setEditingCell(null);
+            if (isSameCellActive()) {
+                setEditingCell(null);
+                setEditingValue("");
+                setCellError(null);
+            }
             toast.success(`${colName} updated`, { duration: 1500 });
             fetchData();
         } catch (e) {
-            toast.error(String(e));
+            const err = formatDbError(e, "update");
+            toast.error(err.title, { description: err.description });
         } finally {
             setIsSaving(false);
         }
     }, [editingCell, editingValue, connectionId, selectedSchema, selectedTable, result, tableColumns, pkColumnNames, displayRows, fetchData]);
 
+    const armBlurGuard = useCallback((delay = 80) => {
+        preventBlurSaveRef.current = true;
+        setTimeout(() => { preventBlurSaveRef.current = false; }, delay);
+    }, []);
+
+    const handleDatePickerOpenChange = useCallback((open: boolean) => {
+        setDatePickerOpen(open);
+        if (!open) {
+            armBlurGuard();
+            void saveCellEdit("explicit");
+        }
+    }, [armBlurGuard, saveCellEdit]);
+
+    const handleDateInputBlur = useCallback(() => {
+        if (!datePickerOpen) saveCellEdit("blur");
+    }, [datePickerOpen, saveCellEdit]);
+
     // ── Cancel cell edit ──────────────────────────────────────────────────────
     const cancelCellEdit = useCallback(() => {
-        preventBlurSaveRef.current = true;
         setEditingCell(null);
         setEditingValue("");
         setCellError(null);
-        setTimeout(() => { preventBlurSaveRef.current = false; }, 50);
-    }, []);
+        armBlurGuard();
+    }, [armBlurGuard]);
 
     // ── Watch mode helpers ────────────────────────────────────────────────────
 
@@ -871,14 +1000,14 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
 
     /** JSON view (memoized) */
     const tableDataJsonString = useMemo(() => {
-        if (!result || !result.columns.length) return "[]";
+        if (!result || !result.columns.length || visibleColumns.length === 0) return "[]";
         return JSON.stringify(
-            displayRows.map((row) =>
-                Object.fromEntries(result!.columns.map((col, i) => [col.name, cellToJsonValue(row[i] ?? { type: "Null" })]))
+            visibleRows.map((row) =>
+                Object.fromEntries(visibleColumns.map((col, i) => [col.name, cellToJsonValue(row[i] ?? { type: "Null" })]))
             ),
             null, 2
         );
-    }, [result, displayRows]);
+    }, [result, visibleColumns, visibleRows]);
 
     const isTableView = true; // For tabbed interface, we always show table data based on props.
     const tableSchema = schema;
@@ -887,8 +1016,12 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
     const handleExport = useCallback(
         (format: "csv" | "json") => {
             if (!result) return;
-            const cols = result.columns;
-            const rows = displayRows;
+            if (visibleColumns.length === 0) {
+                toast.info("No visible columns to export");
+                return;
+            }
+            const cols = visibleColumns;
+            const rows = visibleRows;
             const base = `${tableNameForExport || "table"}-${Date.now()}`;
             if (format === "csv") {
                 downloadBlob(rowsToCSV(cols, rows), `${base}.csv`, "text/csv;charset=utf-8;");
@@ -898,7 +1031,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                 toast.success("JSON downloaded", { duration: 1500 });
             }
         },
-        [result, displayRows, tableNameForExport]
+        [result, visibleColumns, visibleRows, tableNameForExport]
     );
 
     // ── Table data state ──────────────────────────────────────────────
@@ -921,6 +1054,12 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                     watchMode={watchMode}
                     watchConnecting={watchConnecting}
                     onToggleWatch={toggleWatch}
+                    columns={columnsForVisibility}
+                    hiddenColumns={hiddenColumns}
+                    hiddenColumnCount={hiddenColumnCount}
+                    onSetColumnVisibility={setColumnVisibility}
+                    onShowAllColumns={showAllColumns}
+                    onHideAllColumns={hideAllColumns}
                 />
                 <div className="flex-1 flex items-center justify-center p-8">
                     <div className="max-w-md w-full rounded-xl bg-destructive/10 border border-destructive/20 p-6">
@@ -964,6 +1103,12 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                     watchMode={watchMode}
                     watchConnecting={watchConnecting}
                     onToggleWatch={toggleWatch}
+                    columns={columnsForVisibility}
+                    hiddenColumns={hiddenColumns}
+                    hiddenColumnCount={hiddenColumnCount}
+                    onSetColumnVisibility={setColumnVisibility}
+                    onShowAllColumns={showAllColumns}
+                    onHideAllColumns={hideAllColumns}
             />
             {/* Live watch banner */}
             {watchMode && (
@@ -995,27 +1140,23 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                 />
             )}
 
-            {previewSelection?.kind === "table" && (
-                <>
-                    <InsertRowDialog
-                        open={insertDialogOpen}
-                        onOpenChange={setInsertDialogOpen}
-                        connectionId={connectionId}
-                        schema={selectedSchema ?? ""}
-                        table={selectedTable ?? ""}
-                        columns={tableColumns ?? []}
-                        onSuccess={fetchData}
-                    />
-                    <SeedDataDialog
-                        open={seedDialogOpen}
-                        onOpenChange={setSeedDialogOpen}
-                        connectionId={connectionId}
-                        schema={selectedSchema ?? undefined}
-                        table={selectedTable ?? undefined}
-                        onSuccess={fetchData}
-                    />
-                </>
-            )}
+            <InsertRowDialog
+                open={insertDialogOpen}
+                onOpenChange={setInsertDialogOpen}
+                connectionId={connectionId}
+                schema={selectedSchema ?? ""}
+                table={selectedTable ?? ""}
+                columns={tableColumns ?? []}
+                onSuccess={fetchData}
+            />
+            <SeedDataDialog
+                open={seedDialogOpen}
+                onOpenChange={setSeedDialogOpen}
+                connectionId={connectionId}
+                schema={selectedSchema ?? undefined}
+                table={selectedTable ?? undefined}
+                onSuccess={fetchData}
+            />
 
             {/* Saving indicator */}
             {isSaving && (
@@ -1102,7 +1243,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                     role="grid"
                                     aria-label={selectedSchema && selectedTable ? `Table: ${selectedSchema}.${selectedTable}` : "Table data"}
                                     aria-rowcount={scrollMode === "pagination" && result ? (result.total_rows ?? result.row_count) : undefined}
-                                    aria-colcount={(result?.columns?.length ?? 0) + (canEditDelete ? 2 : 1)}
+                                    aria-colcount={visibleColumnCount + (canEditDelete ? 2 : 1)}
                                 >
                                     <TableHeader>
                                         <TableRow className="hover:bg-transparent border-border/20 bg-card/30 sticky top-0 z-10">
@@ -1123,7 +1264,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                             <TableHead className={cn("w-10 text-center text-[10px] font-mono text-muted-foreground/30 px-2 sticky bg-card/80 backdrop-blur-sm z-20", canEditDelete ? "left-9" : "left-0")}>
                                                 #
                                             </TableHead>
-                                            {result.columns.map((col) => (
+                                            {visibleColumns.map((col) => (
                                                 <TableHead
                                                     key={col.name}
                                                     className="select-none group whitespace-nowrap px-3 py-2"
@@ -1193,11 +1334,30 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                         {displayRows.length === 0 ? (
                                             <TableRow className="hover:bg-transparent">
                                                 <TableCell
-                                                    colSpan={(result?.columns?.length ?? 0) + (canEditDelete ? 2 : 1)}
+                                                    colSpan={visibleColumnCount + (canEditDelete ? 2 : 1)}
                                                     className="text-center py-12 text-muted-foreground/60"
                                                 >
                                                     <p className="text-sm font-medium">Empty table</p>
                                                     <p className="text-xs mt-1 text-muted-foreground/40">This table has no rows</p>
+                                                </TableCell>
+                                            </TableRow>
+                                        ) : visibleColumnCount === 0 ? (
+                                            <TableRow className="hover:bg-transparent">
+                                                <TableCell
+                                                    colSpan={(canEditDelete ? 2 : 1)}
+                                                    className="text-center py-10 text-muted-foreground/60"
+                                                >
+                                                    <p className="text-sm font-medium">All columns hidden</p>
+                                                    <p className="text-xs mt-1 text-muted-foreground/40">Use the Columns menu to show fields.</p>
+                                                    <Button
+                                                        type="button"
+                                                        size="sm"
+                                                        variant="outline"
+                                                        className="mt-3 h-7 text-xs"
+                                                        onClick={showAllColumns}
+                                                    >
+                                                        Show all columns
+                                                    </Button>
                                                 </TableCell>
                                             </TableRow>
                                         ) : (
@@ -1209,6 +1369,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                 ? rowIdx + 1
                                                 : (page - 1) * pageSize + rowIdx + 1;
                                             const watchAnim = watchAnimState.get(rowKey);
+                                            const visibleRow = visibleColumnIndexes.map((idx) => row[idx] ?? { type: "Null" as const });
 
                                             return (
                                                 <ContextMenu key={rowKey || rowIdx}>
@@ -1250,8 +1411,9 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                         {rowNumber}
                                                     </TableCell>
 
-                                                    {row.map((cell, colIdx) => {
+                                                    {visibleColumnIndexes.map((colIdx) => {
                                                         const col = result.columns[colIdx];
+                                                        const cell = row[colIdx] ?? { type: "Null" as const };
                                                         const colInfo = tableColumns?.find((c) => c.name === col.name);
                                                         const isThisCellEditing =
                                                             canEditDelete &&
@@ -1266,6 +1428,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                             const isNullable = colInfo?.is_nullable ?? true;
                                                             const lowerType = col.data_type.toLowerCase();
                                                             const isBoolType = lowerType === "bool" || lowerType === "boolean";
+                                                            const dateTimeMode = getDateTimeMode(col.data_type);
                                                             const selectValue =
                                                                 editingValue === "" ? "__null__" : editingValue;
                                                             return (
@@ -1289,7 +1452,10 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                                                         if (cellError) setCellError(null);
                                                                                     }}
                                                                                     onOpenChange={(open) => {
-                                                                                        if (!open) saveCellEdit();
+                                                                                        if (!open) {
+                                                                                            armBlurGuard();
+                                                                                            void saveCellEdit("explicit");
+                                                                                        }
                                                                                     }}
                                                                                 >
                                                                                     <SelectTrigger
@@ -1329,7 +1495,10 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                                                         if (cellError) setCellError(null);
                                                                                     }}
                                                                                     onOpenChange={(open) => {
-                                                                                        if (!open) saveCellEdit();
+                                                                                        if (!open) {
+                                                                                            armBlurGuard();
+                                                                                            void saveCellEdit("explicit");
+                                                                                        }
                                                                                     }}
                                                                                 >
                                                                                     <SelectTrigger
@@ -1353,6 +1522,30 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                                                         <SelectItem value="false">false</SelectItem>
                                                                                     </SelectContent>
                                                                                 </Select>
+                                                                            ) : dateTimeMode ? (
+                                                                                <DateTimeInput
+                                                                                    value={editingValue}
+                                                                                    mode={dateTimeMode}
+                                                                                    onChange={(v) => {
+                                                                                        setEditingValue(v);
+                                                                                        if (cellError) setCellError(null);
+                                                                                    }}
+                                                                                    onBlur={handleDateInputBlur}
+                                                                                    onKeyDown={(e) => {
+                                                                                        if (e.key === "Enter") {
+                                                                                            e.preventDefault();
+                                                                                            armBlurGuard();
+                                                                                            void saveCellEdit("explicit");
+                                                                                        }
+                                                                                        if (e.key === "Escape") {
+                                                                                            e.preventDefault();
+                                                                                            cancelCellEdit();
+                                                                                        }
+                                                                                    }}
+                                                                                    open={datePickerOpen}
+                                                                                    onOpenChange={handleDatePickerOpenChange}
+                                                                                    inputClassName="h-9 px-3 text-xs font-mono w-full border-0 focus-visible:ring-0 rounded-none shadow-none bg-transparent"
+                                                                                />
                                                                             ) : (
                                                                                 <Input
                                                                                     autoFocus
@@ -1364,17 +1557,15 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                                                     onKeyDown={(e) => {
                                                                                         if (e.key === "Enter") {
                                                                                             e.preventDefault();
-                                                                                            preventBlurSaveRef.current = true;
-                                                                                            saveCellEdit().finally(() => {
-                                                                                                preventBlurSaveRef.current = false;
-                                                                                            });
+                                                                                            armBlurGuard();
+                                                                                            void saveCellEdit("explicit");
                                                                                         }
                                                                                         if (e.key === "Escape") {
                                                                                             e.preventDefault();
                                                                                             cancelCellEdit();
                                                                                         }
                                                                                     }}
-                                                                                    onBlur={saveCellEdit}
+                                                                                    onBlur={() => saveCellEdit("blur")}
                                                                                     className="h-9 px-3 text-xs font-mono w-full border-0 focus-visible:ring-0 rounded-none shadow-none bg-transparent"
                                                                                 />
                                                                             )}
@@ -1383,10 +1574,8 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                                             <button
                                                                                 onMouseDown={(e) => {
                                                                                     e.preventDefault();
-                                                                                    preventBlurSaveRef.current = true;
-                                                                                    saveCellEdit().finally(() => {
-                                                                                        preventBlurSaveRef.current = false;
-                                                                                    });
+                                                                                    armBlurGuard();
+                                                                                    void saveCellEdit("explicit");
                                                                                 }}
                                                                                 className="shrink-0 p-1.5 rounded-sm text-emerald-500/80 hover:text-emerald-500 hover:bg-emerald-500/15 transition-colors"
                                                                                 title="Save (Enter)"
@@ -1540,7 +1729,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                     <ContextMenuItem
                                                         className="gap-2 text-xs"
                                                         onClick={() => {
-                                                            const sql = rowToInsertSQL(tableSchema, tableNameForExport, result.columns, row);
+                                                            const sql = rowToInsertSQL(tableSchema, tableNameForExport, visibleColumns, visibleRow);
                                                             navigator.clipboard.writeText(sql);
                                                             toast.success("INSERT SQL copied", { duration: 1500 });
                                                         }}
@@ -1551,7 +1740,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                     <ContextMenuItem
                                                         className="gap-2 text-xs"
                                                         onClick={() => {
-                                                            navigator.clipboard.writeText(rowToJSON(result.columns, row));
+                                                            navigator.clipboard.writeText(rowToJSON(visibleColumns, visibleRow));
                                                             toast.success("Copied as JSON", { duration: 1500 });
                                                         }}
                                                     >
@@ -1561,7 +1750,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                     <ContextMenuItem
                                                         className="gap-2 text-xs"
                                                         onClick={() => {
-                                                            const line = row.map((c) => formatCellValue(c)).join(",");
+                                                            const line = visibleRow.map((c) => formatCellValue(c)).join(",");
                                                             navigator.clipboard.writeText(line);
                                                             toast.success("Copied as CSV row", { duration: 1500 });
                                                         }}
@@ -1713,6 +1902,12 @@ function TableToolbar({
     watchMode,
     watchConnecting,
     onToggleWatch,
+    columns,
+    hiddenColumns,
+    hiddenColumnCount,
+    onSetColumnVisibility,
+    onShowAllColumns,
+    onHideAllColumns,
 }: {
     schema: string;
     table: string;
@@ -1737,12 +1932,32 @@ function TableToolbar({
     watchMode?: boolean;
     watchConnecting?: boolean;
     onToggleWatch?: () => void;
+    columns: { name: string; data_type?: string }[];
+    hiddenColumns: Set<string>;
+    hiddenColumnCount: number;
+    onSetColumnVisibility: (name: string, visible: boolean) => void;
+    onShowAllColumns: () => void;
+    onHideAllColumns: () => void;
 }) {
     const router = useRouter();
     const totalRows = result?.total_rows;
     const rowCountLabel = scrollMode === "infinite" && rowsLoaded !== undefined && totalRows != null
         ? `${rowsLoaded.toLocaleString()} / ${totalRows.toLocaleString()}`
         : totalRows?.toLocaleString() ?? "?";
+    const [columnSearch, setColumnSearch] = useState("");
+    const filteredColumns = useMemo(() => {
+        if (!columns.length) return [];
+        const q = columnSearch.trim().toLowerCase();
+        if (!q) return columns;
+        return columns.filter((col) =>
+            col.name.toLowerCase().includes(q) || col.data_type?.toLowerCase().includes(q)
+        );
+    }, [columns, columnSearch]);
+    const visibleCount = Math.max(0, columns.length - hiddenColumnCount);
+
+    useEffect(() => {
+        setColumnSearch("");
+    }, [table]);
 
     return (
         <div className="flex items-center justify-between px-4 py-2 border-b border-border/20 bg-card/30 shrink-0">
@@ -1830,6 +2045,90 @@ function TableToolbar({
                         <TooltipContent>Toggle filter bar (multi-condition WHERE clause)</TooltipContent>
                     </Tooltip>
                 )}
+
+                {/* Column visibility */}
+                <Popover>
+                    <PopoverTrigger asChild>
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 gap-1.5 px-2.5 text-xs text-muted-foreground hover:text-foreground"
+                            disabled={columns.length === 0}
+                        >
+                            <Columns className="h-3.5 w-3.5" />
+                            Columns
+                            {hiddenColumnCount > 0 && (
+                                <span className="ml-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-muted/60 px-1 text-[9px] font-bold text-foreground/70">
+                                    {hiddenColumnCount}
+                                </span>
+                            )}
+                        </Button>
+                    </PopoverTrigger>
+                    <PopoverContent align="end" className="w-72 p-0">
+                        <div className="px-3 py-2 border-b border-border/40">
+                            <div className="flex items-center justify-between">
+                                <span className="text-[11px] font-semibold text-foreground/80">Columns</span>
+                                <span className="text-[10px] text-muted-foreground/60">
+                                    {visibleCount}/{columns.length} visible
+                                </span>
+                            </div>
+                            <Input
+                                value={columnSearch}
+                                onChange={(e) => setColumnSearch(e.target.value)}
+                                placeholder="Search columns…"
+                                className="mt-2 h-7 text-xs"
+                            />
+                        </div>
+                        <ScrollArea className="h-56">
+                            <div className="py-1">
+                                {filteredColumns.length === 0 ? (
+                                    <div className="px-3 py-6 text-xs text-muted-foreground/60 text-center">
+                                        No columns found
+                                    </div>
+                                ) : (
+                                    filteredColumns.map((col) => {
+                                        const isVisible = !hiddenColumns.has(col.name);
+                                        return (
+                                            <label
+                                                key={col.name}
+                                                className="flex items-center gap-2 px-3 py-1.5 hover:bg-muted/40 cursor-pointer"
+                                            >
+                                                <Checkbox
+                                                    checked={isVisible}
+                                                    onCheckedChange={(v) => onSetColumnVisibility(col.name, v === true)}
+                                                />
+                                                <span className="font-mono text-xs text-foreground/90 truncate flex-1">
+                                                    {col.name}
+                                                </span>
+                                                {col.data_type && (
+                                                    <span className="text-[9px] text-muted-foreground/50 font-mono">
+                                                        {col.data_type}
+                                                    </span>
+                                                )}
+                                            </label>
+                                        );
+                                    })
+                                )}
+                            </div>
+                        </ScrollArea>
+                        <div className="flex items-center justify-between px-3 py-2 border-t border-border/40">
+                            <button
+                                type="button"
+                                className="text-[11px] text-muted-foreground/70 hover:text-foreground transition-colors"
+                                onClick={onShowAllColumns}
+                            >
+                                Show all
+                            </button>
+                            <button
+                                type="button"
+                                className="text-[11px] text-muted-foreground/70 hover:text-foreground transition-colors"
+                                onClick={onHideAllColumns}
+                            >
+                                Hide all
+                            </button>
+                        </div>
+                    </PopoverContent>
+                </Popover>
 
                 {onAddRow && (
                     <Tooltip>

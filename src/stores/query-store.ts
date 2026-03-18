@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { ConnectionEnvironment, QueryResult } from "@/lib/types";
-import { dbExecuteQuery } from "@/lib/tauri";
+import { dbExecuteQuery, dbGetTableData } from "@/lib/tauri";
+import { track } from "@/lib/analytics";
 
 export interface QueryTab {
     id: string;
@@ -84,6 +85,20 @@ export interface QueryExecuteOptions {
 
 let tabCounter = 0;
 
+function parseSimpleSelectStar(sql: string): { schema: string; table: string } | null {
+    const trimmed = sql.trim().replace(/;+\s*$/, "");
+    // Only handle the simplest “browse table” shape:
+    // SELECT * FROM schema.table
+    // SELECT * FROM "schema"."table"
+    const m = trimmed.match(
+        /^\s*select\s+\*\s+from\s+("?)([a-zA-Z_][a-zA-Z0-9_]*)\1\.\s*("?)([a-zA-Z_][a-zA-Z0-9_]*)\3\s*$/i
+    );
+    if (!m) return null;
+    const schema = m[2]!;
+    const table = m[4]!;
+    return { schema, table };
+}
+
 export const useQueryStore = create<QueryState>((set, get) => ({
     tabs: [],
     activeTabId: null,
@@ -157,10 +172,17 @@ export const useQueryStore = create<QueryState>((set, get) => ({
         }));
 
         try {
-            const result = await dbExecuteQuery(connectionId, tab.sql, {
-                environment: options?.environment,
-                guardReason: options?.productionGuardReason,
+            void track("query_execute", {
+                has_db_name: !!databaseName,
+                has_env: !!options?.environment,
             });
+            const simple = parseSimpleSelectStar(tab.sql);
+            const result = simple
+                ? await dbGetTableData(connectionId, simple.schema, simple.table, 1, 2000)
+                : await dbExecuteQuery(connectionId, tab.sql, {
+                    environment: options?.environment,
+                    guardReason: options?.productionGuardReason,
+                });
 
             // Record history entry
             const entry: QueryHistoryEntry = {
@@ -187,6 +209,10 @@ export const useQueryStore = create<QueryState>((set, get) => ({
                 ),
             }));
         } catch (error) {
+            void track("query_execute_error", {
+                has_db_name: !!databaseName,
+                has_env: !!options?.environment,
+            });
             const message =
                 error instanceof Error
                     ? error.message + (error.cause ? `\nCause: ${String(error.cause)}` : "")

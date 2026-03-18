@@ -80,6 +80,7 @@ import {
     WandSparkles,
 } from "lucide-react";
 import { toast } from "sonner";
+import { buildPerformanceReplayBundle, downloadReplayBundle } from "@/lib/performance-replay";
 
 type RangeKey = "1h" | "today" | "7d" | "30d" | "all";
 type StatusChip = "all" | "slow" | "failed" | "cached";
@@ -434,6 +435,8 @@ export default function QueryHistoryPage() {
     const [detailError, setDetailError] = useState<string | null>(null);
     const [detail, setDetail] = useState<QueryHistoryDetail | null>(null);
     const [noteDraft, setNoteDraft] = useState("");
+    const [replayRedact, setReplayRedact] = useState(true);
+    const [isExportingReplay, setIsExportingReplay] = useState(false);
 
     const [dashboardLoading, setDashboardLoading] = useState(false);
     const [dashboardError, setDashboardError] = useState<string | null>(null);
@@ -996,6 +999,35 @@ export default function QueryHistoryPage() {
         toast.success("SQL copied");
     }, [source, selectedPgStatItem?.query, selectedItem?.query_text]);
 
+    const handleExportReplay = useCallback(async () => {
+        if (source !== "local") {
+            toast.info("Replay bundles are available for Local History only.");
+            return;
+        }
+        if (!connectionId) {
+            toast.error("Connect to a database to export a replay bundle.");
+            return;
+        }
+        if (!selectedItem) return;
+
+        setIsExportingReplay(true);
+        try {
+            const bundle = await buildPerformanceReplayBundle({
+                connectionId,
+                summary: selectedItem,
+                detail: detail ?? undefined,
+                redact: replayRedact,
+            });
+            const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+            downloadReplayBundle(bundle, `performance-replay-${selectedItem.id}-${stamp}.json`);
+            toast.success("Replay bundle exported.");
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : "Failed to export replay bundle.");
+        } finally {
+            setIsExportingReplay(false);
+        }
+    }, [source, connectionId, selectedItem, detail, replayRedact]);
+
     const handleToggleBookmark = useCallback(async () => {
         if (source !== "local") return;
         if (!selectedItem) return;
@@ -1264,6 +1296,31 @@ export default function QueryHistoryPage() {
                                     <Button variant="outline" size="sm" className="h-7 gap-1.5" onClick={handleCopySql}>
                                         <Copy className="h-3.5 w-3.5" />
                                         Copy SQL
+                                    </Button>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-7 gap-1.5"
+                                        onClick={() => setReplayRedact((v) => !v)}
+                                        disabled={source !== "local"}
+                                        title="Redact literals (strings/numbers) in exported bundle"
+                                    >
+                                        <Shield className="h-3.5 w-3.5" />
+                                        Redact: {replayRedact ? "On" : "Off"}
+                                    </Button>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-7 gap-1.5"
+                                        onClick={handleExportReplay}
+                                        disabled={source !== "local" || isExportingReplay}
+                                    >
+                                        {isExportingReplay ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                            <Download className="h-3.5 w-3.5" />
+                                        )}
+                                        Export Replay
                                     </Button>
                                     <Button
                                         variant="outline"

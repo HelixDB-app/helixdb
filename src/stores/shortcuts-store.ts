@@ -19,6 +19,11 @@ export type ShortcutActionId =
     | "bug_report"
     | "connect"
     | "new_window"
+    | "tab_close"
+    | "tab_close_others"
+    | "tab_close_all"
+    | "tab_split_right"
+    | "tab_split_down"
     | "git_stage_all"
     | "git_unstage_all"
     | "git_ai_message"
@@ -51,6 +56,11 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     { id: "bug_report", label: "Bug Report", description: "Submit feedback and bug reports", defaultCombo: "Mod+Shift+B" },
     { id: "connect", label: "Connect", description: "Connect to database (when disconnected)", defaultCombo: "Mod+K" },
     { id: "new_window", label: "New Window", description: "Open a new pgStudio window", defaultCombo: "Mod+Shift+N" },
+    { id: "tab_close", label: "Close tab", description: "Close the active data tab", defaultCombo: "Mod+W" },
+    { id: "tab_close_others", label: "Close other tabs", description: "Close all other data tabs", defaultCombo: "Mod+Alt+W" },
+    { id: "tab_close_all", label: "Close all tabs", description: "Close all data tabs in the active pane", defaultCombo: "Mod+Shift+Alt+W" },
+    { id: "tab_split_right", label: "Split right", description: "Split the active data tab to the right", defaultCombo: "Mod+\\" },
+    { id: "tab_split_down", label: "Split down", description: "Split the active data tab downward", defaultCombo: "Mod+Shift+\\" },
     { id: "git_stage_all", label: "Git stage all", description: "Stage all changes (Git tab)", defaultCombo: "Mod+Shift+A" },
     { id: "git_unstage_all", label: "Git unstage all", description: "Unstage all staged files (Git tab)", defaultCombo: "Mod+Shift+U" },
     { id: "git_ai_message", label: "Git AI message", description: "Generate commit message with AI (Git tab)", defaultCombo: "Mod+Shift+M" },

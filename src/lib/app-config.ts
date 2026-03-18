@@ -4,4 +4,4 @@ export const APP_NAME = "pgStudio";
 export const APP_VERSION = "1.4.5";
 /** "beta" for beta builds (TestFlight); "stable" for production. Used to filter bug reports and analytics. */
 export const APP_CHANNEL: "beta" | "stable" = "stable";
-export const APP_TAGLINE = "Database Admin Panel";
+export const APP_TAGLINE = "Performance-first Postgres Studio";
