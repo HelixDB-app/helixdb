@@ -13,7 +13,6 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
-import { ScrollArea } from "@/components/ui/scroll-area";
 import { useConnectionStore } from "@/stores/connection-store";
 import {
     dbGetTableDetails,
@@ -44,6 +43,7 @@ import {
     Code2,
     Loader2,
     Hash,
+    Database,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
@@ -244,17 +244,17 @@ function ColumnsTab({
     };
 
     return (
-        <div className="flex flex-col h-full">
-            <div className="flex items-center justify-between px-4 py-2 border-b border-border/20">
-                <p className="text-xs text-muted-foreground">{details.columns.length} columns</p>
-                <Button variant="outline" size="sm" className="h-7 text-xs gap-1.5" onClick={() => setAddingCol(true)}>
+        <div className="flex flex-col h-full min-h-0">
+            <div className="flex items-center justify-between px-5 py-3 border-b border-border/20 shrink-0 bg-muted/10">
+                <p className="text-xs text-muted-foreground font-medium">{details.columns.length} columns</p>
+                <Button variant="outline" size="sm" className="h-7 text-xs gap-1.5 hover:bg-accent/50" onClick={() => setAddingCol(true)}>
                     <Plus className="h-3 w-3" /> Add Column
                 </Button>
             </div>
 
-            <ScrollArea className="flex-1">
-                <table className="w-full text-xs">
-                    <thead className="sticky top-0 z-10 bg-card/90 backdrop-blur-sm">
+            <div className="flex-1 overflow-auto bg-background/50 [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/40 [&::-webkit-scrollbar-track]:bg-transparent">
+                <table className="w-full text-xs min-w-[950px]">
+                    <thead className="sticky top-0 z-10 bg-card/95 backdrop-blur shadow-sm">
                         <tr className="border-b border-border/20 text-muted-foreground/70">
                             <th className="px-4 py-2 text-left font-medium">#</th>
                             <th className="px-3 py-2 text-left font-medium">Name</th>
@@ -386,7 +386,7 @@ function ColumnsTab({
                         )}
                     </tbody>
                 </table>
-            </ScrollArea>
+            </div>
 
             <ConfirmDialog
                 open={!!dropTarget}
@@ -406,7 +406,7 @@ function ColumnsTab({
 
 function ConstraintsTab({ details }: { details: TableDetails }) {
     return (
-        <ScrollArea className="flex-1 px-4 py-3">
+        <div className="flex-1 overflow-auto px-5 py-4 [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/40 [&::-webkit-scrollbar-track]:bg-transparent">
             {details.constraints.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-12 text-muted-foreground/50">
                     <ShieldCheck className="h-10 w-10 mb-3 opacity-20" />
@@ -443,7 +443,7 @@ function ConstraintsTab({ details }: { details: TableDetails }) {
                     ))}
                 </div>
             )}
-        </ScrollArea>
+        </div>
     );
 }
 
@@ -451,7 +451,7 @@ function ConstraintsTab({ details }: { details: TableDetails }) {
 
 function IndexesTab({ details }: { details: TableDetails }) {
     return (
-        <ScrollArea className="flex-1 px-4 py-3">
+        <div className="flex-1 overflow-auto px-5 py-4 [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/40 [&::-webkit-scrollbar-track]:bg-transparent">
             {details.indexes.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-12 text-muted-foreground/50">
                     <Hash className="h-10 w-10 mb-3 opacity-20" />
@@ -486,7 +486,7 @@ function IndexesTab({ details }: { details: TableDetails }) {
                     ))}
                 </div>
             )}
-        </ScrollArea>
+        </div>
     );
 }
 
@@ -494,7 +494,7 @@ function IndexesTab({ details }: { details: TableDetails }) {
 
 function TriggersTab({ details }: { details: TableDetails }) {
     return (
-        <ScrollArea className="flex-1 px-4 py-3">
+        <div className="flex-1 overflow-auto px-5 py-4 [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/40 [&::-webkit-scrollbar-track]:bg-transparent">
             {details.triggers.length === 0 ? (
                 <div className="flex flex-col items-center justify-center py-12 text-muted-foreground/50">
                     <Zap className="h-10 w-10 mb-3 opacity-20" />
@@ -523,7 +523,7 @@ function TriggersTab({ details }: { details: TableDetails }) {
                     ))}
                 </div>
             )}
-        </ScrollArea>
+        </div>
     );
 }
 
@@ -629,8 +629,8 @@ function OverviewTab({
     };
 
     return (
-        <ScrollArea className="flex-1 px-4 py-4">
-            <div className="space-y-4">
+        <div className="flex-1 overflow-auto px-5 py-5 [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/40 [&::-webkit-scrollbar-track]:bg-transparent">
+            <div className="space-y-4 max-w-5xl mx-auto">
                 {/* Identity */}
                 <div className="rounded-lg border border-border/20 bg-card/40 overflow-hidden">
                     <div className="px-4 py-2.5 border-b border-border/20 bg-card/60">
@@ -699,7 +699,7 @@ function OverviewTab({
                     </div>
                 )}
             </div>
-        </ScrollArea>
+        </div>
     );
 }
 
@@ -805,12 +805,12 @@ export function TableManagerDialog({
     return (
         <>
             <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
-                <DialogContent className="max-w-4xl w-full h-[80vh] flex flex-col p-0 gap-0 overflow-hidden">
+                <DialogContent className="max-w-[96vw] xl:max-w-[1100px] w-full h-[90vh] flex flex-col p-0 gap-0 overflow-hidden shadow-2xl sm:rounded-xl">
                     {/* Header */}
-                    <div className="flex items-start justify-between px-5 pt-5 pb-4 border-b border-border/20 shrink-0">
-                        <div className="flex items-center gap-3 min-w-0">
-                            <div className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary/10 shrink-0">
-                                {isView ? <Eye className="h-4 w-4 text-blue-400" /> : <Table2 className="h-4 w-4 text-emerald-400" />}
+                    <div className="flex items-start justify-between px-6 pt-6 pb-5 border-b border-border/20 shrink-0 bg-muted/5">
+                        <div className="flex items-center gap-4 min-w-0">
+                            <div className="flex h-11 w-11 items-center justify-center rounded-xl bg-primary/10 shrink-0 border border-primary/20 shadow-sm">
+                                {isView ? <Eye className="h-5 w-5 text-blue-400" /> : <Table2 className="h-5 w-5 text-emerald-400" />}
                             </div>
                             <div className="min-w-0">
                                 {renamingTable ? (
@@ -823,30 +823,33 @@ export function TableManagerDialog({
                                                 if (e.key === "Enter") handleRenameTable();
                                                 if (e.key === "Escape") setRenamingTable(false);
                                             }}
-                                            className="h-7 text-sm font-mono w-48 bg-background/60"
+                                            className="h-8 text-base font-mono w-64 bg-background/60"
                                         />
-                                        <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setRenamingTable(false)}><X className="h-3.5 w-3.5" /></Button>
-                                        <Button variant="ghost" size="icon" className="h-7 w-7 text-primary" onClick={handleRenameTable} disabled={renameSaving}>
-                                            {renameSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Check className="h-3.5 w-3.5" />}
+                                        <Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => setRenamingTable(false)}><X className="h-4 w-4" /></Button>
+                                        <Button variant="ghost" size="icon" className="h-8 w-8 text-primary" onClick={handleRenameTable} disabled={renameSaving}>
+                                            {renameSaving ? <Loader2 className="h-4 w-4 animate-spin" /> : <Check className="h-4 w-4" />}
                                         </Button>
                                     </div>
                                 ) : (
                                     <div className="flex items-center gap-2">
-                                        <h2 className="text-sm font-semibold font-mono truncate">{table}</h2>
+                                        <h2 className="text-lg font-semibold font-mono truncate tracking-tight">{table}</h2>
                                         <button
                                             type="button"
                                             onClick={() => { setNewTableName(table); setRenamingTable(true); }}
-                                            className="text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+                                            className="text-muted-foreground/40 hover:text-foreground transition-colors p-1 rounded hover:bg-muted"
                                         >
-                                            <Pencil className="h-3 w-3" />
+                                            <Pencil className="h-3.5 w-3.5" />
                                         </button>
                                     </div>
                                 )}
-                                <p className="text-[11px] text-muted-foreground/60 font-mono mt-0.5">{schema}</p>
+                                <p className="text-xs text-muted-foreground/70 font-mono mt-0.5 flex items-center gap-1.5">
+                                    <Database className="h-3 w-3 opacity-50" />
+                                    {schema}
+                                </p>
                             </div>
                         </div>
 
-                        <div className="flex items-center gap-2 shrink-0">
+                        <div className="flex items-center gap-2.5 shrink-0 mt-1">
                             <Button variant="outline" size="sm" className="h-7 text-xs gap-1.5" onClick={loadDetails} disabled={loading}>
                                 {loading ? <Loader2 className="h-3 w-3 animate-spin" /> : <RefreshCw className="h-3 w-3" />}
                                 Refresh

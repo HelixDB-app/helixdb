@@ -64,7 +64,7 @@ export function QueryToolbar({
     const isBusy = isExecuting || isSandboxBusy || isSandboxReviewing;
 
     return (
-        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-border/30 bg-muted/10 shrink-0">
+        <div className="flex items-center justify-between gap-2 px-3 py-2 border-b border-border/30 bg-background/95 backdrop-blur shrink-0">
             {/* Left actions */}
             <div className="flex items-center gap-0.5">
                 <Tooltip>

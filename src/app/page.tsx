@@ -305,7 +305,7 @@ export default function Home() {
                 />
             )}
             {/* Top bar — 3-zone grid: left | center | right */}
-            <header className="grid h-12 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-b border-border/30 bg-card/70 px-3 backdrop-blur-sm shrink-0">
+            <header className="grid h-14 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-b border-border/20 bg-background/95 px-4 backdrop-blur-md shrink-0">
                 {/* Left: Logo + connection indicator */}
                 <div className="flex items-center gap-2.5 min-w-0">
                     <button
@@ -351,10 +351,10 @@ export default function Home() {
                 <div className="flex min-w-0 items-center justify-center">
                     {isConnected && (
                         <Tabs value={activeView} onValueChange={(v) => setActiveView(v as typeof activeView)}>
-                            <TabsList aria-label="View tabs" className="h-8 gap-0.5 rounded-xl border border-border/40 bg-muted/55 p-1 shadow-sm">
+                            <TabsList aria-label="View tabs" className="h-9 gap-1 rounded-xl border border-border/10 bg-muted/40 p-1 shadow-sm backdrop-blur-sm">
                                 <TabsTrigger
                                     value="data"
-                                    className="h-6 gap-1.5 px-2 text-[10.5px]"
+                                    className="h-7 gap-1.5 px-3 text-[11px] data-[state=active]:bg-background data-[state=active]:shadow-sm rounded-lg"
                                     title={sc("view_data") ? `Data (${sc("view_data")})` : "Data"}
                                 >
                                     <Table2 className="h-3 w-3" />
@@ -362,7 +362,7 @@ export default function Home() {
                                 </TabsTrigger>
                                 <TabsTrigger
                                     value="query"
-                                    className="h-6 gap-1.5 px-2 text-[10.5px]"
+                                    className="h-7 gap-1.5 px-3 text-[11px] data-[state=active]:bg-background data-[state=active]:shadow-sm rounded-lg"
                                     title={sc("view_query") ? `Query (${sc("view_query")})` : "Query"}
                                 >
                                     <Terminal className="h-3 w-3" />
@@ -370,7 +370,7 @@ export default function Home() {
                                 </TabsTrigger>
                                 <TabsTrigger
                                     value="sessions"
-                                    className="h-6 gap-1.5 px-2 text-[10.5px]"
+                                    className="h-7 gap-1.5 px-3 text-[11px] data-[state=active]:bg-background data-[state=active]:shadow-sm rounded-lg"
                                     title={sc("view_sessions") ? `Sessions (${sc("view_sessions")})` : "Sessions"}
                                 >
                                     <Activity className="h-3 w-3" />
@@ -378,7 +378,7 @@ export default function Home() {
                                 </TabsTrigger>
                                 <TabsTrigger
                                     value="indexes"
-                                    className="h-6 gap-1.5 px-2 text-[10.5px]"
+                                    className="h-7 gap-1.5 px-3 text-[11px] data-[state=active]:bg-background data-[state=active]:shadow-sm rounded-lg"
                                     title={sc("view_indexes") ? `Indexes (${sc("view_indexes")})` : "Indexes"}
                                 >
                                     <Layers className="h-3 w-3" />
@@ -386,7 +386,7 @@ export default function Home() {
                                 </TabsTrigger>
                                 <TabsTrigger
                                     value="topology"
-                                    className="h-6 gap-1.5 px-2 text-[10.5px]"
+                                    className="h-7 gap-1.5 px-3 text-[11px] data-[state=active]:bg-background data-[state=active]:shadow-sm rounded-lg"
                                     title={sc("view_topology") ? `Topology (${sc("view_topology")})` : "Topology"}
                                 >
                                     <Network className="h-3 w-3" />
@@ -394,7 +394,7 @@ export default function Home() {
                                 </TabsTrigger>
                                 <TabsTrigger
                                     value="ai"
-                                    className="h-6 gap-1.5 px-2 text-[10.5px]"
+                                    className="h-7 gap-1.5 px-3 text-[11px] data-[state=active]:bg-background data-[state=active]:shadow-sm rounded-lg"
                                     title={sc("view_ai") ? `AI (${sc("view_ai")})` : "AI"}
                                 >
                                     <Sparkles className="h-3 w-3" />

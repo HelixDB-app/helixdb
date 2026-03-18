@@ -2256,7 +2256,7 @@ export function QueryEditor() {
                         {/* Full-screen editor overlay: sidebar + full-height Monaco */}
                         {editorFullScreen && (
                             <div className="fixed inset-0 z-50 bg-background flex flex-col h-screen">
-                                <header className="flex items-center justify-between px-4 py-2 border-b border-border/30 bg-card/50 shrink-0">
+                                <header className="flex items-center justify-between px-4 py-2 border-b border-border/30 bg-background shrink-0">
                                     <span className="text-sm font-medium text-muted-foreground">
                                         {activeTabIsDoc ? "Document editor" : "Query editor"}
                                     </span>
@@ -3103,7 +3103,7 @@ function StatusBar({
     if (!connectionId) return null;
 
     return (
-        <div className="flex items-center gap-2 px-3 py-1 border-t border-border/20 bg-card/30 shrink-0 text-[11px]">
+        <div className="flex items-center gap-2 px-3 py-1 border-t border-border/20 bg-background shrink-0 text-[11px]">
             {/* DB switcher */}
             <Popover open={dbOpen} onOpenChange={setDbOpen}>
                 <PopoverTrigger asChild>

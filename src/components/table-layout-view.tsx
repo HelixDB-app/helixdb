@@ -202,7 +202,7 @@ function PaneRenderer({ pane }: { pane: PaneNode }) {
             onDrop={handleDrop}
         >
             {/* Tab Bar */}
-            <div className="flex h-9 min-h-[36px] bg-[#1e1e1e] border-b border-border/40 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden shrink-0">
+            <div className="flex h-[38px] min-h-[38px] bg-muted/20 border-b border-border/30 overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden shrink-0">
                 {pane.tabs.map((tab, idx) => {
                     const isActive = tab.id === pane.activeTabId;
                     const canCloseRight = idx < pane.tabs.length - 1;
@@ -218,14 +218,13 @@ function PaneRenderer({ pane }: { pane: PaneNode }) {
                                     }}
                                     onClick={() => setActiveTab(pane.id, tab.id)}
                                     className={cn(
-                                        "group flex items-center justify-between min-w-[120px] max-w-[200px] h-full px-3 text-[12px] font-mono select-none cursor-pointer border-r border-[#2d2d2d] transition-colors relative",
+                                        "group flex items-center justify-between min-w-[124px] max-w-[200px] h-full px-3.5 text-[12.5px] font-mono select-none cursor-pointer border-r border-border/30 transition-all relative mt-[2px] rounded-t-lg mx-0.5",
                                         isActive 
-                                            ? "bg-[#1e1e1e] text-emerald-400" 
-                                            : "bg-[#2d2d2d] text-muted-foreground/70 hover:bg-[#252526] hover:text-foreground"
+                                            ? "bg-background text-emerald-400 border-t border-t-emerald-500/30 border-x border-x-border/40 shadow-[0_-2px_6px_rgba(0,0,0,0.1)] z-10 before:absolute before:-bottom-[2px] before:left-0 before:right-0 before:h-[2px] before:bg-background" 
+                                            : "bg-transparent text-muted-foreground/60 hover:bg-muted/40 hover:text-foreground border-transparent border-t border-t-transparent"
                                     )}
                                 >
-                                    {isActive && <div className="absolute top-0 left-0 right-0 h-[2px] bg-emerald-500" />}
-                                    <span className="truncate pr-2 mt-0.5">{tab.table}</span>
+                                    <span className="truncate pr-2 mt-px">{tab.table}</span>
                                     <button
                                         onClick={(e) => {
                                             e.stopPropagation();

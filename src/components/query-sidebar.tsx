@@ -51,7 +51,7 @@ export function QuerySidebar({
     canDeleteFiles = true,
 }: QuerySidebarProps) {
     return (
-        <div className="flex flex-col h-full border-r border-border/25 bg-card/20 w-full">
+        <div className="flex flex-col h-full border-r border-border/20 bg-background w-full">
             {/* Panel header */}
             <div className="px-3 py-2 border-b border-border/20 shrink-0">
                 <span className="text-[10px] font-semibold uppercase tracking-widest text-muted-foreground/50">
@@ -115,7 +115,7 @@ export interface QueryActivityBarProps {
 
 export function QueryActivityBar({ activePanel, onToggle }: QueryActivityBarProps) {
     return (
-        <div className="flex flex-col items-center py-2 gap-1 border-r border-border/25 bg-card/30 w-10 shrink-0">
+        <div className="flex flex-col items-center py-2 gap-1 border-r border-border/20 bg-muted/10 w-10 shrink-0">
             {PANELS.map(({ id, Icon, label, accent }) => (
                 <Tooltip key={id}>
                     <TooltipTrigger asChild>

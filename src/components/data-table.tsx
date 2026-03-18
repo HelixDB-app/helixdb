@@ -95,6 +95,8 @@ import {
     RadioTower,
     Sparkles,
     MapPin,
+    Check,
+    Maximize2,
 } from "lucide-react";
 import {
     ContextMenu,
@@ -129,6 +131,7 @@ import { toast } from "sonner";
 import { InsertRowDialog } from "@/components/insert-row-dialog";
 import { SeedDataDialog } from "@/components/seed-data-dialog";
 import { FunctionEditInline } from "@/components/function-edit-dialog";
+import { RowEditorPanel } from "@/components/row-editor-panel";
 
 // ── Export / copy helpers ────────────────────────────────────────────────
 
@@ -449,6 +452,9 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
     const [insertDialogOpen, setInsertDialogOpen] = useState(false);
     const [seedDialogOpen, setSeedDialogOpen] = useState(false);
 
+    // ── Row editor panel state ────────────────────────────────────────────────
+    const [expandedRowKey, setExpandedRowKey] = useState<string | null>(null);
+
     // ── Live Watch mode ───────────────────────────────────────────────────────
     const [watchMode, setWatchMode] = useState(false);
     const [watchConnecting, setWatchConnecting] = useState(false);
@@ -605,22 +611,18 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
         setNextFetchPage(2);
         setFilterConditions([]);
         setDebouncedConditions([]);
+        setExpandedRowKey(null);
     }, [selectedTable, selectedSchema]);
 
     useEffect(() => { fetchData(); }, [fetchData, refreshTrigger]);
 
     // ── Column metadata for edit/delete ───────────────────────────────────────
-    const isTableNotView =
-        previewSelection?.kind === "table" || previewSelection?.kind === "view"
-            ? previewSelection.kind === "table"
-            : false;
-
     useEffect(() => {
-        if (!connectionId || !selectedSchema || !selectedTable || !isTableNotView) return;
+        if (!connectionId || !selectedSchema || !selectedTable) return;
         dbGetColumns(connectionId, selectedSchema, selectedTable)
             .then(setTableColumns)
             .catch(() => setTableColumns(null));
-    }, [connectionId, selectedSchema, selectedTable, isTableNotView, refreshTrigger]);
+    }, [connectionId, selectedSchema, selectedTable, refreshTrigger]);
 
     const pkColumnNames = useMemo(
         () => (tableColumns?.filter((c) => c.is_primary_key).map((c) => c.name) ?? []),
@@ -635,7 +637,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
         }
         return map;
     }, [tableColumns]);
-    const canEditDelete = isTableNotView && pkColumnNames.length > 0;
+    const canEditDelete = pkColumnNames.length > 0;
 
     // ── Save cell edit ────────────────────────────────────────────────────────
     const saveCellEdit = useCallback(async (): Promise<void> => {
@@ -918,7 +920,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                     hasRows={false}
                     watchMode={watchMode}
                     watchConnecting={watchConnecting}
-                    onToggleWatch={isTableNotView ? toggleWatch : undefined}
+                    onToggleWatch={toggleWatch}
                 />
                 <div className="flex-1 flex items-center justify-center p-8">
                     <div className="max-w-md w-full rounded-xl bg-destructive/10 border border-destructive/20 p-6">
@@ -961,7 +963,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                     showMapButton={result ? hasGeometryColumn(result.columns) : false}
                     watchMode={watchMode}
                     watchConnecting={watchConnecting}
-                    onToggleWatch={isTableNotView ? toggleWatch : undefined}
+                    onToggleWatch={toggleWatch}
             />
             {/* Live watch banner */}
             {watchMode && (
@@ -1269,10 +1271,13 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                             return (
                                                                 <TableCell
                                                                     key={colIdx}
-                                                                    className="p-1 align-middle min-w-[120px]"
+                                                                    className={cn(
+                                                                        "p-0 align-middle min-w-[160px] relative z-20 outline outline-2 outline-offset-[-2px] bg-background shadow-md",
+                                                                        cellError ? "outline-destructive" : "outline-emerald-500"
+                                                                    )}
                                                                     onClick={(e) => e.stopPropagation()}
                                                                 >
-                                                                    <div className="flex items-center gap-1">
+                                                                    <div className="flex items-center w-full h-full">
                                                                         <div className="flex-1 min-w-0">
                                                                             {enumLabels ? (
                                                                                 <Select
@@ -1288,11 +1293,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                                                     }}
                                                                                 >
                                                                                     <SelectTrigger
-                                                                                    className={cn(
-                                                                                        "h-7 text-xs font-mono w-full min-w-0",
-                                                                                        cellError &&
-                                                                                            "border-destructive focus-visible:ring-destructive"
-                                                                                    )}
+                                                                                    className="h-9 px-3 text-xs font-mono w-full border-0 focus-visible:ring-0 rounded-none shadow-none bg-transparent"
                                                                                     onKeyDown={(e) => {
                                                                                         if (e.key === "Escape") {
                                                                                             e.preventDefault();
@@ -1332,11 +1333,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                                                     }}
                                                                                 >
                                                                                     <SelectTrigger
-                                                                                        className={cn(
-                                                                                            "h-7 text-xs font-mono w-full min-w-0",
-                                                                                            cellError &&
-                                                                                                "border-destructive focus-visible:ring-destructive"
-                                                                                        )}
+                                                                                        className="h-9 px-3 text-xs font-mono w-full border-0 focus-visible:ring-0 rounded-none shadow-none bg-transparent"
                                                                                         onKeyDown={(e) => {
                                                                                             if (e.key === "Escape") {
                                                                                                 e.preventDefault();
@@ -1378,29 +1375,41 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                                                         }
                                                                                     }}
                                                                                     onBlur={saveCellEdit}
-                                                                                    className={cn(
-                                                                                        "h-7 text-xs font-mono w-full",
-                                                                                        cellError &&
-                                                                                            "border-destructive focus-visible:ring-destructive"
-                                                                                    )}
+                                                                                    className="h-9 px-3 text-xs font-mono w-full border-0 focus-visible:ring-0 rounded-none shadow-none bg-transparent"
                                                                                 />
                                                                             )}
-                                                                            {cellError && (
-                                                                                <p className="text-[10px] text-destructive mt-0.5 px-0.5">{cellError}</p>
-                                                                            )}
                                                                         </div>
-                                                                        {/* Cancel button — onMouseDown prevents input blur */}
-                                                                        <button
-                                                                            onMouseDown={(e) => {
-                                                                                e.preventDefault();
-                                                                                cancelCellEdit();
-                                                                            }}
-                                                                            className="shrink-0 p-0.5 rounded text-muted-foreground/40 hover:text-muted-foreground hover:bg-muted/60 transition-colors"
-                                                                            title="Cancel (Esc)"
-                                                                        >
-                                                                            <X className="h-3 w-3" />
-                                                                        </button>
+                                                                        <div className="flex items-center gap-0.5 pr-1">
+                                                                            <button
+                                                                                onMouseDown={(e) => {
+                                                                                    e.preventDefault();
+                                                                                    preventBlurSaveRef.current = true;
+                                                                                    saveCellEdit().finally(() => {
+                                                                                        preventBlurSaveRef.current = false;
+                                                                                    });
+                                                                                }}
+                                                                                className="shrink-0 p-1.5 rounded-sm text-emerald-500/80 hover:text-emerald-500 hover:bg-emerald-500/15 transition-colors"
+                                                                                title="Save (Enter)"
+                                                                            >
+                                                                                <Check className="h-4 w-4" />
+                                                                            </button>
+                                                                            <button
+                                                                                onMouseDown={(e) => {
+                                                                                    e.preventDefault();
+                                                                                    cancelCellEdit();
+                                                                                }}
+                                                                                className="shrink-0 p-1.5 rounded-sm text-muted-foreground/50 hover:text-destructive hover:bg-destructive/15 transition-colors"
+                                                                                title="Cancel (Esc)"
+                                                                            >
+                                                                                <X className="h-4 w-4" />
+                                                                            </button>
+                                                                        </div>
                                                                     </div>
+                                                                    {cellError && (
+                                                                        <div className="absolute top-[calc(100%+4px)] left-0 z-50 bg-destructive/90 text-destructive-foreground text-[11px] font-medium px-2 py-1.5 rounded shadow-lg whitespace-nowrap overflow-hidden">
+                                                                            {cellError}
+                                                                        </div>
+                                                                    )}
                                                                 </TableCell>
                                                             );
                                                         }
@@ -1418,16 +1427,30 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                             <TableCell
                                                                 key={colIdx}
                                                                 className={cn(
-                                                                    "text-xs font-mono max-w-[280px] truncate px-3 py-1.5 cursor-default group/cell",
+                                                                    "text-xs font-mono max-w-[280px] truncate px-3 py-1.5 group/cell",
                                                                     isNull && !isGeomCol && "text-muted-foreground/25 italic",
-                                                                    isGeomCol && isNull && "text-muted-foreground/40"
+                                                                    isGeomCol && isNull && "text-muted-foreground/40",
+                                                                    canEditDelete ? "cursor-text hover:bg-muted/20" : "cursor-default"
                                                                 )}
                                                                 title={isGeomCol && isNull ? "—" : isNull ? "NULL" : showMapLink ? "Open in map" : formatted}
-                                                                onClick={() => {
+                                                                onClick={(e) => {
+                                                                    e.stopPropagation();
                                                                     if (showMapLink) return;
-                                                                    if (!canEditDelete && !isNull) copyCell(formatted);
+                                                                    if (canEditDelete) {
+                                                                        preventBlurSaveRef.current = false;
+                                                                        setEditingCell({
+                                                                            rowKey,
+                                                                            colName: col.name,
+                                                                            originalValue: cellToEditValue(cell),
+                                                                        });
+                                                                        setEditingValue(cellToEditValue(cell));
+                                                                        setCellError(null);
+                                                                    } else if (!isNull) {
+                                                                        copyCell(formatted);
+                                                                    }
                                                                 }}
-                                                                onDoubleClick={() => {
+                                                                onDoubleClick={(e) => {
+                                                                    e.stopPropagation();
                                                                     if (showMapLink) return;
                                                                     if (canEditDelete) {
                                                                         preventBlurSaveRef.current = false;
@@ -1464,7 +1487,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                                     {/* Pencil icon — only for editable cells, only on hover; hide for geometry map link */}
                                                                     {canEditDelete && !isNull && !showMapLink && (
                                                                         <button
-                                                                            className="shrink-0 opacity-0 group-hover/cell:opacity-100 transition-opacity p-0.5 rounded hover:bg-muted/60 ml-0.5"
+                                                                            className="shrink-0 opacity-0 group-hover/cell:opacity-100 transition-opacity p-1 rounded hover:bg-muted/60 ml-1"
                                                                             onMouseDown={(e) => {
                                                                                 e.preventDefault();
                                                                                 e.stopPropagation();
@@ -1482,7 +1505,25 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                                             }}
                                                                             title={`Edit ${col.name}`}
                                                                         >
-                                                                            <Pencil className="h-2.5 w-2.5 text-muted-foreground/50" />
+                                                                            <Pencil className="h-3 w-3 text-muted-foreground/60" />
+                                                                        </button>
+                                                                    )}
+                                                                    
+                                                                    {/* Expand row icon */}
+                                                                    {canEditDelete && (
+                                                                        <button
+                                                                            className="shrink-0 opacity-0 group-hover/cell:opacity-100 transition-opacity p-1 rounded hover:bg-emerald-500/15 group/expand ml-1"
+                                                                            onMouseDown={(e) => {
+                                                                                e.preventDefault();
+                                                                                e.stopPropagation();
+                                                                            }}
+                                                                            onClick={(e) => {
+                                                                                e.stopPropagation();
+                                                                                setExpandedRowKey(rowKey);
+                                                                            }}
+                                                                            title="Expand row editor"
+                                                                        >
+                                                                            <Maximize2 className="h-3 w-3 text-muted-foreground/60 group-hover/expand:text-emerald-500" />
                                                                         </button>
                                                                     )}
                                                                 </div>
@@ -1576,6 +1617,25 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                             <Loader2 className="h-3.5 w-3.5 animate-spin text-emerald-500" />
                             <span className="text-xs font-medium">Loading…</span>
                         </div>
+                    </div>
+                )}
+                
+                {/* Expand Row Drawer Panel Overlay */}
+                {expandedRowKey && canEditDelete && result && (
+                    <div className="absolute inset-0 z-40 flex">
+                        <div className="flex-1 bg-background/20 backdrop-blur-sm cursor-pointer" onClick={() => setExpandedRowKey(null)} title="Close editor" />
+                        <RowEditorPanel
+                            connectionId={connectionId}
+                            schema={selectedSchema}
+                            table={selectedTable}
+                            pkColumnNames={pkColumnNames}
+                            columns={result.columns}
+                            tableColumnsInfo={tableColumns}
+                            row={displayRows.find(r => getRowKey(r, result.columns, pkColumnNames) === expandedRowKey) || null}
+                            isOpen={expandedRowKey !== null}
+                            onClose={() => setExpandedRowKey(null)}
+                            onSaveSuccess={fetchData}
+                        />
                     </div>
                 )}
             </div>

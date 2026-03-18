@@ -37,7 +37,7 @@ export function QueryTabBar({
     }
 
     return (
-        <div className="flex items-center border-b border-border/30 bg-card/40 shrink-0 min-h-0">
+        <div className="flex items-center border-b border-border/30 bg-muted/20 shrink-0 min-h-0">
             <ScrollArea className="flex-1 overflow-hidden">
                 <div className="flex items-end h-9 px-1">
                     {tabs.map((tab) => {
@@ -47,10 +47,10 @@ export function QueryTabBar({
                             <div
                                 key={tab.id}
                                 className={cn(
-                                    "group relative flex items-center gap-1.5 px-3 h-full border-r border-border/20 cursor-pointer select-none transition-colors min-w-0 max-w-[160px]",
+                                    "group relative flex items-center gap-1.5 px-3 h-full cursor-pointer select-none transition-all min-w-0 max-w-[160px] mt-[2px] rounded-t-lg mx-0.5",
                                     active
-                                        ? "bg-background text-foreground border-t-2 border-t-primary border-b-0 border-b-background"
-                                        : "bg-muted/20 text-muted-foreground hover:bg-muted/40 border-t-2 border-t-transparent"
+                                        ? "bg-background text-emerald-400 border-t border-t-emerald-500/30 border-x border-x-border/40 shadow-[0_-2px_6px_rgba(0,0,0,0.1)] z-10 before:absolute before:-bottom-[2px] before:left-0 before:right-0 before:h-[2px] before:bg-background"
+                                        : "bg-transparent text-muted-foreground/70 hover:bg-muted/40 hover:text-foreground border-transparent border-t border-t-transparent border-x border-x-transparent"
                                 )}
                                 onClick={() => onSelectTab(tab.id)}
                             >
