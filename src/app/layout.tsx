@@ -6,13 +6,14 @@ import { ThemeProvider } from "@/components/theme-provider";
 import { FirebaseProvider } from "@/components/firebase-provider";
 import { NotificationProvider } from "@/components/notification-provider";
 import { NotificationRTDBProvider } from "@/components/notification-rtdb-provider";
+import { SubscriptionProvider } from "@/components/subscription-provider";
 import { WhatsNewModal } from "@/components/whats-new-modal";
 import { AppUpdateManager } from "@/components/app-update-manager";
 import { NetworkStatusProvider } from "@/components/network-status-provider";
 import { AppDebugLogger } from "@/components/app-debug-logger";
 import { AppSplash } from "@/components/app-splash";
 import { ErrorBoundary } from "@/components/error-boundary";
-import { TrialProvider, TrialBanner } from "@/components/trial-banner";
+import { TrialProvider, TrialBanner, TrialGate } from "@/components/trial-banner";
 import { APP_NAME, APP_TAGLINE } from "@/lib/app-config";
 import "./globals.css";
 
@@ -61,14 +62,17 @@ export default function RootLayout({
               <NetworkStatusProvider>
                 <NotificationProvider>
                   <NotificationRTDBProvider>
-                    <TrialProvider>
-                      <TrialBanner />
-                      <AppUpdateManager />
-                      <WhatsNewModal />
-                      <ErrorBoundary>
-                        {children}
-                      </ErrorBoundary>
-                    </TrialProvider>
+                    <SubscriptionProvider>
+                      <TrialProvider>
+                        <TrialGate />
+                        <TrialBanner />
+                        <AppUpdateManager />
+                        <WhatsNewModal />
+                        <ErrorBoundary>
+                          {children}
+                        </ErrorBoundary>
+                      </TrialProvider>
+                    </SubscriptionProvider>
                   </NotificationRTDBProvider>
                 </NotificationProvider>
               </NetworkStatusProvider>

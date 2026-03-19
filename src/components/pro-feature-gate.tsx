@@ -3,6 +3,7 @@
 import { useEffect } from "react";
 import { useAuthStore } from "@/stores/auth-store";
 import { useSubscriptionStore, type SubscriptionStatus } from "@/stores/subscription-store";
+import { useTrialStore } from "@/stores/trial-store";
 import { authOpenBrowser } from "@/lib/tauri";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -25,8 +26,9 @@ export function ProFeatureGate({
 }) {
   const { isAuthenticated } = useAuthStore();
   const { subscription } = useSubscriptionStore();
+  const { isTrialActive } = useTrialStore();
 
-  const allowed = isAuthenticated && hasProAccess(subscription);
+  const allowed = (isAuthenticated && hasProAccess(subscription)) || isTrialActive();
 
   useEffect(() => {
     if (!allowed) void track("feature_gate_shown", { feature: featureKey });
@@ -68,4 +70,3 @@ export function ProFeatureGate({
     </Card>
   );
 }
-

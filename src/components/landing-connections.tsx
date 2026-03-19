@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { SavedConnection } from "@/lib/types";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useAuthStore } from "@/stores/auth-store";
+import { useTrialStore } from "@/stores/trial-store";
 import { APP_NAME } from "@/lib/app-config";
 import { useSavedConnectionsStore } from "@/stores/saved-connections-store";
 import { ConnectionDialog } from "@/components/connection-dialog";
@@ -13,6 +14,8 @@ import { LocalPostgresCard } from "@/components/local-postgres-card";
 import { StatusBar } from "@/components/status-bar";
 import { ProfilePanel } from "@/components/profile-panel";
 import { LoginPrompt } from "@/components/login-prompt";
+import { authOpenBrowser } from "@/lib/tauri";
+import { useCountdown } from "@/lib/use-countdown";
 import {
     formatCriticalityLabel,
     normalizeConnectionCriticality,
@@ -116,6 +119,7 @@ export function LandingConnections() {
         clearError: clearConnectionError,
     } = useConnectionStore();
     const { user, isAuthenticated } = useAuthStore();
+    const { result: trialResult, loadState: trialLoadState, isTrialActive } = useTrialStore();
 
     const [showQuickConnect, setShowQuickConnect] = useState(false);
     const [showSaveDialog, setShowSaveDialog] = useState(false);
@@ -127,6 +131,19 @@ export function LandingConnections() {
     const [searchQuery, setSearchQuery] = useState("");
     const [environmentFilter, setEnvironmentFilter] = useState<"all" | "dev" | "staging" | "prod">("all");
     const [criticalityFilter, setCriticalityFilter] = useState<"all" | "low" | "medium" | "high">("all");
+
+    const trialCountdown = useCountdown(trialResult?.trial?.trialExpiryDate);
+    const showTrialCountdown =
+        !isAuthenticated &&
+        trialLoadState === "ready" &&
+        trialResult !== null &&
+        isTrialActive() &&
+        !trialCountdown.expired;
+
+    const pad = (value: number) => String(value).padStart(2, "0");
+    const trialCountdownLabel = trialCountdown.days > 0
+        ? `${trialCountdown.days}d ${pad(trialCountdown.hours)}h ${pad(trialCountdown.minutes)}m`
+        : `${pad(trialCountdown.hours)}:${pad(trialCountdown.minutes)}:${pad(trialCountdown.seconds)}`;
 
     useEffect(() => {
         load();
@@ -314,6 +331,42 @@ export function LandingConnections() {
             {/* ── Main ───────────────────────────────────────────────────── */}
             <main id="main" className="relative flex-1 overflow-auto" tabIndex={-1} aria-label="Main content">
                 <div className="max-w-5xl mx-auto px-6 py-8">
+                    {showTrialCountdown && (
+                        <div
+                            className={cn(
+                                "mb-6 rounded-2xl border border-emerald-500/20 bg-gradient-to-r from-emerald-500/10 via-cyan-500/5 to-transparent px-4 py-3 shadow-sm",
+                                mounted ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-2"
+                            )}
+                        >
+                            <div className="flex flex-wrap items-center justify-between gap-3">
+                                <div className="space-y-1">
+                                    <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground/60">
+                                        <Clock className="h-3.5 w-3.5 text-emerald-400" />
+                                        Free Trial Active
+                                    </div>
+                                    <p className="text-sm font-semibold text-foreground">
+                                        All Pro features are unlocked for your device
+                                    </p>
+                                    <p className="text-xs text-muted-foreground">
+                                        Ends in{" "}
+                                        <span className="font-mono text-foreground">{trialCountdownLabel}</span>
+                                    </p>
+                                </div>
+                                <Button
+                                    size="sm"
+                                    className="h-8 gap-1.5 px-3 text-xs bg-emerald-500 hover:bg-emerald-400 text-black"
+                                    onClick={() =>
+                                        authOpenBrowser(
+                                            `${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app"}/pricing`
+                                        )
+                                    }
+                                >
+                                    Upgrade
+                                    <ChevronRight className="h-3.5 w-3.5" />
+                                </Button>
+                            </div>
+                        </div>
+                    )}
                     <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
 
                         {/* ── Left column: Local ─────────────────────────── */}
@@ -738,4 +791,3 @@ function FilteredEmptyState({ onClearFilters }: { onClearFilters: () => void }) 
         </div>
     );
 }
-

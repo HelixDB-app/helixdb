@@ -18,7 +18,6 @@ import { listen } from "@tauri-apps/api/event";
 import dynamic from "next/dynamic";
 import { LandingConnections } from "@/components/landing-connections";
 import { WelcomeScreen } from "@/components/welcome-screen";
-import { TrialExpiredGate } from "@/components/trial-banner";
 import { ConnectionDialog } from "@/components/connection-dialog";
 import { StatusBar } from "@/components/status-bar";
 import { CommandPalette } from "@/components/command-palette";
@@ -92,12 +91,8 @@ export default function Home() {
     const { openTab } = useLayoutStore();
     const getCombo = useShortcutsStore((s) => s.getCombo);
     const { user, isAuthenticated, setUser, setLoading: setAuthLoading } = useAuthStore();
+    const { associateUser } = useTrialStore();
     const handleCollabDeepLink = useCollaborationStore((s) => s.handleDeepLinkUrl);
-    const { result: trialResult, loadState: trialLoadState, isTrialActive } = useTrialStore();
-    const trialExpired = !isAuthenticated
-        && trialLoadState === "ready"
-        && trialResult !== null
-        && !isTrialActive();
     const [showConnectionDialog, setShowConnectionDialog] = useState(false);
     const [activeView, setActiveView] = useState<"data" | "query" | "tests" | "sessions" | "indexes" | "topology" | "ai" | "git">("data");
     const [searchOpen, setSearchOpen] = useState(false);
@@ -137,7 +132,10 @@ export default function Home() {
             try {
                 const profile = await authFetchProfile();
                 if (!cancelled) {
-                    if (profile) setUser(profile);
+                    if (profile) {
+                        setUser(profile);
+                        void associateUser(profile.id);
+                    }
                     // null just means the user hasn't logged in yet — this is normal
                 }
             } catch (err) {
@@ -276,8 +274,6 @@ export default function Home() {
     if (!isConnected) {
         return (
             <>
-                {/* Block access when trial has expired and user isn't logged in */}
-                {trialExpired && <TrialExpiredGate />}
                 {showWelcome && <WelcomeScreen onDismiss={handleWelcomeDismiss} />}
                 <LandingConnections />
                 {showSurveyModal && (
@@ -294,8 +290,6 @@ export default function Home() {
 
     return (
         <div className="flex h-screen flex-col bg-background">
-            {/* Block access when trial has expired and user isn't logged in */}
-            {trialExpired && <TrialExpiredGate />}
             {showSurveyModal && (
                 <SurveyModal
                     open={showSurveyModal}

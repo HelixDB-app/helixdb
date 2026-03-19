@@ -2,6 +2,7 @@
 
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useAuthStore } from "@/stores/auth-store";
+import { useTrialStore } from "@/stores/trial-store";
 import { authOpenLogin, authStoreToken, authFetchProfile } from "@/lib/tauri";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Button } from "@/components/ui/button";
@@ -29,6 +30,7 @@ interface LoginPromptProps {
 
 export function LoginPrompt({ onLoginSuccess, onDismiss, compact = false }: LoginPromptProps) {
     const { setUser, setPendingState, isLoading: authLoading } = useAuthStore();
+    const { associateUser } = useTrialStore();
     const [phase, setPhase] = useState<LoginPhase>("idle");
     const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -108,6 +110,7 @@ export function LoginPrompt({ onLoginSuccess, onDismiss, compact = false }: Logi
                     const profile = await authFetchProfile();
                     if (profile) {
                         setUser(profile);
+                        void associateUser(profile.id);
                         setPendingState(null);
                         setPhase("idle");
                         onLoginSuccess?.();

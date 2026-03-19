@@ -1,8 +1,14 @@
 import { create } from "zustand";
-import { trialInit, trialGetStatus, type TrialCheckResult, type TrialStatus } from "@/lib/tauri";
+import {
+    trialInit,
+    trialGetStatus,
+    trialAssociateUser,
+    type TrialCheckResult,
+    type TrialStatus
+} from "@/lib/tauri";
 
 /** How often to silently revalidate trial status in the background (ms) */
-const POLL_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+const POLL_INTERVAL_MS = 60 * 1000; // 1 minute
 
 type TrialLoadState = "idle" | "loading" | "ready" | "error";
 
@@ -21,6 +27,7 @@ interface TrialState {
 
     // Actions
     initTrial: (associatedUserId?: string) => Promise<void>;
+    associateUser: (userId: string) => Promise<void>;
     refreshStatus: () => Promise<void>;
     startPolling: () => void;
     stopPolling: () => void;
@@ -60,6 +67,15 @@ export const useTrialStore = create<TrialState>((set, get) => ({
         } catch (err) {
             const error = err instanceof Error ? err.message : String(err);
             set({ loadState: "error", error });
+        }
+    },
+
+    associateUser: async (userId: string) => {
+        try {
+            const result = await trialAssociateUser(userId);
+            set({ result, loadState: "ready", lastSynced: new Date() });
+        } catch {
+            // Ignore association failures; trial will be revalidated by polling
         }
     },
 
