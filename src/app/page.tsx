@@ -25,7 +25,9 @@ import { SettingsDialog } from "@/components/settings-dialog";
 import { ProfilePanel } from "@/components/profile-panel";
 import { LoginPrompt } from "@/components/login-prompt";
 import { SurveyModal } from "@/components/survey-modal";
+import { BetaFeedbackDialog } from "@/components/beta-feedback-dialog";
 import { getSurveyStatus } from "@/lib/survey";
+import { useBetaFeedbackScheduler } from "@/hooks/use-beta-feedback-scheduler";
 import type { SettingsSection } from "@/components/settings-dialog";
 
 function parseMenuSettingsSection(raw: string | null): SettingsSection | null {
@@ -164,6 +166,7 @@ export default function Home() {
     const [searchOpen, setSearchOpen] = useState(false);
     const [showWelcome, setShowWelcome] = useState(false);
     const [showSurveyModal, setShowSurveyModal] = useState(false);
+    const [showBetaFeedback, setShowBetaFeedback] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [settingsSeed, setSettingsSeed] = useState<SettingsSection | null>(null);
     const [showProfile, setShowProfile] = useState(false);
@@ -209,6 +212,13 @@ export default function Home() {
             clearTimeout(timeoutId);
         };
     }, [user, showWelcome]);
+
+    useBetaFeedbackScheduler({
+        userId: user?.id ?? null,
+        enabled: Boolean(user) && !showWelcome,
+        paused: showSurveyModal,
+        onEligible: () => setShowBetaFeedback(true),
+    });
 
     // Restore session on startup — try to load an existing cached profile from the keychain.
     // - null return means "not logged in" (normal, no error)
@@ -377,6 +387,11 @@ export default function Home() {
                         getToken={authGetToken}
                     />
                 )}
+                <BetaFeedbackDialog
+                    open={showBetaFeedback}
+                    onOpenChange={setShowBetaFeedback}
+                    getToken={authGetToken}
+                />
                 <ConnectionDialog
                     open={showConnectionDialog}
                     onOpenChange={setShowConnectionDialog}
@@ -395,6 +410,7 @@ export default function Home() {
                     open={settingsOpen}
                     onOpenChange={setSettingsOpen}
                     onOpenSurvey={user ? () => { setSettingsOpen(false); setShowSurveyModal(true); } : undefined}
+                    onOpenBetaFeedback={user ? () => { setSettingsOpen(false); setShowBetaFeedback(true); } : undefined}
                     seedSection={settingsSeed}
                 />
             </>
@@ -411,6 +427,11 @@ export default function Home() {
                     getToken={authGetToken}
                 />
             )}
+            <BetaFeedbackDialog
+                open={showBetaFeedback}
+                onOpenChange={setShowBetaFeedback}
+                getToken={authGetToken}
+            />
             {/* Top bar — compact flex: brand | views | actions; scroll/menus on narrow widths */}
             <header className="flex min-h-11 shrink-0 items-center gap-2 border-b border-border/35 bg-card/75 dark:bg-background/95 px-2 pt-[max(0px,env(safe-area-inset-top))] sm:px-3 backdrop-blur-md shadow-[0_1px_0_oklch(0_0_0_/0.03)] dark:shadow-none">
                 {/* Left: Logo + connection indicator */}
@@ -848,6 +869,7 @@ export default function Home() {
                 open={settingsOpen}
                 onOpenChange={setSettingsOpen}
                 onOpenSurvey={user ? () => { setSettingsOpen(false); setShowSurveyModal(true); } : undefined}
+                onOpenBetaFeedback={user ? () => { setSettingsOpen(false); setShowBetaFeedback(true); } : undefined}
                 seedSection={settingsSeed}
             />
 

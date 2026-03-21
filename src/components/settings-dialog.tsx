@@ -55,6 +55,7 @@ import {
     Pencil,
     RotateCcw as ResetIcon,
     MessageSquareText,
+    MessageSquare,
     ArrowUpRight,
     Loader2,
 } from "lucide-react";
@@ -983,7 +984,13 @@ function AISection() {
     );
 }
 
-function AboutSection({ onOpenSurvey }: { onOpenSurvey?: () => void }) {
+function AboutSection({
+    onOpenSurvey,
+    onOpenBetaFeedback,
+}: {
+    onOpenSurvey?: () => void;
+    onOpenBetaFeedback?: () => void;
+}) {
     const [copied, setCopied] = useState(false);
     const isTauri = isTauriRuntime();
     const {
@@ -1130,6 +1137,23 @@ function AboutSection({ onOpenSurvey }: { onOpenSurvey?: () => void }) {
                         </Button>
                     </SettingRow>
                 )}
+                {onOpenBetaFeedback && (
+                    <SettingRow
+                        label="Beta feedback"
+                        description="We're in beta and shipping often — share ideas, feature requests, or report issues. Signed-in users only."
+                    >
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="gap-1.5"
+                            onClick={onOpenBetaFeedback}
+                        >
+                            <MessageSquare className="h-3.5 w-3.5" />
+                            Give feedback
+                        </Button>
+                    </SettingRow>
+                )}
             </SettingSection>
 
             <SettingSection title="Performance">
@@ -1163,11 +1187,19 @@ interface SettingsDialogProps {
     onOpenChange: (open: boolean) => void;
     /** When provided, shows a "Take survey" button in About that closes settings and opens the survey modal. */
     onOpenSurvey?: () => void;
+    /** When provided, shows a "Give feedback" button in About that closes settings and opens the beta feedback dialog. */
+    onOpenBetaFeedback?: () => void;
     /** Set by the native app menu to jump to a section when the dialog opens. */
     seedSection?: SettingsSection | null;
 }
 
-export function SettingsDialog({ open, onOpenChange, onOpenSurvey, seedSection = null }: SettingsDialogProps) {
+export function SettingsDialog({
+    open,
+    onOpenChange,
+    onOpenSurvey,
+    onOpenBetaFeedback,
+    seedSection = null,
+}: SettingsDialogProps) {
     const [activeSection, setActiveSection] = useState<SettingsSection>("appearance");
     const { resetSettings } = useSettingsStore();
     const { setTheme } = useTheme();
@@ -1192,7 +1224,12 @@ export function SettingsDialog({ open, onOpenChange, onOpenSurvey, seedSection =
             case "query": return <QuerySection />;
             case "ai": return <AISection />;
             case "shortcuts": return <ShortcutsSection />;
-            case "about": return <AboutSection onOpenSurvey={onOpenSurvey} />;
+            case "about": return (
+                <AboutSection
+                    onOpenSurvey={onOpenSurvey}
+                    onOpenBetaFeedback={onOpenBetaFeedback}
+                />
+            );
         }
     };
 

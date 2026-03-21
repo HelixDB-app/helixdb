@@ -1,6 +1,7 @@
 "use client";
 
 import { useState, useEffect, useCallback, useMemo, useRef } from "react";
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { listen } from "@tauri-apps/api/event";
@@ -20,6 +21,7 @@ import {
     dbGetColumnStats,
     dbWatchTable,
     dbUnwatchTable,
+    dbExecuteQuery,
 } from "@/lib/tauri";
 import { formatCellValue, watchEventName } from "@/lib/types";
 import type { TableWatchEvent } from "@/lib/types";
@@ -100,6 +102,7 @@ import {
     MapPin,
     Check,
     Maximize2,
+    Terminal,
 } from "lucide-react";
 import {
     ContextMenu,
@@ -139,6 +142,20 @@ import { FunctionEditInline } from "@/components/function-edit-dialog";
 import { RowEditorPanel } from "@/components/row-editor-panel";
 import { DateTimeInput } from "@/components/date-time-input";
 import { getDateTimeMode } from "@/lib/date-time";
+import { validateReadOnlySql } from "@/lib/read-only-sql";
+
+const TableQuerySqlEditorLazy = dynamic(
+    () =>
+        import("@/components/table-query-sql-editor").then((m) => ({
+            default: m.TableQuerySqlEditor,
+        })),
+    {
+        ssr: false,
+        loading: () => (
+            <Skeleton className="h-[220px] w-full rounded-md border border-border/30" />
+        ),
+    }
+);
 
 // ── Export / copy helpers ────────────────────────────────────────────────
 
@@ -586,6 +603,13 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
     const [watchAnimState, setWatchAnimState] = useState<Map<string, "new" | "updated" | "deleted">>(new Map());
     const watchUnlistenRef = useRef<(() => void) | null>(null);
 
+    const [customSqlActive, setCustomSqlActive] = useState(false);
+    const [lastCustomSql, setLastCustomSql] = useState("");
+    const [queryEditOpen, setQueryEditOpen] = useState(false);
+    const [queryEditDraft, setQueryEditDraft] = useState("");
+    const [queryRunError, setQueryRunError] = useState<string | null>(null);
+    const [isRunningTableQuery, setIsRunningTableQuery] = useState(false);
+
     // ── Debounce filter conditions ────────────────────────────────────────────
     useEffect(() => {
         if (filterConditions.length === 0) {
@@ -607,10 +631,18 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
     const hasActiveFilters = activeConditions.length > 0;
 
     // ── Display rows (unified) ────────────────────────────────────────────────
-    const displayRows = useMemo(
+    const rawDisplayRows = useMemo(
         () => (scrollMode === "infinite" ? accumulatedRows : (result?.rows ?? [])),
         [scrollMode, accumulatedRows, result]
     );
+
+    const displayRows = useMemo(() => {
+        if (!customSqlActive || scrollMode !== "pagination" || !result) {
+            return rawDisplayRows;
+        }
+        const start = (page - 1) * pageSize;
+        return rawDisplayRows.slice(start, start + pageSize);
+    }, [customSqlActive, scrollMode, result, rawDisplayRows, page, pageSize]);
 
     // ── Initial / full fetch ──────────────────────────────────────────────────
     const fetchData = useCallback(async () => {
@@ -621,6 +653,22 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
         setHasMore(false);
         setNextFetchPage(2);
         try {
+            if (customSqlActive && lastCustomSql.trim()) {
+                const data = await dbExecuteQuery(connectionId, lastCustomSql.trim());
+                if (data.is_error) {
+                    const msg = data.error_message ?? "Query failed";
+                    setError({ summary: "Query failed", detail: msg });
+                    setResult(null);
+                } else {
+                    setResult(data);
+                    if (scrollMode === "infinite") {
+                        setAccumulatedRows(data.rows);
+                        setHasMore(false);
+                    }
+                }
+                return;
+            }
+
             const batchSize = scrollMode === "infinite" ? BATCH_SIZE : pageSize;
             const p = scrollMode === "infinite" ? 1 : page;
 
@@ -654,10 +702,11 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
         } finally {
             setIsLoading(false);
         }
-    }, [connectionId, selectedSchema, selectedTable, page, pageSize, sortColumn, sortDirection, scrollMode, activeConditions]);
+    }, [connectionId, selectedSchema, selectedTable, page, pageSize, sortColumn, sortDirection, scrollMode, activeConditions, customSqlActive, lastCustomSql]);
 
     // ── Incremental fetch for infinite scroll ─────────────────────────────────
     const fetchMore = useCallback(async () => {
+        if (customSqlActive) return;
         if (!connectionId || !selectedSchema || !selectedTable) return;
         if (!hasMore || isLoadingMore || isLoading) return;
         setIsLoadingMore(true);
@@ -689,7 +738,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
         } finally {
             setIsLoadingMore(false);
         }
-    }, [connectionId, selectedSchema, selectedTable, hasMore, isLoadingMore, isLoading, nextFetchPage, sortColumn, sortDirection, activeConditions]);
+    }, [connectionId, selectedSchema, selectedTable, hasMore, isLoadingMore, isLoading, nextFetchPage, sortColumn, sortDirection, activeConditions, customSqlActive]);
 
     // Keep the ref in sync with the latest fetchMore closure
     useEffect(() => { fetchMoreRef.current = fetchMore; }, [fetchMore]);
@@ -739,7 +788,16 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
         setDebouncedConditions([]);
         setExpandedRowKey(null);
         setHiddenColumns(new Set());
+        setCustomSqlActive(false);
+        setLastCustomSql("");
+        setQueryEditOpen(false);
+        setQueryEditDraft("");
+        setQueryRunError(null);
     }, [selectedTable, selectedSchema]);
+
+    useEffect(() => {
+        if (customSqlActive) setFilterBarOpen(false);
+    }, [customSqlActive]);
 
     useEffect(() => { fetchData(); }, [fetchData, refreshTrigger]);
 
@@ -765,6 +823,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
         return map;
     }, [tableColumns]);
     const canEditDelete = pkColumnNames.length > 0;
+    const canEditDeleteEffective = canEditDelete && !customSqlActive;
 
     const headerRowSelection = useMemo(() => {
         if (!result || displayRows.length === 0 || pkColumnNames.length === 0) {
@@ -858,6 +917,12 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
     // ── Save cell edit ────────────────────────────────────────────────────────
     const saveCellEdit = useCallback(async (source: "blur" | "explicit" = "blur"): Promise<void> => {
         if (source === "blur" && preventBlurSaveRef.current) return;
+        if (customSqlActive) {
+            setEditingCell(null);
+            setEditingValue("");
+            setCellError(null);
+            return;
+        }
         if (!editingCell || !connectionId || !selectedSchema || !selectedTable || !result || !tableColumns) {
             setEditingCell(null);
             return;
@@ -918,7 +983,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
         } finally {
             setIsSaving(false);
         }
-    }, [editingCell, editingValue, connectionId, selectedSchema, selectedTable, result, tableColumns, pkColumnNames, displayRows, fetchData]);
+    }, [editingCell, editingValue, connectionId, selectedSchema, selectedTable, result, tableColumns, pkColumnNames, displayRows, fetchData, customSqlActive]);
 
     const armBlurGuard = useCallback((delay = 80) => {
         preventBlurSaveRef.current = true;
@@ -973,6 +1038,20 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
     ): string => {
         return pkCols.map((pk) => String(obj[pk] ?? "")).join("\t");
     }, []);
+
+    const stopWatchSilently = useCallback(async () => {
+        if (!watchMode) return;
+        if (!connectionId || !selectedSchema || !selectedTable) return;
+        watchUnlistenRef.current?.();
+        watchUnlistenRef.current = null;
+        setWatchAnimState(new Map());
+        setWatchMode(false);
+        try {
+            await dbUnwatchTable(connectionId, selectedSchema, selectedTable);
+        } catch {
+            /* ignore */
+        }
+    }, [watchMode, connectionId, selectedSchema, selectedTable]);
 
     /** Toggle watch mode on/off. */
     const toggleWatch = useCallback(async () => {
@@ -1077,6 +1156,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
 
     // ── Delete confirmed: run DB delete (cascade handled by DB FK rules) ─────────
     const handleConfirmDelete = useCallback(async () => {
+        if (customSqlActive) return;
         if (!connectionId || !selectedSchema || !selectedTable || !result) return;
         const rowsToDelete = displayRows.filter((row) =>
             selectedRowKeys.has(getRowKey(row, result!.columns, pkColumnNames))
@@ -1102,7 +1182,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
         } finally {
             setIsDeleting(false);
         }
-    }, [connectionId, selectedSchema, selectedTable, result, selectedRowKeys, pkColumnNames, fetchData, displayRows]);
+    }, [connectionId, selectedSchema, selectedTable, result, selectedRowKeys, pkColumnNames, fetchData, displayRows, customSqlActive]);
 
     // ── Delete handler uses editingCell rowKey guard ──────────────────────────
     // (no global keyboard handler needed; cells handle their own keys inline)
@@ -1110,10 +1190,66 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
     const totalPages = result?.total_rows ? Math.ceil(result.total_rows / pageSize) : 1;
 
     const handleSort = (column: string) => {
+        if (customSqlActive) return;
         if (sortColumn === column) setSortDirection((d) => (d === "ASC" ? "DESC" : "ASC"));
         else { setSortColumn(column); setSortDirection("ASC"); }
         setPage(1);
     };
+
+    const runTableQueryFromEditor = useCallback(async () => {
+        if (!connectionId || isRunningTableQuery) return;
+        const sql = queryEditDraft.trim();
+        const v = validateReadOnlySql(sql);
+        if (!v.ok) {
+            setQueryRunError(v.message);
+            return;
+        }
+        setQueryRunError(null);
+        setIsRunningTableQuery(true);
+        try {
+            const data = await dbExecuteQuery(connectionId, sql);
+            if (data.is_error) {
+                setQueryRunError(data.error_message ?? "Query failed");
+                return;
+            }
+            await stopWatchSilently();
+            setFilterConditions([]);
+            setDebouncedConditions([]);
+            setFilterBarOpen(false);
+            setCustomSqlActive(true);
+            setLastCustomSql(sql);
+            setResult(data);
+            setError(null);
+            setPage(1);
+            setSelectedRowKeys(new Set());
+            setExpandedRowKey(null);
+            setEditingCell(null);
+            setEditingValue("");
+            setCellError(null);
+            if (scrollMode === "infinite") {
+                setAccumulatedRows(data.rows);
+                setHasMore(false);
+                setNextFetchPage(2);
+            }
+            toast.success("Query executed", { duration: 1500 });
+        } catch (e) {
+            setQueryRunError(String(e ?? "Query failed"));
+        } finally {
+            setIsRunningTableQuery(false);
+        }
+    }, [connectionId, queryEditDraft, scrollMode, stopWatchSilently, isRunningTableQuery]);
+
+    const resetTableQueryMode = useCallback(() => {
+        setCustomSqlActive(false);
+        setLastCustomSql("");
+        setQueryEditOpen(false);
+        setQueryRunError(null);
+        setQueryEditDraft("");
+        setFilterConditions([]);
+        setDebouncedConditions([]);
+        setFilterBarOpen(false);
+        setPage(1);
+    }, []);
 
     const copyCell = (value: string) =>
         navigator.clipboard.writeText(value).then(() => toast.success("Copied to clipboard", { duration: 1500 }));
@@ -1181,6 +1317,24 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                     onSetColumnVisibility={setColumnVisibility}
                     onShowAllColumns={showAllColumns}
                     onHideAllColumns={hideAllColumns}
+                    customSqlActive={customSqlActive}
+                    queryEditOpen={queryEditOpen}
+                    onQueryEditOpenChange={(open) => {
+                        setQueryEditOpen(open);
+                        if (open) {
+                            setQueryRunError(null);
+                            setQueryEditDraft(customSqlActive ? lastCustomSql : (result?.query ?? ""));
+                        }
+                    }}
+                    queryEditDraft={queryEditDraft}
+                    onQueryEditDraftChange={(v) => {
+                        setQueryEditDraft(v);
+                        setQueryRunError(null);
+                    }}
+                    onRunTableQuery={() => void runTableQueryFromEditor()}
+                    onResetTableQuery={resetTableQueryMode}
+                    queryRunError={queryRunError}
+                    isRunningTableQuery={isRunningTableQuery}
                 />
                 {infra ? (
                     <DbInfrastructureErrorState
@@ -1249,8 +1403,8 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                     dataViewMode={dataViewMode} onDataViewModeChange={setDataViewMode}
                     scrollMode={scrollMode} onScrollModeChange={setScrollMode}
                     rowsLoaded={scrollMode === "infinite" ? accumulatedRows.length : undefined}
-                    onAddRow={canEditDelete ? () => setInsertDialogOpen(true) : undefined}
-                    onSeedData={canEditDelete ? () => setSeedDialogOpen(true) : undefined}
+                    onAddRow={canEditDeleteEffective ? () => setInsertDialogOpen(true) : undefined}
+                    onSeedData={canEditDeleteEffective ? () => setSeedDialogOpen(true) : undefined}
                     filterCount={filterConditions.length}
                     filterBarOpen={filterBarOpen}
                     onToggleFilterBar={() => setFilterBarOpen((v) => !v)}
@@ -1266,6 +1420,24 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                     onSetColumnVisibility={setColumnVisibility}
                     onShowAllColumns={showAllColumns}
                     onHideAllColumns={hideAllColumns}
+                    customSqlActive={customSqlActive}
+                    queryEditOpen={queryEditOpen}
+                    onQueryEditOpenChange={(open) => {
+                        setQueryEditOpen(open);
+                        if (open) {
+                            setQueryRunError(null);
+                            setQueryEditDraft(customSqlActive ? lastCustomSql : (result?.query ?? ""));
+                        }
+                    }}
+                    queryEditDraft={queryEditDraft}
+                    onQueryEditDraftChange={(v) => {
+                        setQueryEditDraft(v);
+                        setQueryRunError(null);
+                    }}
+                    onRunTableQuery={() => void runTableQueryFromEditor()}
+                    onResetTableQuery={resetTableQueryMode}
+                    queryRunError={queryRunError}
+                    isRunningTableQuery={isRunningTableQuery}
             />
             {/* Live watch banner */}
             {watchMode && (
@@ -1324,7 +1496,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
             )}
 
             {/* Selection bar — neutral surface; destructive only on Delete */}
-            {canEditDelete && selectedRowKeys.size > 0 && dataViewMode === "table" && (
+            {canEditDeleteEffective && selectedRowKeys.size > 0 && dataViewMode === "table" && (
                 <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-border/50 bg-gradient-to-r from-muted/50 via-muted/35 to-muted/25 dark:from-muted/30 dark:via-muted/20 dark:to-muted/10 shrink-0 backdrop-blur-sm">
                     <span className="text-xs font-medium tabular-nums text-foreground/85 flex items-center gap-2">
                         <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-md bg-emerald-500/12 text-emerald-600 dark:text-emerald-400 px-1.5 text-[11px] font-semibold">
@@ -1417,11 +1589,11 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                     role="grid"
                                     aria-label={selectedSchema && selectedTable ? `Table: ${selectedSchema}.${selectedTable}` : "Table data"}
                                     aria-rowcount={scrollMode === "pagination" && result ? (result.total_rows ?? result.row_count) : undefined}
-                                    aria-colcount={visibleColumnCount + (canEditDelete ? 2 : 1)}
+                                    aria-colcount={visibleColumnCount + (canEditDeleteEffective ? 2 : 1)}
                                 >
                                     <TableHeader>
                                         <TableRow className="hover:bg-transparent border-border bg-card sticky top-0 z-10">
-                                            {canEditDelete && (
+                                            {canEditDeleteEffective && (
                                                 <TableHead className="w-10 min-w-10 sticky left-0 z-30 border-r border-border/40 bg-card p-0 align-middle [&:has([data-slot=checkbox])]:pr-0">
                                                     <div className="flex h-10 items-center justify-center">
                                                         <Checkbox
@@ -1450,7 +1622,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                             <TableHead
                                                 className={cn(
                                                     "sticky z-20 min-w-12 w-12 border-r border-border/40 bg-card px-3 py-2 text-center align-middle text-xs font-semibold font-mono tabular-nums text-muted-foreground/70",
-                                                    canEditDelete ? "left-10" : "left-0"
+                                                    canEditDeleteEffective ? "left-10" : "left-0"
                                                 )}
                                             >
                                                 #
@@ -1482,7 +1654,11 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                                 {/* Sort */}
                                                                 <button
                                                                     type="button"
-                                                                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                                                                    disabled={customSqlActive}
+                                                                    className={cn(
+                                                                        "flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background",
+                                                                        customSqlActive && "cursor-not-allowed opacity-40"
+                                                                    )}
                                                                     onClick={() => handleSort(col.name)}
                                                                     aria-label={`Sort by ${col.name}${
                                                                         sortColumn === col.name
@@ -1564,7 +1740,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                         {displayRows.length === 0 ? (
                                             <TableRow className="hover:bg-transparent">
                                                 <TableCell
-                                                    colSpan={visibleColumnCount + (canEditDelete ? 2 : 1)}
+                                                    colSpan={visibleColumnCount + (canEditDeleteEffective ? 2 : 1)}
                                                     className="text-center py-12 text-muted-foreground/60"
                                                 >
                                                     <p className="text-sm font-medium">Empty table</p>
@@ -1574,7 +1750,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                         ) : visibleColumnCount === 0 ? (
                                             <TableRow className="hover:bg-transparent">
                                                 <TableCell
-                                                    colSpan={(canEditDelete ? 2 : 1)}
+                                                    colSpan={(canEditDeleteEffective ? 2 : 1)}
                                                     className="text-center py-10 text-muted-foreground/60"
                                                 >
                                                     <p className="text-sm font-medium">All columns hidden</p>
@@ -1594,7 +1770,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                         displayRows.map((row, rowIdx) => {
                                             const rowKey = getRowKey(row, result.columns, pkColumnNames);
                                             const isSelected = selectedRowKeys.has(rowKey);
-                                            const isRowEditing = canEditDelete && editingCell?.rowKey === rowKey;
+                                            const isRowEditing = canEditDeleteEffective && editingCell?.rowKey === rowKey;
                                             const rowNumber = scrollMode === "infinite"
                                                 ? rowIdx + 1
                                                 : (page - 1) * pageSize + rowIdx + 1;
@@ -1614,7 +1790,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                         watchAnim === "deleted" && "watch-row-delete",
                                                     )}
                                                 >
-                                                    {canEditDelete && (
+                                                    {canEditDeleteEffective && (
                                                         <TableCell
                                                             className="sticky left-0 z-30 w-10 min-w-10 border-r border-border/40 bg-card p-0 align-middle group-hover:bg-accent/20 [&:has([data-slot=checkbox])]:pr-0"
                                                             onClick={(e) => e.stopPropagation()}
@@ -1651,7 +1827,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                     <TableCell
                                                         className={cn(
                                                             "sticky z-20 min-w-12 w-12 border-r border-border/40 bg-card px-3 py-1.5 text-center align-middle text-xs font-mono tabular-nums text-muted-foreground/60 transition-colors group-hover:bg-accent/20",
-                                                            canEditDelete ? "left-10" : "left-0"
+                                                            canEditDeleteEffective ? "left-10" : "left-0"
                                                         )}
                                                     >
                                                         {rowNumber}
@@ -1662,7 +1838,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                         const cell = row[colIdx] ?? { type: "Null" as const };
                                                         const colInfo = tableColumns?.find((c) => c.name === col.name);
                                                         const isThisCellEditing =
-                                                            canEditDelete &&
+                                                            canEditDeleteEffective &&
                                                             editingCell?.rowKey === rowKey &&
                                                             editingCell?.colName === col.name;
 
@@ -1865,13 +2041,13 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                                     "text-xs font-mono max-w-[280px] truncate px-3 py-1.5 group/cell",
                                                                     isNull && !isGeomCol && "text-muted-foreground/25 italic",
                                                                     isGeomCol && isNull && "text-muted-foreground/40",
-                                                                    canEditDelete ? "cursor-text hover:bg-muted/20" : "cursor-default"
+                                                                    canEditDeleteEffective ? "cursor-text hover:bg-muted/20" : "cursor-default"
                                                                 )}
                                                                 title={isGeomCol && isNull ? "—" : isNull ? "NULL" : showMapLink ? "Open in map" : formatted}
                                                                 onClick={(e) => {
                                                                     e.stopPropagation();
                                                                     if (showMapLink) return;
-                                                                    if (canEditDelete) {
+                                                                    if (canEditDeleteEffective) {
                                                                         preventBlurSaveRef.current = false;
                                                                         setEditingCell({
                                                                             rowKey,
@@ -1887,7 +2063,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                                 onDoubleClick={(e) => {
                                                                     e.stopPropagation();
                                                                     if (showMapLink) return;
-                                                                    if (canEditDelete) {
+                                                                    if (canEditDeleteEffective) {
                                                                         preventBlurSaveRef.current = false;
                                                                         setEditingCell({
                                                                             rowKey,
@@ -1920,7 +2096,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                                         <span className="truncate flex-1">{formatted}</span>
                                                                     )}
                                                                     {/* Pencil icon — only for editable cells, only on hover; hide for geometry map link */}
-                                                                    {canEditDelete && !isNull && !showMapLink && (
+                                                                    {canEditDeleteEffective && !isNull && !showMapLink && (
                                                                         <button
                                                                             className="shrink-0 opacity-0 group-hover/cell:opacity-100 transition-opacity p-1 rounded hover:bg-muted/60 ml-1"
                                                                             onMouseDown={(e) => {
@@ -1945,7 +2121,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                                     )}
                                                                     
                                                                     {/* Expand row icon */}
-                                                                    {canEditDelete && (
+                                                                    {canEditDeleteEffective && (
                                                                         <button
                                                                             className="shrink-0 opacity-0 group-hover/cell:opacity-100 transition-opacity p-1 rounded hover:bg-emerald-500/15 group/expand ml-1"
                                                                             onMouseDown={(e) => {
@@ -2056,7 +2232,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                 )}
                 
                 {/* Expand Row Drawer Panel Overlay */}
-                {expandedRowKey && canEditDelete && result && (
+                {expandedRowKey && canEditDeleteEffective && result && (
                     <div className="absolute inset-0 z-40 flex">
                         <div className="flex-1 bg-background/20 backdrop-blur-sm cursor-pointer" onClick={() => setExpandedRowKey(null)} title="Close editor" />
                         <RowEditorPanel
@@ -2154,6 +2330,15 @@ function TableToolbar({
     onSetColumnVisibility,
     onShowAllColumns,
     onHideAllColumns,
+    customSqlActive = false,
+    queryEditOpen = false,
+    onQueryEditOpenChange,
+    queryEditDraft = "",
+    onQueryEditDraftChange,
+    onRunTableQuery,
+    onResetTableQuery,
+    queryRunError = null,
+    isRunningTableQuery = false,
 }: {
     schema: string;
     table: string;
@@ -2184,6 +2369,15 @@ function TableToolbar({
     onSetColumnVisibility: (name: string, visible: boolean) => void;
     onShowAllColumns: () => void;
     onHideAllColumns: () => void;
+    customSqlActive?: boolean;
+    queryEditOpen?: boolean;
+    onQueryEditOpenChange?: (open: boolean) => void;
+    queryEditDraft?: string;
+    onQueryEditDraftChange?: (value: string) => void;
+    onRunTableQuery?: () => void;
+    onResetTableQuery?: () => void;
+    queryRunError?: string | null;
+    isRunningTableQuery?: boolean;
 }) {
     const router = useRouter();
     const totalRows = result?.total_rows;
@@ -2215,16 +2409,29 @@ function TableToolbar({
                         <span className="text-foreground">{table}</span>
                     </span>
                 </div>
-                {result && (
+                {(customSqlActive || result) && (
                     <div className="flex items-center gap-1.5 shrink-0">
-                        <Badge variant="secondary" className="h-5 px-1.5 text-[10px] font-mono gap-1 bg-muted/40">
-                            <Rows3 className="h-2.5 w-2.5" />
-                            {rowCountLabel} rows
-                        </Badge>
-                        <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-mono gap-1 border-emerald-500/20 text-emerald-400/80">
-                            <Clock className="h-2.5 w-2.5" />
-                            {result.execution_time_ms.toFixed(1)}ms
-                        </Badge>
+                        {customSqlActive && (
+                            <Badge
+                                variant="outline"
+                                className="h-5 px-1.5 text-[10px] font-medium gap-1 border-sky-500/25 text-sky-400/90"
+                            >
+                                <Terminal className="h-2.5 w-2.5" />
+                                Custom SQL
+                            </Badge>
+                        )}
+                        {result && (
+                            <>
+                                <Badge variant="secondary" className="h-5 px-1.5 text-[10px] font-mono gap-1 bg-muted/40">
+                                    <Rows3 className="h-2.5 w-2.5" />
+                                    {rowCountLabel} rows
+                                </Badge>
+                                <Badge variant="outline" className="h-5 px-1.5 text-[10px] font-mono gap-1 border-emerald-500/20 text-emerald-400/80">
+                                    <Clock className="h-2.5 w-2.5" />
+                                    {result.execution_time_ms.toFixed(1)}ms
+                                </Badge>
+                            </>
+                        )}
                     </div>
                 )}
             </div>
@@ -2244,7 +2451,7 @@ function TableToolbar({
                                         : "text-muted-foreground hover:text-foreground"
                                 )}
                                 onClick={onToggleWatch}
-                                disabled={watchConnecting}
+                                disabled={watchConnecting || customSqlActive}
                             >
                                 {watchConnecting ? (
                                     <Loader2 className="h-3.5 w-3.5 animate-spin" />
@@ -2257,9 +2464,11 @@ function TableToolbar({
                             </Button>
                         </TooltipTrigger>
                         <TooltipContent>
-                            {watchMode
-                                ? "Watching — INSERT · UPDATE · DELETE events stream in real-time. Click to stop."
-                                : "Watch this table — stream live INSERT / UPDATE / DELETE changes via LISTEN/NOTIFY"}
+                            {customSqlActive
+                                ? "Clear custom query to use Live Watch."
+                                : watchMode
+                                  ? "Watching — INSERT · UPDATE · DELETE events stream in real-time. Click to stop."
+                                  : "Watch this table — stream live INSERT / UPDATE / DELETE changes via LISTEN/NOTIFY"}
                         </TooltipContent>
                     </Tooltip>
                 )}
@@ -2278,6 +2487,7 @@ function TableToolbar({
                                         : "text-muted-foreground hover:text-foreground"
                                 )}
                                 onClick={onToggleFilterBar}
+                                disabled={customSqlActive}
                             >
                                 <SlidersHorizontal className="h-3.5 w-3.5" />
                                 Filter
@@ -2288,8 +2498,90 @@ function TableToolbar({
                                 )}
                             </Button>
                         </TooltipTrigger>
-                        <TooltipContent>Toggle filter bar (multi-condition WHERE clause)</TooltipContent>
+                        <TooltipContent>
+                            {customSqlActive
+                                ? "Clear custom query (Reset to table in Edit query) to use filters."
+                                : "Toggle filter bar (multi-condition WHERE clause)"}
+                        </TooltipContent>
                     </Tooltip>
+                )}
+
+                {onRunTableQuery &&
+                    onQueryEditOpenChange &&
+                    onQueryEditDraftChange &&
+                    onResetTableQuery && (
+                    <Popover open={queryEditOpen} onOpenChange={onQueryEditOpenChange}>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <PopoverTrigger asChild>
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className={cn(
+                                            "h-7 gap-1.5 px-2.5 text-xs transition-colors",
+                                            queryEditOpen
+                                                ? "bg-sky-500/12 text-sky-400 hover:bg-sky-500/18"
+                                                : "text-muted-foreground hover:text-foreground"
+                                        )}
+                                    >
+                                        <Terminal className="h-3.5 w-3.5" />
+                                    </Button>
+                                </PopoverTrigger>
+                            </TooltipTrigger>
+                            <TooltipContent>Edit and run read-only SQL for this grid</TooltipContent>
+                        </Tooltip>
+                        <PopoverContent
+                            align="start"
+                            className="w-[min(92vw,720px)] p-0 border-border/50 shadow-xl"
+                            onOpenAutoFocus={(e) => e.preventDefault()}
+                        >
+                            <div className="border-b border-border/40 px-3 py-2.5">
+                                <p className="text-xs font-semibold tracking-tight text-foreground">Edit query</p>
+                                <p className="text-[10px] text-muted-foreground mt-0.5">
+                                    Read-only · Cmd+Enter to run
+                                </p>
+                            </div>
+                            <div className="p-3 space-y-2">
+                                <TableQuerySqlEditorLazy
+                                    value={queryEditDraft}
+                                    onChange={onQueryEditDraftChange}
+                                    onRun={onRunTableQuery}
+                                    height={220}
+                                    readOnly={isRunningTableQuery}
+                                />
+                                <p className="text-[10px] text-muted-foreground/70 leading-snug">
+                                    Large result sets: add <span className="font-mono">LIMIT</span> in SQL.
+                                </p>
+                                {queryRunError ? (
+                                    <p className="text-xs text-destructive leading-relaxed">{queryRunError}</p>
+                                ) : null}
+                                <div className="flex flex-wrap items-center justify-end gap-2 pt-1">
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-8 text-xs"
+                                        onClick={onResetTableQuery}
+                                    >
+                                        Reset to table
+                                    </Button>
+                                    <Button
+                                        type="button"
+                                        variant="default"
+                                        size="sm"
+                                        className="h-8 text-xs gap-1.5 bg-emerald-600 hover:bg-emerald-700 text-white border-0"
+                                        onClick={onRunTableQuery}
+                                        disabled={isRunningTableQuery}
+                                    >
+                                        {isRunningTableQuery ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : null}
+                                        Run
+                                    </Button>
+                                </div>
+                            </div>
+                        </PopoverContent>
+                    </Popover>
                 )}
 
                 {/* Column visibility */}
@@ -2302,7 +2594,6 @@ function TableToolbar({
                             disabled={columns.length === 0}
                         >
                             <Columns className="h-3.5 w-3.5" />
-                            Columns
                             {hiddenColumnCount > 0 && (
                                 <span className="ml-0.5 flex h-4 min-w-4 items-center justify-center rounded-full bg-muted/60 px-1 text-[9px] font-bold text-foreground/70">
                                     {hiddenColumnCount}
