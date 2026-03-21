@@ -25,6 +25,9 @@ start:
 build:
 	pnpm build
 
+push:
+	./apple/build-and-upload-testflight.sh
+
 # macOS app build (single arch, for local/testing). Uses package.json build:mac.
 build-mac:
 	pnpm run build:mac
