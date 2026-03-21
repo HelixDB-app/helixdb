@@ -739,7 +739,7 @@ export default function ExtensionsManagementPage() {
 
     if (!isConnected || !connectionId) {
         return (
-            <div className="flex h-screen items-center justify-center bg-background px-6">
+            <div className="flex h-screen items-center justify-center bg-transparent px-6">
                 <div className="w-full max-w-md rounded-2xl border border-border/40 bg-card/40 p-6 text-center">
                     <h1 className="text-lg font-semibold">No active database connection</h1>
                     <p className="mt-2 text-sm text-muted-foreground">
@@ -756,13 +756,13 @@ export default function ExtensionsManagementPage() {
     const installedCount = extensions.filter((extension) => !!extension.installed_version).length;
 
     return (
-        <div className="min-h-screen bg-background text-foreground">
+        <div className="min-h-screen bg-transparent text-foreground">
             <div className="pointer-events-none fixed inset-0 overflow-hidden">
                 <div className="absolute -top-28 -left-28 h-80 w-80 rounded-full bg-emerald-500/5 blur-3xl" />
                 <div className="absolute -bottom-32 -right-28 h-80 w-80 rounded-full bg-cyan-500/5 blur-3xl" />
             </div>
 
-            <header className="sticky top-0 z-20 border-b border-border/30 bg-background/90 backdrop-blur-sm">
+            <header className="sticky top-0 z-20 border-b border-border/35 bg-card/75 dark:bg-background/90 backdrop-blur-sm shadow-[0_1px_0_oklch(0_0_0_/0.03)] dark:shadow-none">
                 <div className="mx-auto flex h-12 max-w-7xl items-center justify-between px-4">
                     <div className="flex items-center gap-3">
                         <Image src="/logo.png" alt="" width={24} height={24} className="h-6 w-6 rounded-md object-contain" />

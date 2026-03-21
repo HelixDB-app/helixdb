@@ -51,21 +51,60 @@ interface ValidationError {
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
+/** Core PostgreSQL built-in types suitable for CREATE TABLE (excludes pseudotypes like anyelement). */
 const PG_TYPES = [
-    { group: "Integer", types: ["smallint", "integer", "bigint", "serial", "bigserial"] },
-    { group: "Floating Point", types: ["real", "double precision", "numeric", "decimal"] },
+    {
+        group: "Integer",
+        types: ["smallint", "integer", "bigint", "smallserial", "serial", "bigserial"],
+    },
+    {
+        group: "Floating point",
+        types: ["real", "double precision", "numeric", "decimal", "money"],
+    },
     { group: "Text", types: ["text", "varchar", "char", "name"] },
     { group: "Boolean", types: ["boolean"] },
-    { group: "Date / Time", types: ["date", "time", "timestamp", "timestamptz", "interval"] },
+    {
+        group: "Date / time",
+        types: ["date", "time", "timetz", "timestamp", "timestamptz", "interval"],
+    },
     { group: "UUID", types: ["uuid"] },
-    { group: "JSON", types: ["json", "jsonb"] },
+    // jsonb first: better default for indexed / queried JSON in PostgreSQL
+    { group: "JSON", types: ["jsonb", "json"] },
     { group: "Binary", types: ["bytea"] },
-    { group: "Other", types: ["inet", "cidr", "macaddr", "money", "xml", "tsvector", "tsquery"] },
+    { group: "Bit string", types: ["bit", "varbit"] },
+    { group: "Network", types: ["inet", "cidr", "macaddr", "macaddr8"] },
+    {
+        group: "Geometric",
+        types: ["point", "line", "lseg", "box", "path", "polygon", "circle"],
+    },
+    {
+        group: "Range",
+        types: ["int4range", "int8range", "numrange", "tsrange", "tstzrange", "daterange"],
+    },
+    { group: "Full-text search", types: ["tsvector", "tsquery"] },
+    { group: "XML", types: ["xml"] },
+    {
+        group: "Other / system",
+        types: ["oid", "xid", "cid", "tid", "pg_lsn"],
+    },
 ];
 
 const ALL_TYPES = PG_TYPES.flatMap((g) => g.types);
 
-const LENGTH_TYPES = new Set(["varchar", "char", "numeric", "decimal"]);
+/** Types where Len is commonly used (precision, max length, or bit length). */
+const LENGTH_TYPES = new Set([
+    "varchar",
+    "char",
+    "numeric",
+    "decimal",
+    "bit",
+    "varbit",
+    "time",
+    "timetz",
+    "timestamp",
+    "timestamptz",
+    "interval",
+]);
 
 function makeDefaultColumn(idx: number): ColumnRow {
     return {
@@ -324,6 +363,25 @@ function parseColumnDefs(body: string): Omit<ColumnRow, "_id">[] {
 
 // ─── Type Selector ────────────────────────────────────────────────────────────
 
+/** Match type names or group labels (e.g. "range" → all range types). */
+function filterPgTypes(query: string): string[] {
+    const q = query.toLowerCase().trim();
+    if (!q) return [];
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const g of PG_TYPES) {
+        const groupHit = g.group.toLowerCase().includes(q);
+        for (const t of g.types) {
+            if (seen.has(t)) continue;
+            if (t.includes(q) || groupHit) {
+                seen.add(t);
+                out.push(t);
+            }
+        }
+    }
+    return out;
+}
+
 function TypeSelector({
     value,
     onChange,
@@ -334,9 +392,7 @@ function TypeSelector({
     const [open, setOpen] = useState(false);
     const [search, setSearch] = useState("");
 
-    const filtered = search
-        ? ALL_TYPES.filter((t) => t.includes(search.toLowerCase()))
-        : null;
+    const filtered = search.trim() ? filterPgTypes(search) : null;
 
     return (
         <div className="relative">
@@ -357,8 +413,8 @@ function TypeSelector({
             {open && (
                 <>
                     <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
-                    <div className="absolute left-0 top-full mt-1 z-50 w-52 rounded-xl border border-border/40 bg-card shadow-xl overflow-hidden">
-                        <div className="px-2 py-2 border-b border-border/20">
+                    <div className="absolute left-0 top-full mt-1 z-50 w-[min(100vw-2rem,20rem)] max-h-[calc(90vh-8rem)] overflow-hidden rounded-xl border border-border/40 bg-card shadow-xl flex flex-col">
+                        <div className="shrink-0 px-2 py-2 border-b border-border/20">
                             <input
                                 autoFocus
                                 value={search}
@@ -367,7 +423,12 @@ function TypeSelector({
                                 className="w-full h-6 px-2 text-xs rounded-md bg-background/60 border border-border/25 outline-none focus:border-primary/40"
                             />
                         </div>
-                        <ScrollArea className="max-h-52">
+                        <div
+                            className={cn(
+                                "min-h-0 flex-1 overflow-y-auto overflow-x-hidden overscroll-y-contain",
+                                "[scrollbar-width:thin] [scrollbar-color:hsl(var(--border))_transparent]",
+                            )}
+                        >
                             <div className="py-1">
                                 {filtered !== null ? (
                                     filtered.length === 0 ? (
@@ -411,17 +472,17 @@ function TypeSelector({
                                         </div>
                                     ))
                                 )}
-                                <div className="border-t border-border/20 mt-1 pt-1 px-3 pb-1">
-                                    <div className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/50 mb-0.5">Custom</div>
-                                    <input
-                                        value={!ALL_TYPES.includes(value) ? value : ""}
-                                        onChange={(e) => onChange(e.target.value)}
-                                        placeholder="custom type…"
-                                        className="w-full h-6 px-2 text-xs font-mono rounded-md bg-background/60 border border-border/25 outline-none focus:border-primary/40"
-                                    />
-                                </div>
                             </div>
-                        </ScrollArea>
+                        </div>
+                        <div className="shrink-0 border-t border-border/20 px-3 py-2 bg-card">
+                            <div className="text-[9px] font-semibold uppercase tracking-wider text-muted-foreground/50 mb-0.5">Custom</div>
+                            <input
+                                value={!ALL_TYPES.includes(value) ? value : ""}
+                                onChange={(e) => onChange(e.target.value)}
+                                placeholder="custom type…"
+                                className="w-full h-6 px-2 text-xs font-mono rounded-md bg-background/60 border border-border/25 outline-none focus:border-primary/40"
+                            />
+                        </div>
                     </div>
                 </>
             )}

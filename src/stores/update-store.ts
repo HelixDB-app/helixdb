@@ -1,7 +1,6 @@
 import { create } from "zustand";
 import { open } from "@tauri-apps/plugin-shell";
 import { toast } from "sonner";
-import { APP_NAME } from "@/lib/app-config";
 import {
   checkAppStoreUpdate,
   compareVersions,
@@ -64,12 +63,20 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
     if (isBrowserOffline()) {
       notifyNoInternetDetected();
       if (source === "manual") {
-        toast.error("You appear to be offline.");
+        set({
+          modalOpen: true,
+          status: "error",
+          error: "You appear to be offline. Connect to the internet and try again.",
+        });
       }
       return null;
     }
 
-    set({ status: "checking", error: null });
+    if (source === "manual") {
+      set({ modalOpen: true, status: "checking", error: null });
+    } else {
+      set({ status: "checking", error: null });
+    }
 
     try {
       const rawInfo = await checkAppStoreUpdate();
@@ -88,21 +95,21 @@ export const useUpdateStore = create<UpdateState>((set, get) => ({
 
       if (info.updateAvailable) {
         set({ modalOpen: true });
-        if (source === "manual") {
-          toast.success(`Update available for ${APP_NAME}.`);
-        }
       } else if (source === "manual") {
-        toast.success("You're up to date.");
+        set({ modalOpen: true });
       }
 
       return info;
     } catch (err) {
-      if (!notifyNoInternetDetected(err) && source === "manual") {
+      const message = err instanceof Error ? err.message : String(err);
+      const network = notifyNoInternetDetected(err);
+      if (!network && source === "manual") {
         toast.error("Update check failed.");
       }
       set({
         status: "error",
-        error: err instanceof Error ? err.message : String(err),
+        error: message,
+        ...(source === "manual" ? { modalOpen: true } : {}),
       });
       return null;
     }

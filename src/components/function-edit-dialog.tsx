@@ -5,7 +5,7 @@ import { useConnectionStore } from "@/stores/connection-store";
 import { dbExecuteQuery, dbGetColumns } from "@/lib/tauri";
 import { MonacoSqlEditor } from "@/components/monaco-sql-editor";
 import type { SchemaContext } from "@/lib/ai-suggestions";
-import { format as formatSQL } from "sql-formatter";
+import { formatHelixSql } from "@/lib/format-sql";
 import { Button } from "@/components/ui/button";
 import { Play, Loader2, AlertCircle, Braces, X } from "lucide-react";
 import { toast } from "sonner";
@@ -124,11 +124,7 @@ export function FunctionEditInline({
 
     const handleFormatSql = useCallback((sql: string) => {
         try {
-            const formatted = formatSQL(sql, {
-                language: "postgresql",
-                tabWidth: 4,
-                keywordCase: "upper",
-            });
+            const formatted = formatHelixSql(sql);
             setDefinition(formatted);
             setValidationError(null);
             toast.success("SQL formatted", { duration: 1200 });

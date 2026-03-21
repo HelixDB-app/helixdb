@@ -8,6 +8,29 @@ use std::path::PathBuf;
 const CONNECTIONS_FILE: &str = "connections.json";
 const SUBDIR: &str = "pgstudio";
 
+/// SSH tunnel config for connecting via a bastion. Do not log ssh_password.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SshTunnelConfig {
+    pub use_ssh_tunneling: bool,
+    pub tunnel_host: String,
+    #[serde(default = "default_tunnel_port")]
+    pub tunnel_port: u16,
+    pub username: String,
+    pub authentication: String, // "password" | "identity_file"
+    #[serde(default)]
+    pub identity_file_path: Option<String>,
+    #[serde(default)]
+    pub ssh_password: Option<String>,
+    #[serde(default)]
+    pub save_ssh_password: Option<bool>,
+    #[serde(default)]
+    pub keep_alive_seconds: Option<u32>,
+}
+
+fn default_tunnel_port() -> u16 {
+    22
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SavedConnection {
     pub id: String,
@@ -21,6 +44,8 @@ pub struct SavedConnection {
     pub owner: Option<String>,
     #[serde(default)]
     pub criticality: Option<String>,
+    #[serde(default)]
+    pub ssh_tunnel: Option<SshTunnelConfig>,
 }
 
 #[derive(Debug, Default, Serialize, Deserialize)]
@@ -70,6 +95,7 @@ pub fn save(
         existing.environment = conn.environment.or(existing.environment.clone());
         existing.owner = conn.owner;
         existing.criticality = conn.criticality.or(existing.criticality.clone());
+        existing.ssh_tunnel = conn.ssh_tunnel.clone();
     } else {
         file.connections.push(conn);
     }

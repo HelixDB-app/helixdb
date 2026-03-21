@@ -5,7 +5,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::account_security_storage;
-use crate::connections_storage::{self, SavedConnection};
+use crate::connections_storage::{self, SavedConnection, SshTunnelConfig};
+use crate::ssh_tunnel::SshTunnelManager;
 use crate::db::types::{ColumnStats, FilterCondition};
 use crate::db::{
     cache::MetadataCache,
@@ -24,6 +25,7 @@ pub struct AppState {
     pub cache: MetadataCache,
     pub watch_manager: WatchManager,
     pub sandbox_manager: SandboxManager,
+    pub ssh_tunnel_manager: SshTunnelManager,
     pub recent_tables: Mutex<HashMap<String, Vec<RecentTableOpen>>>,
 }
 
@@ -34,6 +36,7 @@ impl AppState {
             cache: MetadataCache::new(),
             watch_manager: WatchManager::new(),
             sandbox_manager: SandboxManager::new(),
+            ssh_tunnel_manager: SshTunnelManager::new(),
             recent_tables: Mutex::new(HashMap::new()),
         }
     }
@@ -79,23 +82,95 @@ impl AppState {
     }
 }
 
+/// Build a connection string with host and port replaced (for SSH tunnel: connect to 127.0.0.1:local_port).
+fn connection_string_with_host_port(
+    connection_string: &str,
+    host: &str,
+    port: u16,
+) -> Result<String, String> {
+    let config = connection_string
+        .parse::<tokio_postgres::Config>()
+        .map_err(|e| format!("Invalid connection string: {}", e))?;
+    let user = config
+        .get_user()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "postgres".to_string());
+    let password = config
+        .get_password()
+        .map(|p| String::from_utf8_lossy(p).to_string())
+        .unwrap_or_default();
+    let dbname = config
+        .get_dbname()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| "postgres".to_string());
+    let pass_escaped = password.replace('\\', "\\\\").replace('\'', "\\'");
+    let pass_param = if pass_escaped.contains(' ') || pass_escaped.contains('\'') {
+        format!("password='{}'", pass_escaped)
+    } else if pass_escaped.is_empty() {
+        String::new()
+    } else {
+        format!("password={}", pass_escaped)
+    };
+    let mut parts = vec![
+        format!("host={}", host),
+        format!("port={}", port),
+        format!("user={}", user),
+        format!("dbname={}", dbname),
+    ];
+    if !pass_param.is_empty() {
+        parts.push(pass_param);
+    }
+    Ok(parts.join(" "))
+}
+
 /// Connect to a PostgreSQL database.
 /// If `connection_id` is provided and not already connected, it is used (e.g. for reconnecting a saved connection);
 /// otherwise a new UUID is generated.
+/// When `ssh_tunnel` is provided, starts an SSH tunnel first and connects to 127.0.0.1 via the tunnel.
 #[tauri::command]
 pub async fn db_connect(
     state: State<'_, AppState>,
     connection_string: String,
     connection_id: Option<String>,
+    ssh_tunnel: Option<SshTunnelConfig>,
 ) -> Result<ConnectionResponse, String> {
     let connection_id = connection_id
         .filter(|id| !id.is_empty())
         .filter(|id| !state.conn_manager.is_connected(id))
         .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
 
+    let effective_connection_string = if let Some(ref config) = ssh_tunnel {
+        if !config.use_ssh_tunneling {
+            connection_string.clone()
+        } else {
+            let cfg = connection_string
+                .parse::<tokio_postgres::Config>()
+                .map_err(|e| format!("Invalid connection string: {}", e))?;
+            let db_host = cfg
+                .get_hosts()
+                .first()
+                .map(|h| match h {
+                    tokio_postgres::config::Host::Tcp(v) => v.clone(),
+                    #[cfg(unix)]
+                    tokio_postgres::config::Host::Unix(p) => p.to_string_lossy().to_string(),
+                })
+                .unwrap_or_else(|| "localhost".to_string());
+            let db_port = cfg.get_ports().first().copied().unwrap_or(5432);
+            let local_port = state.ssh_tunnel_manager.start(
+                &connection_id,
+                config,
+                &db_host,
+                db_port,
+            )?;
+            connection_string_with_host_port(&connection_string, "127.0.0.1", local_port)?
+        }
+    } else {
+        connection_string.clone()
+    };
+
     state
         .conn_manager
-        .connect(&connection_id, &connection_string)
+        .connect(&connection_id, &effective_connection_string)
         .await?;
 
     // Get server info and numeric version
@@ -111,7 +186,7 @@ pub async fn db_connect(
     })
 }
 
-/// Disconnect from a database
+/// Disconnect from a database (stops SSH tunnel if one was used).
 #[tauri::command]
 pub async fn db_disconnect(
     state: State<'_, AppState>,
@@ -119,6 +194,7 @@ pub async fn db_disconnect(
 ) -> Result<bool, String> {
     state.watch_manager.stop_all_for_connection(&connection_id);
     state.cache.invalidate(&connection_id);
+    state.ssh_tunnel_manager.stop(&connection_id);
     Ok(state.conn_manager.disconnect(&connection_id))
 }
 
@@ -2007,7 +2083,7 @@ pub async fn app_log_path(app: AppHandle) -> Result<String, String> {
 /// Spawn a new independent application window. Each window gets its own webview
 /// context (isolated frontend state) while sharing the single Rust AppState
 /// (connection pool, metadata cache, watchers) — zero duplicated resources.
-pub fn create_app_window(app: &AppHandle) {
+pub fn create_app_window<R: tauri::Runtime>(app: &AppHandle<R>) {
     let label = format!("window_{}", uuid::Uuid::new_v4().simple());
     if let Err(e) = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("/".into()))
         .title("pgStudio")
@@ -2016,6 +2092,24 @@ pub fn create_app_window(app: &AppHandle) {
         .build()
     {
         log::error!("Failed to create new window: {e}");
+    }
+}
+
+/// Reload the focused webview, or the primary `main` window if none report focus.
+pub fn reload_focused_webview<R: tauri::Runtime>(app: &AppHandle<R>) {
+    use tauri::Manager;
+    for w in app.webview_windows().values() {
+        if w.is_focused().unwrap_or(false) {
+            if let Err(e) = w.reload() {
+                log::warn!("Webview reload failed: {e}");
+            }
+            return;
+        }
+    }
+    if let Some(w) = app.get_webview_window("main") {
+        if let Err(e) = w.reload() {
+            log::warn!("Webview reload failed: {e}");
+        }
     }
 }
 

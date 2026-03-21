@@ -399,6 +399,20 @@ export interface PasswordReminder {
     updated_at: number;
 }
 
+/** Optional SSH tunnel config for connecting via a bastion. Sensitive: ssh_password only when save_ssh_password. */
+export interface SshTunnelConfig {
+    use_ssh_tunneling: boolean;
+    tunnel_host: string;
+    tunnel_port: number;
+    username: string;
+    authentication: "password" | "identity_file";
+    identity_file_path?: string | null;
+    /** Only set when save_ssh_password is true (sensitive). */
+    ssh_password?: string | null;
+    save_ssh_password?: boolean;
+    keep_alive_seconds?: number;
+}
+
 /** Saved connection persisted in app data dir */
 export interface SavedConnection {
     id: string;
@@ -408,6 +422,7 @@ export interface SavedConnection {
     environment?: ConnectionEnvironment | null;
     owner?: string | null;
     criticality?: ConnectionCriticality | null;
+    ssh_tunnel?: SshTunnelConfig | null;
 }
 
 /** Event trigger (database level, PG 9.3+) */
@@ -563,7 +578,7 @@ export interface DocumentationCommentPatch {
 export type PreviewSelection =
     | { kind: "table"; schema: string; name: string }
     | { kind: "view"; schema: string; name: string }
-    | { kind: "function"; schema: string; name: string; arguments: string }
+    | { kind: "function"; schema: string; name: string; arguments: string; is_trigger_function?: boolean }
     | { kind: "type"; schema: string; name: string }
     | { kind: "event_trigger"; name: string };
 

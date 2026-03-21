@@ -580,7 +580,7 @@ export function Sidebar({
     const [sectionRenderLimit, setSectionRenderLimit] = useState<Record<string, number>>({});
 
     const [createDatabaseOpen, setCreateDatabaseOpen] = useState(false);
-    const { openTab } = useLayoutStore();
+    const { openTab, openFunctionTab, openTypeTab, openEventTriggerTab } = useLayoutStore();
     const [dropDbName, setDropDbName] = useState<string | null>(null);
     const [isDroppingDb, setIsDroppingDb] = useState(false);
     const [docWriterOpen, setDocWriterOpen] = useState(false);
@@ -832,7 +832,7 @@ export function Sidebar({
                 />
             )}
 
-            <div className="flex h-full w-full flex-col min-h-0 bg-sidebar text-sidebar-foreground border-r border-sidebar-border overflow-hidden">
+            <div className="flex h-full w-full flex-col min-h-0 bg-sidebar text-sidebar-foreground border-r border-sidebar-border overflow-hidden shadow-[inset_-1px_0_0_0_var(--sidebar-border)] dark:shadow-none">
 
                 {/* ── Zone A: Connection switcher (fixed) ── */}
                 <div className="px-2 pt-3 pb-2 border-b border-sidebar-border shrink-0">
@@ -850,7 +850,7 @@ export function Sidebar({
                             value={search}
                             onChange={(e) => setSearch(e.target.value)}
                             placeholder="Filter…"
-                            className="h-7 pl-7 pr-6 text-[11px] bg-sidebar-accent/40 border-0 text-sidebar-foreground placeholder:text-sidebar-foreground/40 focus-visible:ring-1 focus-visible:ring-sidebar-border rounded-md"
+                            className="h-7 pl-7 pr-6 text-[11px] bg-sidebar-accent/50 border border-sidebar-border/70 dark:border-0 dark:bg-sidebar-accent/40 text-sidebar-foreground placeholder:text-sidebar-foreground/45 focus-visible:ring-1 focus-visible:ring-sidebar-ring rounded-md"
                         />
                         {search && (
                             <button
@@ -926,7 +926,11 @@ export function Sidebar({
                                                 icon={Zap}
                                                 label={et.name}
                                                 isActive={previewSelection?.kind === "event_trigger" && previewSelection.name === et.name}
-                                                onClick={() => { onSelectObject?.(); selectPreview({ kind: "event_trigger", name: et.name }); }}
+                                                onClick={() => {
+                                                    onSelectObject?.();
+                                                    openEventTriggerTab(et.name);
+                                                    selectPreview({ kind: "event_trigger", name: et.name });
+                                                }}
                                             />
                                         ))}
                                     </div>
@@ -1124,7 +1128,7 @@ export function Sidebar({
                                                                             rowCount={viewItem.row_count}
                                                                             tableComment={viewItem.table_comment}
                                                                             isActive={selectedSchema === schemaName && selectedTable === viewItem.name}
-                                                                            onClick={() => { onSelectObject?.(); openTab(schemaName, viewItem.name); }}
+                                                                            onClick={() => { onSelectObject?.(); openTab(schemaName, viewItem.name, { isView: true }); }}
                                                                             onOpenManager={(tab) => setManagerDialog({ schema: schemaName, table: viewItem.name, tab })}
                                                                         />
                                                                     ))}
@@ -1177,7 +1181,8 @@ export function Sidebar({
                                                                             previewSelection?.kind === "function" &&
                                                                             previewSelection.schema === schemaName &&
                                                                             previewSelection.name === fn.name &&
-                                                                            previewSelection.arguments === fn.arguments;
+                                                                            previewSelection.arguments === fn.arguments &&
+                                                                            !(previewSelection.is_trigger_function ?? false);
                                                                         return (
                                                                             <ObjectLeaf
                                                                                 key={key}
@@ -1186,7 +1191,14 @@ export function Sidebar({
                                                                                 isActive={isActive}
                                                                                 onClick={() => {
                                                                                     onSelectObject?.();
-                                                                                    selectPreview({ kind: "function", schema: schemaName, name: fn.name, arguments: fn.arguments });
+                                                                                    openFunctionTab(schemaName, fn.name, fn.arguments, false);
+                                                                                    selectPreview({
+                                                                                        kind: "function",
+                                                                                        schema: schemaName,
+                                                                                        name: fn.name,
+                                                                                        arguments: fn.arguments,
+                                                                                        is_trigger_function: false,
+                                                                                    });
                                                                                 }}
                                                                             />
                                                                         );
@@ -1245,7 +1257,8 @@ export function Sidebar({
                                                                             previewSelection?.kind === "function" &&
                                                                             previewSelection.schema === schemaName &&
                                                                             previewSelection.name === fn.name &&
-                                                                            previewSelection.arguments === fn.arguments;
+                                                                            previewSelection.arguments === fn.arguments &&
+                                                                            Boolean(previewSelection.is_trigger_function);
                                                                         return (
                                                                             <ObjectLeaf
                                                                                 key={key}
@@ -1254,7 +1267,14 @@ export function Sidebar({
                                                                                 isActive={isActive}
                                                                                 onClick={() => {
                                                                                     onSelectObject?.();
-                                                                                    selectPreview({ kind: "function", schema: schemaName, name: fn.name, arguments: fn.arguments });
+                                                                                    openFunctionTab(schemaName, fn.name, fn.arguments, true);
+                                                                                    selectPreview({
+                                                                                        kind: "function",
+                                                                                        schema: schemaName,
+                                                                                        name: fn.name,
+                                                                                        arguments: fn.arguments,
+                                                                                        is_trigger_function: true,
+                                                                                    });
                                                                                 }}
                                                                             />
                                                                         );
@@ -1321,6 +1341,7 @@ export function Sidebar({
                                                                             }
                                                                             onClick={() => {
                                                                                 onSelectObject?.();
+                                                                                openTypeTab(schemaName, typeItem.name);
                                                                                 selectPreview({ kind: "type", schema: schemaName, name: typeItem.name });
                                                                             }}
                                                                         />

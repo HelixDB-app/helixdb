@@ -1,11 +1,11 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useLayoutStore, LayoutNode, PaneNode, SplitNode, TableTab } from "@/stores/layout-store";
+import { useLayoutStore, LayoutNode, PaneNode, SplitNode, layoutTabTitle } from "@/stores/layout-store";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useShortcutsStore } from "@/stores/shortcuts-store";
 import { eventMatchesCombo, isEditableTarget } from "@/lib/shortcut-keys";
-import { DataTable } from "@/components/data-table";
+import { DataTable, SchemaObjectTabContent } from "@/components/data-table";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable";
 import { cn } from "@/lib/utils";
 import { X, LayoutPanelLeft, Columns, Rows, Plus, Database, Table2 } from "lucide-react";
@@ -131,7 +131,9 @@ function PaneRenderer({ pane }: { pane: PaneNode }) {
         setActivePane, 
         openTab 
     } = useLayoutStore();
-    const { recentTables } = useConnectionStore();
+    const recentTables = useConnectionStore((s) => s.recentTables);
+    const selectTable = useConnectionStore((s) => s.selectTable);
+    const selectPreview = useConnectionStore((s) => s.selectPreview);
     
     // Drag and drop state
     const [isDraggingOver, setIsDraggingOver] = useState(false);
@@ -142,6 +144,32 @@ function PaneRenderer({ pane }: { pane: PaneNode }) {
     const activeTab = useMemo(() => {
         return pane.tabs.find(t => t.id === pane.activeTabId) || null;
     }, [pane.tabs, pane.activeTabId]);
+
+    useEffect(() => {
+        if (!isActivePane) return;
+        const p = findPaneById(useLayoutStore.getState().root, pane.id);
+        const tab = p?.tabs.find((t) => t.id === p.activeTabId);
+        if (!tab) return;
+        if (tab.kind === "table" || tab.kind === "view") {
+            selectTable(tab.schema, tab.table);
+            return;
+        }
+        if (tab.kind === "function") {
+            selectPreview({
+                kind: "function",
+                schema: tab.schema,
+                name: tab.name,
+                arguments: tab.arguments,
+                is_trigger_function: tab.isTrigger,
+            });
+            return;
+        }
+        if (tab.kind === "type") {
+            selectPreview({ kind: "type", schema: tab.schema, name: tab.name });
+            return;
+        }
+        selectPreview({ kind: "event_trigger", name: tab.name });
+    }, [isActivePane, pane.id, pane.activeTabId, selectTable, selectPreview]);
 
     const handleDragOver = (e: React.DragEvent) => {
         e.preventDefault();
@@ -279,7 +307,9 @@ function PaneRenderer({ pane }: { pane: PaneNode }) {
                                             : "bg-transparent text-muted-foreground/60 hover:bg-muted/40 hover:text-foreground border-transparent border-t border-t-transparent"
                                     )}
                                 >
-                                    <span className="truncate pr-2 mt-px">{tab.table}</span>
+                                    <span className="truncate pr-2 mt-px" title={layoutTabTitle(tab)}>
+                                        {layoutTabTitle(tab)}
+                                    </span>
                                     <button
                                         onClick={(e) => {
                                             e.stopPropagation();
@@ -389,7 +419,13 @@ function PaneRenderer({ pane }: { pane: PaneNode }) {
             {/* Content Area */}
             <div className="flex-1 w-full h-full min-h-0 relative">
                 {activeTab ? (
-                    <DataTable key={activeTab.id} schema={activeTab.schema} table={activeTab.table} />
+                    activeTab.kind === "table" || activeTab.kind === "view" ? (
+                        <DataTable key={activeTab.id} schema={activeTab.schema} table={activeTab.table} />
+                    ) : (
+                        <div className="flex h-full min-h-0 flex-col" key={activeTab.id}>
+                            <SchemaObjectTabContent tab={activeTab} />
+                        </div>
+                    )
                 ) : (
                     <div className="flex h-full items-center justify-center">
                         <span className="text-muted-foreground font-mono text-sm max-w-sm text-center">

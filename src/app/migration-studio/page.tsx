@@ -85,6 +85,7 @@ import {
     Table2,
     Trash2,
     TriangleAlert,
+    WandSparkles,
     Wifi,
     X,
     Zap,
@@ -223,7 +224,8 @@ function ConnectionPicker({
 
         onPick({ savedId: saved.id, liveId: null, connecting: true, error: null, selectedDatabase: null });
         try {
-            const resp = await dbConnect(saved.connection_string, saved.id);
+            const sshTunnel = saved.ssh_tunnel?.use_ssh_tunneling ? saved.ssh_tunnel : undefined;
+            const resp = await dbConnect(saved.connection_string, saved.id, sshTunnel);
             onPick({ savedId: saved.id, liveId: resp.connection_id, connecting: false, error: null, selectedDatabase: null });
         } catch (e) {
             onPick({ savedId: saved.id, liveId: null, connecting: false, error: String(e), selectedDatabase: null });
@@ -2824,7 +2826,7 @@ export default function MigrationStudioPage() {
     );
 
     return (
-        <div className="flex h-screen flex-col bg-background text-foreground overflow-hidden">
+        <div className="flex h-screen flex-col bg-transparent text-foreground overflow-hidden">
             {/* Header */}
             <header className="flex h-11 shrink-0 items-center justify-between border-b border-border/20 bg-card/20 px-4">
                 <div className="flex items-center gap-3">

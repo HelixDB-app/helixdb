@@ -9,6 +9,9 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 
 const ROW_HEIGHT = 36;
+const ROW_INDEX_WIDTH = 52;
+const COL_MIN_WIDTH = 150;
+const STICKY_COLUMNS = 1; // first data column stays visible when scrolling right
 
 const NUMERIC_CELL_TYPES = new Set<CellValue["type"]>([
     "Int16",
@@ -49,11 +52,17 @@ function ResultCell({
     formatted,
     compact,
     isNumeric,
+    isSticky,
+    stickyLeft,
+    minWidth,
 }: {
     cell: CellValue;
     formatted: string;
     compact: boolean;
     isNumeric: boolean;
+    isSticky?: boolean;
+    stickyLeft?: number;
+    minWidth?: number;
 }) {
     const handleCopy = useCallback(() => {
         if (cell.type === "Null") return;
@@ -70,12 +79,17 @@ function ResultCell({
             type="button"
             role="gridcell"
             className={cn(
-                "w-full px-3 py-1.5 font-mono truncate cursor-pointer hover:bg-accent/30 border-r border-border/20 last:border-r-0",
+                "min-w-0 px-3 py-1.5 font-mono truncate cursor-pointer hover:bg-accent/30 border-r border-border/40 last:border-r-0",
                 "focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-inset",
                 isNumeric ? "text-right tabular-nums" : "text-left",
-                compact ? "text-xs max-w-[200px]" : "text-xs max-w-xs",
-                cell.type === "Null" && "text-muted-foreground/30 italic"
+                compact ? "text-xs" : "text-xs",
+                cell.type === "Null" && "text-muted-foreground/30 italic",
+                isSticky && "sticky z-[1] bg-background shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]"
             )}
+            style={{
+                ...(minWidth != null ? { minWidth } : {}),
+                ...(isSticky && stickyLeft != null ? { left: stickyLeft } : {}),
+            }}
             title={formatted}
             onClick={handleCopy}
             onKeyDown={(e) => {
@@ -120,10 +134,33 @@ function VirtualizedQueryResultTableInner({
     const totalSize = virtualizer.getTotalSize();
     const virtualRows = virtualizer.getVirtualItems();
 
-    const gridCols = useMemo(() => {
-        if (showRowIndex) return "auto " + columns.map(() => "1fr").join(" ");
-        return columns.map(() => "1fr").join(" ");
+    const { gridTemplateColumns, totalWidth, columnWidths } = useMemo(() => {
+        const widths = columns.map(() => COL_MIN_WIDTH);
+        const parts: string[] = [];
+        if (showRowIndex) parts.push(`${ROW_INDEX_WIDTH}px`);
+        parts.push(...widths.map((w) => `${w}px`));
+        const total =
+            (showRowIndex ? ROW_INDEX_WIDTH : 0) + widths.reduce((a, b) => a + b, 0);
+        return {
+            gridTemplateColumns: parts.join(" "),
+            totalWidth: total,
+            columnWidths: widths,
+        };
     }, [showRowIndex, columns.length]);
+
+    const stickyLefts = useMemo(() => {
+        const lefts: number[] = [];
+        let acc = 0;
+        if (showRowIndex) {
+            lefts.push(acc);
+            acc += ROW_INDEX_WIDTH;
+        }
+        for (let i = 0; i < Math.min(STICKY_COLUMNS, columns.length); i++) {
+            lefts.push(acc);
+            acc += columnWidths[i] ?? COL_MIN_WIDTH;
+        }
+        return lefts;
+    }, [showRowIndex, columns.length, columnWidths]);
 
     if (!result || columns.length === 0) return null;
 
@@ -133,87 +170,118 @@ function VirtualizedQueryResultTableInner({
             aria-label="Query result"
             aria-rowcount={count}
             aria-colcount={columns.length + (showRowIndex ? 1 : 0)}
-            className={cn("flex flex-col rounded-lg border border-border/30 bg-background overflow-hidden", className)}
+            className={cn("flex flex-col rounded-lg border border-border bg-background overflow-hidden", className)}
             style={maxHeight ? { maxHeight } : { minHeight: 0, height: "100%" }}
         >
             <div
-                role="row"
-                className="sticky top-0 z-10 grid bg-muted/60 border-b border-border/30 shrink-0 text-xs font-semibold"
-                style={{ gridTemplateColumns: gridCols }}
-            >
-                {showRowIndex && (
-                    <div role="columnheader" className="px-3 py-2 text-center text-[10px] font-mono text-muted-foreground/50 border-r border-border/20">
-                        #
-                    </div>
-                )}
-                {columns.map((col, colIdx) => {
-                    const firstCell = rows[0]?.[colIdx];
-                    const colIsNumeric =
-                        firstCell != null
-                            ? isNumericCell(firstCell)
-                            : isNumericDataType(col.data_type);
-                    return (
-                        <div
-                            key={col.name}
-                            role="columnheader"
-                            className={cn(
-                                "px-3 py-2 whitespace-nowrap border-r border-border/20 last:border-r-0",
-                                colIsNumeric ? "text-right tabular-nums" : "text-left"
-                            )}
-                        >
-                            <span>{col.name}</span>
-                            <span className="text-[10px] font-mono text-muted-foreground/40 ml-1.5">
-                                {col.data_type}
-                            </span>
-                        </div>
-                    );
-                })}
-            </div>
-
-            <div
                 ref={scrollRef}
-                className="flex-1 min-h-0 overflow-auto"
+                className="flex-1 min-h-0 overflow-auto overflow-x-auto"
                 style={{ contain: "layout paint" }}
             >
                 <div
                     style={{
-                        height: `${totalSize}px`,
-                        width: "100%",
-                        position: "relative",
+                        width: totalWidth,
+                        minWidth: "100%",
                     }}
                 >
-                    {virtualRows.map((virtualRow) => {
-                        const row = rows[virtualRow.index];
-                        if (!row) return null;
-                        return (
+                    {/* Header row: sticky top, solid bg, aligned with body cells */}
+                    <div
+                        role="row"
+                        className="sticky top-0 z-10 grid border-b border-border text-xs font-semibold bg-muted"
+                        style={{ gridTemplateColumns }}
+                    >
+                        {showRowIndex && (
                             <div
-                                key={virtualRow.key}
-                                role="row"
-                                aria-rowindex={virtualRow.index + 1}
-                                className="grid absolute left-0 w-full border-b border-border/20 hover:bg-accent/30 transition-colors"
-                                style={{
-                                    height: `${virtualRow.size}px`,
-                                    transform: `translateY(${virtualRow.start}px)`,
-                                    gridTemplateColumns: gridCols,
-                                }}
+                                role="columnheader"
+                                className="sticky left-0 z-20 px-3 py-1.5 text-center text-[10px] font-mono text-muted-foreground/60 border-r border-border/40 bg-muted shrink-0 flex items-center justify-center"
+                                style={{ minWidth: ROW_INDEX_WIDTH }}
                             >
-                                {showRowIndex && (
-                                    <div className="px-3 py-1.5 text-center text-[10px] font-mono text-muted-foreground/40 border-r border-border/20 flex items-center justify-center">
-                                        {virtualRow.index + 1}
-                                    </div>
-                                )}
-                                {row.map((cell, colIdx) => (
-                                    <MemoizedResultCell
-                                        key={colIdx}
-                                        cell={cell}
-                                        formatted={formatCellValue(cell)}
-                                        compact={compact}
-                                        isNumeric={isNumericCell(cell)}
-                                    />
-                                ))}
+                                #
                             </div>
-                        );
-                    })}
+                        )}
+                        {columns.map((col, colIdx) => {
+                            const firstCell = rows[0]?.[colIdx];
+                            const colIsNumeric =
+                                firstCell != null
+                                    ? isNumericCell(firstCell)
+                                    : isNumericDataType(col.data_type);
+                            const isSticky = colIdx < STICKY_COLUMNS;
+                            const left = stickyLefts[showRowIndex ? colIdx + 1 : colIdx];
+                            return (
+                                <div
+                                    key={col.name}
+                                    role="columnheader"
+                                    className={cn(
+                                        "px-3 py-1.5 whitespace-nowrap border-r border-border/40 last:border-r-0 shrink-0 flex items-center min-h-[36px]",
+                                        colIsNumeric ? "text-right tabular-nums justify-end" : "text-left",
+                                        isSticky &&
+                                            "sticky z-[11] bg-muted shadow-[2px_0_4px_-2px_rgba(0,0,0,0.08)]"
+                                    )}
+                                    style={{
+                                        minWidth: columnWidths[colIdx],
+                                        ...(isSticky && left != null ? { left } : {}),
+                                    }}
+                                    title={`${col.name} (${col.data_type})`}
+                                >
+                                    <span className="truncate">{col.name}</span>
+                                    <span className="text-[10px] font-mono text-muted-foreground/50 ml-1.5 shrink-0">
+                                        ({col.data_type})
+                                    </span>
+                                </div>
+                            );
+                        })}
+                    </div>
+
+                    <div
+                        style={{
+                            height: `${totalSize}px`,
+                            width: totalWidth,
+                            position: "relative",
+                        }}
+                    >
+                        {virtualRows.map((virtualRow) => {
+                            const row = rows[virtualRow.index];
+                            if (!row) return null;
+                            return (
+                                <div
+                                    key={virtualRow.key}
+                                    role="row"
+                                    aria-rowindex={virtualRow.index + 1}
+                                    className="grid absolute left-0 border-b border-border/40 hover:bg-accent/30 transition-colors"
+                                    style={{
+                                        width: totalWidth,
+                                        height: `${virtualRow.size}px`,
+                                        transform: `translateY(${virtualRow.start}px)`,
+                                        gridTemplateColumns,
+                                    }}
+                                >
+                                    {showRowIndex && (
+                                        <div
+                                            className="sticky left-0 z-[1] px-3 py-1.5 text-center text-[10px] font-mono text-muted-foreground/50 border-r border-border/40 flex items-center justify-center bg-background shrink-0"
+                                            style={{
+                                                minWidth: ROW_INDEX_WIDTH,
+                                                boxShadow: "2px 0 4px -2px rgba(0,0,0,0.08)",
+                                            }}
+                                        >
+                                            {virtualRow.index + 1}
+                                        </div>
+                                    )}
+                                    {row.map((cell, colIdx) => (
+                                        <MemoizedResultCell
+                                            key={colIdx}
+                                            cell={cell}
+                                            formatted={formatCellValue(cell)}
+                                            compact={compact}
+                                            isNumeric={isNumericCell(cell)}
+                                            isSticky={colIdx < STICKY_COLUMNS}
+                                            stickyLeft={colIdx < STICKY_COLUMNS ? stickyLefts[showRowIndex ? colIdx + 1 : colIdx] : undefined}
+                                            minWidth={columnWidths[colIdx]}
+                                        />
+                                    ))}
+                                </div>
+                            );
+                        })}
+                    </div>
                 </div>
             </div>
         </div>

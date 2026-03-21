@@ -9,6 +9,7 @@ import { useNotesStore } from "@/stores/notes-store";
 import { useSettingsStore } from "@/stores/settings-store";
 import { useQueryFilesStore } from "@/stores/query-files-store";
 import { useIdeFsStore } from "@/stores/ide-fs-store";
+import { useSchemaDocGenStore } from "@/stores/schema-doc-gen-store";
 import { useCollaborationStore, getCollaborationPermissions } from "@/stores/collaboration-store";
 import { useShallow } from "zustand/react/shallow";
 import { formatCellValue } from "@/lib/types";
@@ -20,9 +21,9 @@ import { QueryPlanViewer } from "@/components/query-plan-viewer";
 import { SandboxDiffViewer } from "@/components/sandbox-diff-viewer";
 import { DataCanvas } from "@/components/data-canvas";
 import { ConnectionEnvBadge } from "@/components/connection-env-badge";
-import { VirtualizedQueryResultTable } from "@/components/virtualized-query-result-table";
+import { QueryResultView } from "@/components/query-result-view";
 import { QueryReviewPanel } from "@/components/query-review-panel";
-import { format as formatSQL } from "sql-formatter";
+import { formatHelixSql } from "@/lib/format-sql";
 import { MonacoSqlEditor } from "@/components/monaco-sql-editor";
 import { DocumentBlockEditor } from "@/components/document-block-editor";
 import { AIChatPanel } from "@/components/ai-chat-panel";
@@ -83,6 +84,7 @@ import {
     ResizablePanel,
     ResizablePanelGroup,
 } from "@/components/ui/resizable";
+import { useDefaultLayout } from "react-resizable-panels";
 import {
     AlertCircle,
     Braces,
@@ -103,6 +105,7 @@ import {
     StickyNote,
     Sparkles,
     Terminal,
+    Users,
     X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -186,6 +189,21 @@ function downloadBlob(content: string, filename: string, mimeType: string) {
 
 function normalizeSqlForCompare(sql: string): string {
     return sql.replace(/\s+/g, " ").trim().toLowerCase();
+}
+
+/** Parse a single table from simple SELECT ... FROM table/schema.table. Returns undefined if not detectable. */
+function parseSingleTableFromSql(sql: string): { schema: string; table: string } | undefined {
+    const trimmed = sql.replace(/--[^\n]*/g, "").replace(/\/\*[\s\S]*?\*\//g, "").trim();
+    const fromMatch = trimmed.match(/\bfrom\s+([\s\S]+?)(?=\s+(?:where|group|order|limit|offset|$))/i);
+    if (!fromMatch) return undefined;
+    const firstToken = fromMatch[1].trim().split(/\s/)[0]?.replace(/;+$/, "") ?? "";
+    if (!firstToken) return undefined;
+    const quoted = firstToken.match(/^"([^"]*)"\s*\.\s*"([^"]*)"$/);
+    if (quoted) return { schema: quoted[1] || "public", table: quoted[2] };
+    const dotted = firstToken.match(/^(\w+)\.(\w+)$/);
+    if (dotted) return { schema: dotted[1], table: dotted[2] };
+    if (/^\w+$/.test(firstToken)) return { schema: "public", table: firstToken };
+    return undefined;
 }
 
 function getReviewIssueCounts(report: SqlReviewReport) {
@@ -608,11 +626,27 @@ export function QueryEditor() {
     const appliedRemoteDocVersionRef = useRef<Record<string, number>>({});
     const tabExecutionStateRef = useRef<Record<string, boolean>>({});
     const appliedRemoteResultAtRef = useRef<Record<string, number>>({});
+    const schemaDocGenRef = useRef<{ updateSql: (tabId: string, sql: string) => void; tabFileMap: Record<string, string> }>({
+        updateSql: () => {},
+        tabFileMap: {},
+    });
     const [liveResultMetaByTab, setLiveResultMetaByTab] = useState<Record<string, LiveResultMeta>>({});
     const cursorByTabRef = useRef<Record<string, CursorPayload>>({});
     const aiContextHandlerRef = useRef<(() => void) | null>(null);
     const pendingAiContextAddRef = useRef(false);
     useEffect(() => { tabFileMapRef.current = tabFileMap; }, [tabFileMap]);
+    useEffect(() => {
+        schemaDocGenRef.current.updateSql = updateSql;
+        schemaDocGenRef.current.tabFileMap = tabFileMap;
+    }, [updateSql, tabFileMap]);
+    useEffect(() => {
+        useSchemaDocGenStore.getState().setOnSchemaDocFileUpdated((fileId, content) => {
+            const { updateSql: updateSqlFn, tabFileMap: map } = schemaDocGenRef.current;
+            const tabId = Object.entries(map).find(([, id]) => id === fileId)?.[0];
+            if (tabId) updateSqlFn(tabId, content);
+        });
+        return () => useSchemaDocGenStore.getState().setOnSchemaDocFileUpdated(null);
+    }, []);
 
     // ── Review state ───────────────────────────────────────────────────────
     const [reviewReport, setReviewReport] = useState<SqlReviewReport | null>(null);
@@ -652,6 +686,7 @@ export function QueryEditor() {
     // ── Derived ────────────────────────────────────────────────────────────
     const activeTab = tabs.find((t) => t.id === activeTabId);
     const tabsById = useMemo(() => new Map(tabs.map((tab) => [tab.id, tab])), [tabs]);
+
     const activeEditorGroup = useMemo(
         () => editorGroups.find((group) => group.id === activeEditorGroupId) ?? editorGroups[0] ?? null,
         [editorGroups, activeEditorGroupId]
@@ -857,6 +892,10 @@ export function QueryEditor() {
         () => (activeTabId ? isDocTab(activeTabId) : false),
         [activeTabId, isDocTab]
     );
+    const queryEditorVerticalLayout = useDefaultLayout({
+        id: "helix-query-editor-vsplit",
+        panelIds: ["qe-editor", "qe-results"],
+    });
     const isCollaborationReadOnly = collaborationStatus === "connected" && !collaborationPermissions.canEdit;
 
     const activeDocKey = useMemo(() => {
@@ -1356,7 +1395,7 @@ export function QueryEditor() {
                 return;
             }
             try {
-                const formatted = formatSQL(sql, { language: "postgresql", tabWidth: 4, keywordCase: "upper" });
+                const formatted = formatHelixSql(sql);
                 updateSql(activeTabId, formatted);
                 toast.success("SQL formatted", { duration: 1200 });
             } catch {
@@ -1874,6 +1913,8 @@ export function QueryEditor() {
                     initials: participant.initials,
                     colorIndex: participant.colorIndex,
                 }));
+                const docFileName = getTabFileName(tab.id)?.toLowerCase() ?? "";
+                const isSchemaDoc = docFileName === "readme.doc";
                 return (
                     <DocumentBlockEditor
                         key={`${options.keyPrefix}-${tab.id}`}
@@ -1882,6 +1923,7 @@ export function QueryEditor() {
                         collaborators={docCollaborators}
                         readOnly={isCollaborationReadOnly}
                         className={options.className}
+                        variant={isSchemaDoc ? "schema" : "default"}
                         aiAssist={{
                             getContext: getDocAiAssistContext,
                             docTitle: getTabFileName(tab.id),
@@ -1934,8 +1976,8 @@ export function QueryEditor() {
     );
 
     // ── Export ─────────────────────────────────────────────────────────────
-    const handleExport = (format: "csv" | "json") => {
-        const result = activeTab?.result;
+    const handleExport = (format: "csv" | "json", resultOverride?: QueryResult) => {
+        const result = resultOverride ?? activeTab?.result;
         if (!result || result.is_error || result.columns.length === 0) return;
         const tabTitle = activeTab?.title ?? "query";
         const filename = `${tabTitle.replace(/\s+/g, "-").toLowerCase()}-${Date.now()}`;
@@ -2008,6 +2050,10 @@ export function QueryEditor() {
 
     const isSwitchingDb = useConnectionStore((s) => s.isSwitchingDatabase);
     const rightPanelMode = rightPanelView;
+    const rightPanelPx =
+        rightPanelMode === "collaboration" ? 340 : rightPanelMode === "notes" ? 360 : rightPanelMode === "ai" ? 420 : 0;
+    const rightPanelWidthClass =
+        rightPanelMode === "collaboration" ? "w-[340px]" : rightPanelMode === "notes" ? "w-[360px]" : "w-[420px]";
 
     return (
         <div className="flex h-full overflow-hidden bg-background">
@@ -2275,6 +2321,26 @@ export function QueryEditor() {
                                                 </Button>
                                             </>
                                         )}
+                                        <Tooltip>
+                                            <TooltipTrigger asChild>
+                                                <Button
+                                                    size="sm"
+                                                    variant={rightPanelView === "ai" ? "secondary" : "outline"}
+                                                    className={cn(
+                                                        "h-8 gap-1.5",
+                                                        rightPanelView === "ai" && "border-primary/30 bg-primary/10 text-primary hover:bg-primary/15"
+                                                    )}
+                                                    onClick={() => toggleRightPanel("ai")}
+                                                    aria-pressed={rightPanelView === "ai"}
+                                                >
+                                                    <Sparkles className="h-3.5 w-3.5" />
+                                                    {rightPanelView === "ai" ? "Hide AI" : "AI chat"}
+                                                </Button>
+                                            </TooltipTrigger>
+                                            <TooltipContent side="bottom" className="max-w-[14rem] text-xs">
+                                                {rightPanelView === "ai" ? "Close AI assistant" : "Open AI assistant"} · ⌘⇧A
+                                            </TooltipContent>
+                                        </Tooltip>
                                         <Button size="sm" variant="ghost" className="h-8 gap-1.5" onClick={() => setEditorFullScreen(false)}>
                                             <Minimize2 className="h-3.5 w-3.5" />
                                             Exit full screen
@@ -2300,7 +2366,14 @@ export function QueryEditor() {
                                             />
                                         </div>
                                     )}
-                                    <div className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden">
+                                    <div
+                                        className="flex flex-col flex-1 min-w-0 min-h-0 overflow-hidden"
+                                        style={
+                                            editorFullScreen && rightPanelPx > 0
+                                                ? { paddingRight: rightPanelPx }
+                                                : undefined
+                                        }
+                                    >
                                         {renderTabEditor(activeTab, {
                                             keyPrefix: "fullscreen",
                                             editorHeight: 480,
@@ -2313,9 +2386,9 @@ export function QueryEditor() {
                             </div>
                         )}
 
-                        <ResizablePanelGroup id="qe-vgroup" orientation="vertical" className="flex-1 min-h-[320px] w-full">
-                            {/* Editor panel */}
-                            <ResizablePanel id="qe-editor" defaultSize="65%" minSize="40%" maxSize="85%" className="flex flex-col min-h-0">
+                        {(() => {
+                            const editorColumn = (
+                                <div className="flex h-full min-h-0 flex-col">
                                 <QueryToolbar
                                     isExecuting={activeTab.isExecuting}
                                     isReviewLoading={reviewLoading}
@@ -2552,15 +2625,35 @@ export function QueryEditor() {
                                         })()
                                     )}
                                 </div>
+                                </div>
+                            );
+
+                            if (activeTabIsDoc) {
+                                return (
+                                    <div className="flex min-h-[320px] w-full flex-1 flex-col min-h-0">
+                                        {editorColumn}
+                                    </div>
+                                );
+                            }
+
+                            return (
+                        <ResizablePanelGroup
+                            id="qe-vgroup"
+                            defaultLayout={queryEditorVerticalLayout.defaultLayout}
+                            onLayoutChanged={queryEditorVerticalLayout.onLayoutChanged}
+                            orientation="vertical"
+                            className="flex min-h-[320px] w-full flex-1"
+                        >
+                            <ResizablePanel id="qe-editor" defaultSize="65%" minSize="8%" maxSize="92%" className="flex min-h-0 flex-col">
+                                {editorColumn}
                             </ResizablePanel>
 
-                            <ResizableHandle withHandle className="shrink-0 min-h-2 bg-border/20 hover:bg-border/50 data-[resize-handle-active]:bg-emerald-500/40 transition-colors cursor-row-resize" />
+                            <ResizableHandle
+                                withHandle
+                                className="shrink-0 min-h-3 cursor-row-resize rounded-sm border-y border-transparent bg-border/15 py-1 transition-colors hover:border-border/25 hover:bg-muted/40 data-[resize-handle-active]:border-emerald-500/30 data-[resize-handle-active]:bg-emerald-500/20"
+                            />
 
-                            {/* Results panel */}
-                            {!activeTabIsDoc && (
-
-                        
-                            <ResizablePanel id="qe-results" defaultSize="35%" minSize="12%" maxSize="55%" className="flex flex-col min-h-0 overflow-hidden">
+                            <ResizablePanel id="qe-results" defaultSize="35%" minSize="8%" maxSize="92%" className="flex min-h-0 flex-col overflow-hidden">
                                 <ResultsArea
                                     activeTab={activeTab}
                                     isDocumentTab={activeTabIsDoc}
@@ -2599,9 +2692,13 @@ export function QueryEditor() {
                                     isSwitchingDb={isSwitchingDb}
                                     connectionId={connectionId}
                                     liveResultMeta={activeTabId ? (liveResultMetaByTab[activeTabId] ?? null) : null}
+                                    onRefresh={() => handleExecute()}
+                                    activeTabIsExecuting={Boolean(activeTab?.isExecuting)}
                                 />
-                            </ResizablePanel>    )}
+                            </ResizablePanel>
                         </ResizablePanelGroup>
+                            );
+                        })()}
                     </>
                 ) : (
                     <div className="flex-1 flex items-center justify-center text-muted-foreground">
@@ -2622,70 +2719,113 @@ export function QueryEditor() {
                     </div>
                 )}
 
-                {/* Notes toggle */}
-                {activeTab && (
+                {/* Workspace panels: compact icon strip above status bar */}
+                <div
+                    className={cn(
+                        "fixed z-30 flex h-8 items-center gap-0.5 rounded-lg border px-0.5 backdrop-blur-md transition-shadow",
+                        "border-border/40 bg-background/80 dark:bg-card/75",
+                        "shadow-sm",
+                        "bottom-2 right-3 sm:bottom-2 sm:right-4",
+                        rightPanelView && "border-border/55 shadow-md"
+                    )}
+                    role="toolbar"
+                    aria-label="Workspace panels"
+                >
                     <Tooltip>
                         <TooltipTrigger asChild>
                             <button
+                                type="button"
+                                aria-label="AI assistant"
+                                aria-pressed={rightPanelView === "ai"}
                                 className={cn(
-                                    "fixed bottom-8 right-4 z-30 h-8 w-8 flex items-center justify-center rounded-full shadow-lg border transition-all",
-                                    rightPanelView === "notes"
-                                        ? "bg-amber-500/15 border-amber-500/30 text-amber-400"
-                                        : "bg-card/80 border-border/40 text-muted-foreground hover:text-foreground backdrop-blur-sm"
+                                    "relative flex size-7 shrink-0 items-center justify-center rounded-md text-muted-foreground transition-colors",
+                                    "hover:bg-muted/70 hover:text-foreground",
+                                    "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+                                    rightPanelView === "ai" && "bg-primary/12 text-primary hover:bg-primary/16 hover:text-primary"
                                 )}
-                                onClick={() => toggleRightPanel("notes")}
+                                onClick={() => toggleRightPanel("ai")}
                             >
-                                <StickyNote className="h-3.5 w-3.5" />
+                                <Sparkles className="h-3.5 w-3.5" aria-hidden />
                             </button>
                         </TooltipTrigger>
-                        <TooltipContent side="left">Notes (⌘⇧N)</TooltipContent>
+                        <TooltipContent side="top" className="max-w-[14rem] text-center text-xs">
+                            {rightPanelView === "ai" ? "Close AI assistant" : "AI assistant"} · ⌘⇧A
+                        </TooltipContent>
                     </Tooltip>
-                )}
 
-                <Tooltip>
-                    <TooltipTrigger asChild>
-                        <button
-                            className={cn(
-                                "fixed bottom-20 right-4 z-30 h-8 w-8 flex items-center justify-center rounded-full shadow-lg border transition-all backdrop-blur-sm",
-                                rightPanelView === "ai"
-                                    ? "bg-primary/15 border-primary/30 text-primary"
-                                    : "bg-card/80 border-border/40 text-muted-foreground hover:text-foreground"
-                            )}
-                            onClick={() => {
-                                toggleRightPanel("ai");
-                            }}
-                        >
-                            <Sparkles className="h-3.5 w-3.5" />
-                        </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="left">{rightPanelView === "ai" ? "Hide AI Assistant" : "Open AI Assistant"} (⌘⇧A)</TooltipContent>
-                </Tooltip>
+                    <div className="h-4 w-px shrink-0 bg-border/35" aria-hidden />
 
-                <Tooltip>
-                    <TooltipTrigger asChild>
-                        <button
-                            className={cn(
-                                "fixed bottom-32 right-4 z-30 h-8 rounded-full border px-3 text-[10px] font-semibold shadow-lg backdrop-blur-sm transition-colors",
-                                rightPanelView === "collaboration"
-                                    ? "bg-cyan-500/20 border-cyan-500/40 text-cyan-100"
-                                    : "bg-cyan-500/15 border-cyan-500/35 text-cyan-100 hover:bg-cyan-500/25"
-                            )}
-                            onClick={() => {
-                                toggleRightPanel("collaboration");
-                            }}
-                        >
-                            Collaboration
-                        </button>
-                    </TooltipTrigger>
-                    <TooltipContent side="left">{rightPanelView === "collaboration" ? "Hide collaboration panel" : "Open collaboration panel"} (⌘⇧C)</TooltipContent>
-                </Tooltip>
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <button
+                                type="button"
+                                aria-label="Collaboration"
+                                aria-pressed={rightPanelView === "collaboration"}
+                                className={cn(
+                                    "relative flex size-7 shrink-0 items-center justify-center rounded-md transition-colors",
+                                    "hover:bg-muted/70",
+                                    "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+                                    rightPanelView === "collaboration"
+                                        ? "bg-cyan-500/14 text-cyan-200 hover:bg-cyan-500/20"
+                                        : "text-cyan-300/80 hover:text-cyan-200"
+                                )}
+                                onClick={() => toggleRightPanel("collaboration")}
+                            >
+                                {collaborationStatus === "connected" && (
+                                    <span
+                                        className="absolute right-1 top-1 h-1 w-1 rounded-full bg-cyan-400"
+                                        aria-hidden
+                                    />
+                                )}
+                                <Users className="h-3.5 w-3.5" aria-hidden />
+                            </button>
+                        </TooltipTrigger>
+                        <TooltipContent side="top" className="max-w-[14rem] text-center text-xs">
+                            {rightPanelView === "collaboration" ? "Close collaboration" : "Collaboration"} · ⌘⇧C
+                        </TooltipContent>
+                    </Tooltip>
+
+                    {activeTab && (
+                        <>
+                            <div className="h-4 w-px shrink-0 bg-border/35" aria-hidden />
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <button
+                                        type="button"
+                                        aria-label="Notes"
+                                        aria-pressed={rightPanelView === "notes"}
+                                        className={cn(
+                                            "relative flex size-7 shrink-0 items-center justify-center rounded-md transition-colors",
+                                            "hover:bg-muted/70",
+                                            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-offset-1 focus-visible:ring-offset-background",
+                                            rightPanelView === "notes"
+                                                ? "bg-amber-500/12 text-amber-300/95 hover:bg-amber-500/18"
+                                                : "text-amber-400/70 hover:text-amber-300/90"
+                                        )}
+                                        onClick={() => toggleRightPanel("notes")}
+                                    >
+                                        <StickyNote className="h-3.5 w-3.5" aria-hidden />
+                                    </button>
+                                </TooltipTrigger>
+                                <TooltipContent side="top" className="max-w-[14rem] text-center text-xs">
+                                    {rightPanelView === "notes" ? "Close notes" : "Notes"} · ⌘⇧N
+                                </TooltipContent>
+                            </Tooltip>
+                        </>
+                    )}
+                </div>
             </div>
 
             {rightPanelMode && (
                 <div
                     className={cn(
-                        "shrink-0 border-l border-border/25 h-full flex flex-col min-h-0",
-                        rightPanelMode === "collaboration" ? "w-[340px]" : rightPanelMode === "notes" ? "w-[360px]" : "w-[420px]"
+                        "border-l border-border/25 flex flex-col min-h-0 bg-background",
+                        editorFullScreen
+                            ? cn(
+                                  "fixed z-[55] top-12 right-0 bottom-0 shadow-2xl shadow-black/20",
+                                  rightPanelWidthClass
+                              )
+                            : cn("shrink-0 h-full", rightPanelWidthClass)
                     )}
                 >
                     {rightPanelMode === "ai" && (
@@ -2739,7 +2879,7 @@ interface ResultsAreaProps {
     hasResult: boolean;
     history: QueryHistoryEntry[];
     onShowHistory: () => void;
-    onExport: (format: "csv" | "json") => void;
+    onExport: (format: "csv" | "json", resultOverride?: QueryResult) => void;
     schemaContextForAi: string;
     databaseName: string | null;
     databases: string[];
@@ -2752,6 +2892,8 @@ interface ResultsAreaProps {
     isSwitchingDb: boolean;
     connectionId: string | null;
     liveResultMeta: LiveResultMeta | null;
+    onRefresh?: () => void;
+    activeTabIsExecuting?: boolean;
 }
 
 function ResultsArea({
@@ -2791,6 +2933,8 @@ function ResultsArea({
     isSwitchingDb,
     connectionId,
     liveResultMeta,
+    onRefresh,
+    activeTabIsExecuting = false,
 }: ResultsAreaProps) {
     if (isDocumentTab) {
         return (
@@ -2903,6 +3047,8 @@ function ResultsArea({
                         message={activeTab.result.error_message ?? "Unknown error"}
                         sql={activeTab.sql}
                         schemaContextForAi={schemaContextForAi}
+                        onRetry={onRefresh}
+                        isRetrying={activeTabIsExecuting}
                     />
                 ) : (
                     <div className="flex h-full min-h-0 flex-col">
@@ -2937,62 +3083,6 @@ function ResultsArea({
                             </div>
                         )}
 
-                        {/* Result info bar */}
-                        <div className="flex items-center justify-between gap-4 px-3 py-1.5 border-b border-border/20 bg-muted/20 shrink-0">
-                            <div className="flex items-center gap-2 flex-wrap">
-                                <div className="flex items-center gap-1.5">
-                                    <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
-                                    <span className="text-xs font-medium text-foreground/90">{getRowCountLabel(activeTab.result)}</span>
-                                </div>
-                                <Badge variant="outline" className="text-[10px] font-mono gap-1 border-border/40 text-muted-foreground">
-                                    <Clock className="h-2.5 w-2.5" />
-                                    {activeTab.result.execution_time_ms.toFixed(1)}ms
-                                </Badge>
-                            </div>
-
-                            {!isCommandResult(activeTab.result) && !isMultiStatementResult(activeTab.result) && (
-                                <div className="flex items-center gap-1">
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <Button variant="ghost" size="sm" className="h-6 text-xs gap-1.5 text-muted-foreground hover:text-foreground px-2"
-                                                onClick={() => {
-                                                    const r = activeTab.result!;
-                                                    const header = r.columns.map((c) => c.name).join("\t");
-                                                    const rows = r.rows.map((row) => row.map((cell) => formatCellValue(cell)).join("\t"));
-                                                    navigator.clipboard.writeText([header, ...rows].join("\n"));
-                                                    toast.success("Copied as TSV", { duration: 1500 });
-                                                }}
-                                                disabled={!hasResult}
-                                            >
-                                                <Copy className="h-3 w-3" />
-                                                Copy
-                                            </Button>
-                                        </TooltipTrigger>
-                                        <TooltipContent>Copy as TSV</TooltipContent>
-                                    </Tooltip>
-                                    <DropdownMenu>
-                                        <DropdownMenuTrigger asChild>
-                                            <Button variant="ghost" size="sm" className="h-6 text-xs gap-1.5 text-muted-foreground hover:text-foreground px-2" disabled={!hasResult}>
-                                                <Download className="h-3 w-3" />
-                                                Export
-                                                <ChevronDown className="h-3 w-3 ml-0.5" />
-                                            </Button>
-                                        </DropdownMenuTrigger>
-                                        <DropdownMenuContent align="end" className="w-44">
-                                            <DropdownMenuItem onClick={() => onExport("csv")} className="gap-2 text-xs">
-                                                <FileText className="h-3.5 w-3.5" />
-                                                Download as CSV
-                                            </DropdownMenuItem>
-                                            <DropdownMenuItem onClick={() => onExport("json")} className="gap-2 text-xs">
-                                                <Braces className="h-3.5 w-3.5" />
-                                                Download as JSON
-                                            </DropdownMenuItem>
-                                        </DropdownMenuContent>
-                                    </DropdownMenu>
-                                </div>
-                            )}
-                        </div>
-
                         {isCommandResult(activeTab.result) || isMultiStatementResult(activeTab.result) ? (
                             <div className="flex-1 flex items-center justify-center p-6">
                                 <p className="text-sm text-muted-foreground">
@@ -3002,9 +3092,17 @@ function ResultsArea({
                                 </p>
                             </div>
                         ) : (
-                            <div className="flex-1 min-h-0 overflow-hidden">
-                                <VirtualizedQueryResultTable result={activeTab.result} showRowIndex className="h-full" />
-                            </div>
+                            <QueryResultView
+                                result={activeTab.result}
+                                onExport={(format, resultOverride) => onExport(format, resultOverride)}
+                                connectionId={connectionId}
+                                editableTable={(() => {
+                                    const q = activeTab.result?.query ?? activeTab.sql ?? "";
+                                    return parseSingleTableFromSql(q);
+                                })()}
+                                onRefresh={onRefresh}
+                                className="flex-1 min-h-0"
+                            />
                         )}
                     </div>
                 )

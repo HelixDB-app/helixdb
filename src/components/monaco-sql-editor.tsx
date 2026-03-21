@@ -3,22 +3,28 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTheme } from "next-themes";
 import type { editor, IDisposable } from "monaco-editor";
-import Editor from "@monaco-editor/react";
+import Editor, { DiffEditor } from "@monaco-editor/react";
 import { cn } from "@/lib/utils";
 import { aiSuggestionEngine } from "@/lib/ai-suggestions";
+import { AI_COMMAND_MODEL_OPTIONS, runAiCommand, type AiCommandModel } from "@/lib/ai-command";
 import type { SchemaContext } from "@/lib/ai-suggestions";
 import { useSettingsStore } from "@/stores/settings-store";
 import type { SqlReviewIssue } from "@/lib/sql-review";
 import type { CollaborationSelection } from "@/lib/collaboration/types";
-import { Loader2, Sparkles, Zap } from "lucide-react";
+import { Loader2, Sparkles, Zap, X, Send, ChevronDown } from "lucide-react";
 import { explainSql, explainSelection } from "@/lib/sql-explain-ai";
 import type { SqlExplanation } from "@/lib/sql-explain-ai";
 import { InlineExplainWidget } from "@/components/inline-explain-widget";
+import { Kbd } from "@/components/ui/kbd";
+import { Button } from "@/components/ui/button";
+import { Dialog, DialogContent, DialogFooter, DialogHeader, DialogTitle } from "@/components/ui/dialog";
+import { Textarea } from "@/components/ui/textarea";
 import {
     registerLintProvider,
     type RegisteredLintProvider,
 } from "@/lib/sql-linter";
 import { readClipboardText } from "@/lib/clipboard";
+import { toast } from "sonner";
 
 const EDITOR_HEIGHT = 200;
 
@@ -41,6 +47,77 @@ const COLUMN_CONTEXT_RE = /(\w+)\.\w*$/;
 function isSubstantialQuery(sql: string): boolean {
     const t = sql.trim().toUpperCase();
     return t.length > 20 && /\b(SELECT|INSERT|UPDATE|DELETE|CREATE|DROP|ALTER|WITH)\b/.test(t);
+}
+
+function isInsideCreateTableColumns(textUntilCursor: string): boolean {
+    const lower = textUntilCursor.toLowerCase();
+    const createIdx = lower.lastIndexOf("create table");
+    if (createIdx === -1) return false;
+    const after = textUntilCursor.slice(createIdx);
+    const openIdx = after.indexOf("(");
+    if (openIdx === -1) return false;
+    const body = after.slice(openIdx + 1);
+    let depth = 1;
+    for (const ch of body) {
+        if (ch === "(") depth += 1;
+        if (ch === ")") depth -= 1;
+        if (depth === 0) return false;
+    }
+    return depth > 0;
+}
+
+function shouldTriggerDropdownAi(textUntilCursor: string, minChars: number): boolean {
+    const trimmed = textUntilCursor.trimEnd();
+    if (trimmed.length >= minChars) return true;
+    const tailToken = trimmed.match(/[A-Za-z_][A-Za-z0-9_]*$/)?.[0] ?? "";
+    if (tailToken.length >= 3) return true;
+    if (tailToken.length >= 2 && isInsideCreateTableColumns(trimmed)) return true;
+    if (/,\\s*$/.test(trimmed) && isInsideCreateTableColumns(trimmed)) return true;
+    if (/\n\s*$/.test(textUntilCursor) && isInsideCreateTableColumns(trimmed)) return true;
+    return false;
+}
+
+function shouldTriggerInlineAi(textUntilCursor: string, minChars: number): boolean {
+    const trimmed = textUntilCursor.trimEnd();
+    if (trimmed.length >= minChars) return true;
+    const tailToken = trimmed.match(/[A-Za-z_][A-Za-z0-9_]*$/)?.[0] ?? "";
+    if (tailToken.length >= 2) return true;
+    if (tailToken.length >= 1 && isInsideCreateTableColumns(trimmed)) return true;
+    if (/,\\s*$/.test(trimmed) && isInsideCreateTableColumns(trimmed)) return true;
+    if (/\n\s*$/.test(textUntilCursor)) {
+        if (isInsideCreateTableColumns(trimmed)) return true;
+        const lines = textUntilCursor.split("\n");
+        for (let i = lines.length - 2; i >= 0; i -= 1) {
+            const line = lines[i]?.trim();
+            if (!line) continue;
+            if (/[;,)]$/.test(line)) return true;
+            if (/\b(select|insert|update|delete|create|drop|alter|with)\b/i.test(line)) return true;
+            break;
+        }
+    }
+    return false;
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+    return Math.max(min, Math.min(max, value));
+}
+
+function getCommandAnchor(
+    editorInstance: editor.IStandaloneCodeEditor,
+    range: editor.IRange
+): { top: number; left: number } {
+    const domNode = editorInstance.getDomNode();
+    if (!domNode) return { top: 20, left: 20 };
+    const pos = editorInstance.getScrolledVisiblePosition({
+        lineNumber: range.startLineNumber,
+        column: range.startColumn,
+    });
+    const rect = domNode.getBoundingClientRect();
+    const rawTop = (pos?.top ?? 24) - 8;
+    const rawLeft = (pos?.left ?? 24);
+    const top = clampNumber(rawTop, 8, Math.max(8, rect.height - 180));
+    const left = clampNumber(rawLeft, 12, Math.max(12, rect.width - 440));
+    return { top, left };
 }
 
 export interface MonacoSqlEditorProps {
@@ -153,8 +230,17 @@ export function MonacoSqlEditor({
     const lastDropdownRequestRef = useRef<number>(0);
     const lastInlineRequestRef = useRef<number>(0);
     const nextActionTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const inlineTriggerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const inlineHintTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const inlineEnterTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+    const lastEnterTriggerAtRef = useRef<number>(0);
     const dropdownAbortRef = useRef<AbortController | null>(null);
     const aiPendingCountRef = useRef<number>(0);
+    const inlineTriggerReasonRef = useRef<"typing" | "newline" | "explicit">("typing");
+    const forceInlineOnceRef = useRef<boolean>(false);
+    const lastInlineCompletionRef = useRef<string>("");
+    const recentInlineCompletionsRef = useRef<string[]>([]);
+    const recentInlineRejectionsRef = useRef<string[]>([]);
     const aiConfigRef = useRef({
         aiAutocompleteEnabled,
         aiInlineSuggestions,
@@ -166,18 +252,41 @@ export function MonacoSqlEditor({
         aiShowSuggestionLatency,
     });
 
+    const aiCommandAbortRef = useRef<AbortController | null>(null);
+    const aiCommandInputRef = useRef<HTMLTextAreaElement | null>(null);
+    const aiCommandSelectionRef = useRef<editor.IRange | null>(null);
+    const aiCommandHasSelectionRef = useRef<boolean>(false);
+    const aiCommandSelectionTextRef = useRef<string>("");
+
     const [nextActions, setNextActions] = useState<string[]>([]);
     const [nextActionsLoading, setNextActionsLoading] = useState(false);
+    const [inlineHintVisible, setInlineHintVisible] = useState(false);
+    const [aiError, setAiError] = useState<{ message: string; at: number } | null>(null);
     const [liveAi, setLiveAi] = useState<{
         mode: "idle" | "inline" | "dropdown";
         latencyMs: number | null;
-        source: "cache" | "network" | "coalesced" | null;
+        source: "network" | "coalesced" | "stream" | "cache" | null;
     }>({
         mode: "idle",
         latencyMs: null,
         source: null,
     });
+    const [aiCommandOpen, setAiCommandOpen] = useState(false);
+    const [aiCommandPrompt, setAiCommandPrompt] = useState("");
+    const [aiCommandModel, setAiCommandModel] = useState<AiCommandModel>("auto");
+    const [aiCommandAnchor, setAiCommandAnchor] = useState<{ top: number; left: number } | null>(null);
+    const [aiCommandLoading, setAiCommandLoading] = useState(false);
+    const [aiCommandError, setAiCommandError] = useState<string | null>(null);
+    const [aiCommandContextLabel, setAiCommandContextLabel] = useState("Edit selection");
+    const [aiDiffOpen, setAiDiffOpen] = useState(false);
+    const [aiDiffOriginal, setAiDiffOriginal] = useState("");
+    const [aiDiffModified, setAiDiffModified] = useState("");
+    const [aiDiffRange, setAiDiffRange] = useState<editor.IRange | null>(null);
+    const [aiDiffIsFullFile, setAiDiffIsFullFile] = useState(false);
+    const [aiDiffMode, setAiDiffMode] = useState<"diff" | "edit">("diff");
+    const [aiDiffModel, setAiDiffModel] = useState<string | null>(null);
     const [aiRequestInFlight, setAiRequestInFlight] = useState(false);
+    const lastAiErrorToastRef = useRef<number>(0);
 
     // ── Inline Explain Widget state ──────────────────────────────────────────
     const [explainState, setExplainState] = useState<{
@@ -204,6 +313,72 @@ export function MonacoSqlEditor({
         aiPendingCountRef.current = Math.max(0, aiPendingCountRef.current - 1);
         setAiRequestInFlight(aiPendingCountRef.current > 0);
     }, []);
+
+    const showInlineHint = useCallback(() => {
+        setInlineHintVisible(true);
+        if (inlineHintTimerRef.current) clearTimeout(inlineHintTimerRef.current);
+        inlineHintTimerRef.current = setTimeout(() => setInlineHintVisible(false), 2600);
+    }, []);
+
+    const scheduleEnterInlineSuggest = useCallback((editorInstance: editor.IStandaloneCodeEditor) => {
+        const now = Date.now();
+        if (now - lastEnterTriggerAtRef.current < 120) return;
+        lastEnterTriggerAtRef.current = now;
+        inlineTriggerReasonRef.current = "newline";
+        forceInlineOnceRef.current = true;
+        if (inlineEnterTimerRef.current) clearTimeout(inlineEnterTimerRef.current);
+        inlineEnterTimerRef.current = setTimeout(() => {
+            editorInstance.trigger("keyboard", "editor.action.inlineSuggest.trigger", { explicit: true });
+        }, 60);
+    }, []);
+
+    const hideInlineHint = useCallback(() => {
+        if (inlineHintTimerRef.current) clearTimeout(inlineHintTimerRef.current);
+        inlineHintTimerRef.current = null;
+        setInlineHintVisible(false);
+    }, []);
+
+    const reportAiError = useCallback((message: string) => {
+        const now = Date.now();
+        setAiError({ message, at: now });
+        if (now - lastAiErrorToastRef.current > 3000) {
+            toast.error("AI suggestions failed", {
+                description: message,
+            });
+            lastAiErrorToastRef.current = now;
+        }
+    }, []);
+
+    const clearAiError = useCallback(() => {
+        setAiError(null);
+    }, []);
+
+    const pushRecentInlineCompletion = useCallback((text: string) => {
+        const trimmed = text.trim();
+        if (!trimmed) return;
+        const list = recentInlineCompletionsRef.current;
+        if (list[list.length - 1] === trimmed) return;
+        list.push(trimmed);
+        if (list.length > 4) list.shift();
+        recentInlineCompletionsRef.current = list;
+    }, []);
+
+    const pushRecentInlineRejection = useCallback((text: string) => {
+        const trimmed = text.trim();
+        if (!trimmed) return;
+        const list = recentInlineRejectionsRef.current;
+        if (list[list.length - 1] === trimmed) return;
+        list.push(trimmed);
+        if (list.length > 4) list.shift();
+        recentInlineRejectionsRef.current = list;
+    }, []);
+
+    const showInlineHintRef = useRef(showInlineHint);
+    const hideInlineHintRef = useRef(hideInlineHint);
+    const pushRecentInlineCompletionRef = useRef(pushRecentInlineCompletion);
+    const pushRecentInlineRejectionRef = useRef(pushRecentInlineRejection);
+    const reportAiErrorRef = useRef(reportAiError);
+    const clearAiErrorRef = useRef(clearAiError);
 
     /** Get the screen-space rect for the cursor position in the editor. */
     const getAnchorRect = useCallback((): DOMRect | null => {
@@ -279,10 +454,141 @@ export function MonacoSqlEditor({
 
     const triggerExplainRef = useRef(triggerExplain);
 
+    const openAiCommand = useCallback(() => {
+        const editorInstance = editorRef.current;
+        if (!editorInstance || disabledRef.current) return;
+        const model = editorInstance.getModel();
+        if (!model) return;
+        const selection = editorInstance.getSelection();
+        const hasSelection = !!selection && !selection.isEmpty();
+        const range = hasSelection && selection ? selection : model.getFullModelRange();
+        const selectionText = hasSelection && selection ? model.getValueInRange(selection) : "";
+        editorInstance.revealRangeInCenterIfOutsideViewport(range);
+        aiCommandSelectionRef.current = range;
+        aiCommandHasSelectionRef.current = hasSelection;
+        aiCommandSelectionTextRef.current = selectionText;
+        setAiCommandContextLabel(hasSelection ? "Edit selection" : "Edit file");
+        setAiCommandAnchor(getCommandAnchor(editorInstance, range));
+        setAiCommandOpen(true);
+        setAiCommandError(null);
+        setTimeout(() => aiCommandInputRef.current?.focus(), 0);
+    }, []);
+
+    const closeAiCommand = useCallback(() => {
+        aiCommandAbortRef.current?.abort();
+        aiCommandAbortRef.current = null;
+        setAiCommandOpen(false);
+        setAiCommandPrompt("");
+        setAiCommandError(null);
+        setAiCommandLoading(false);
+    }, []);
+
+    const runAiCommandRequest = useCallback(async () => {
+        if (aiCommandLoading) return;
+        if (!aiCommandPrompt.trim()) {
+            setAiCommandError("Add an instruction to run.");
+            return;
+        }
+        const editorInstance = editorRef.current;
+        if (!editorInstance) return;
+        const model = editorInstance.getModel();
+        if (!model) return;
+        const range = aiCommandSelectionRef.current ?? model.getFullModelRange();
+        const hasSelection = aiCommandHasSelectionRef.current;
+        const selectionText = hasSelection ? aiCommandSelectionTextRef.current : undefined;
+        const fullText = model.getValue();
+        const startOffset = model.getOffsetAt({
+            lineNumber: range.startLineNumber,
+            column: range.startColumn,
+        });
+        const endOffset = model.getOffsetAt({
+            lineNumber: range.endLineNumber,
+            column: range.endColumn,
+        });
+
+        aiCommandAbortRef.current?.abort();
+        const abort = new AbortController();
+        aiCommandAbortRef.current = abort;
+        setAiCommandLoading(true);
+        setAiCommandError(null);
+
+        try {
+            const { text, modelUsed } = await runAiCommand({
+                instruction: aiCommandPrompt,
+                fullText,
+                selectionText,
+                selectionStart: startOffset,
+                selectionEnd: endOffset,
+                language: "SQL",
+                model: aiCommandModel,
+                signal: abort.signal,
+                maxContextChars: Math.max(4000, aiConfigRef.current.aiSuggestionContextWindowChars * 6),
+            });
+
+            if (abort.signal.aborted) return;
+            const output = text.trim();
+            if (!output) {
+                setAiCommandError("AI returned an empty response.");
+                return;
+            }
+
+            const original = selectionText ?? fullText;
+            setAiDiffOriginal(original);
+            setAiDiffModified(output);
+            setAiDiffRange(range);
+            setAiDiffIsFullFile(!hasSelection);
+            setAiDiffMode("diff");
+            setAiDiffModel(modelUsed);
+            setAiDiffOpen(true);
+            setAiCommandOpen(false);
+            setAiCommandPrompt("");
+            setAiCommandError(null);
+        } catch (err) {
+            if (abort.signal.aborted) return;
+            const msg =
+                typeof err === "object" && err && "userMessage" in err && typeof (err as { userMessage?: unknown }).userMessage === "string"
+                    ? String((err as { userMessage?: unknown }).userMessage)
+                    : err instanceof Error
+                        ? err.message
+                        : "AI command failed.";
+            setAiCommandError(msg);
+            toast.error("AI command failed", { description: msg });
+        } finally {
+            if (!abort.signal.aborted) {
+                setAiCommandLoading(false);
+            }
+        }
+    }, [aiCommandLoading, aiCommandModel, aiCommandPrompt]);
+
+    const acceptAiDiff = useCallback(() => {
+        const editorInstance = editorRef.current;
+        if (!editorInstance) return;
+        const model = editorInstance.getModel();
+        if (!model) return;
+        const range = aiDiffRange ?? model.getFullModelRange();
+        const replacement = aiDiffModified;
+        editorInstance.executeEdits("ai-command", [
+            {
+                range: aiDiffIsFullFile ? model.getFullModelRange() : range,
+                text: replacement,
+                forceMoveMarkers: true as const,
+            },
+        ]);
+        onChangeRef.current(model.getValue());
+        setAiDiffOpen(false);
+        setAiDiffRange(null);
+    }, [aiDiffIsFullFile, aiDiffModified, aiDiffRange]);
+
     // Keep refs current
     useEffect(() => { triggerExplainRef.current = triggerExplain; }, [triggerExplain]);
     useEffect(() => { onExecuteRef.current = onExecute; }, [onExecute]);
     useEffect(() => { onReviewRef.current = onReview; }, [onReview]);
+    useEffect(() => { showInlineHintRef.current = showInlineHint; }, [showInlineHint]);
+    useEffect(() => { hideInlineHintRef.current = hideInlineHint; }, [hideInlineHint]);
+    useEffect(() => { pushRecentInlineCompletionRef.current = pushRecentInlineCompletion; }, [pushRecentInlineCompletion]);
+    useEffect(() => { pushRecentInlineRejectionRef.current = pushRecentInlineRejection; }, [pushRecentInlineRejection]);
+    useEffect(() => { reportAiErrorRef.current = reportAiError; }, [reportAiError]);
+    useEffect(() => { clearAiErrorRef.current = clearAiError; }, [clearAiError]);
     useEffect(() => {
         schemaContextRef.current = schemaContext;
         lintProviderRef.current?.trigger();
@@ -315,6 +621,23 @@ export function MonacoSqlEditor({
         aiSuggestionContextWindowChars,
         aiShowSuggestionLatency,
     ]);
+    useEffect(() => {
+        if (!aiAutocompleteEnabled || !aiInlineSuggestions || disabled) {
+            hideInlineHint();
+        }
+    }, [aiAutocompleteEnabled, aiInlineSuggestions, disabled, hideInlineHint]);
+
+    useEffect(() => {
+        if (!aiCommandOpen) return;
+        const handler = (e: KeyboardEvent) => {
+            if (e.key === "Escape") {
+                e.preventDefault();
+                closeAiCommand();
+            }
+        };
+        window.addEventListener("keydown", handler);
+        return () => window.removeEventListener("keydown", handler);
+    }, [aiCommandOpen, closeAiCommand]);
 
     // Dispose providers on unmount
     useEffect(() => {
@@ -323,6 +646,9 @@ export function MonacoSqlEditor({
             disposablesRef.current = [];
             lintProviderRef.current = null;
             dropdownAbortRef.current?.abort();
+            if (inlineTriggerTimerRef.current) clearTimeout(inlineTriggerTimerRef.current);
+            if (inlineHintTimerRef.current) clearTimeout(inlineHintTimerRef.current);
+            if (inlineEnterTimerRef.current) clearTimeout(inlineEnterTimerRef.current);
             const editorInstance = editorRef.current;
             if (editorInstance) {
                 for (const widget of Object.values(collaboratorWidgetsRef.current)) {
@@ -721,7 +1047,7 @@ export function MonacoSqlEditor({
                         endColumn: position.column,
                     });
 
-                    if (textUntilCursor.trim().length < cfg.aiSuggestionMinChars) {
+                    if (!shouldTriggerDropdownAi(textUntilCursor, cfg.aiSuggestionMinChars)) {
                         return { suggestions: [] };
                     }
 
@@ -756,6 +1082,11 @@ export function MonacoSqlEditor({
                             latencyMs: result.telemetry.latencyMs,
                             source: result.telemetry.source,
                         });
+                        if (result.error) {
+                            reportAiErrorRef.current(result.error);
+                        } else {
+                            clearAiErrorRef.current();
+                        }
 
                         return {
                             suggestions: result.suggestions.map((text, i) => ({
@@ -787,7 +1118,7 @@ export function MonacoSqlEditor({
                 provideInlineCompletions: async (
                     model: editor.ITextModel,
                     position: { lineNumber: number; column: number },
-                    _context: unknown,
+                    context: { triggerKind?: number } | undefined,
                     token: { isCancellationRequested: boolean; onCancellationRequested: (cb: () => void) => void }
                 ) => {
                     const cfg = aiConfigRef.current;
@@ -795,20 +1126,28 @@ export function MonacoSqlEditor({
                         return { items: [] };
                     }
 
+                    const isExplicit =
+                        context?.triggerKind ===
+                        (monacoInstance.languages as any).InlineCompletionTriggerKind?.Explicit;
+                    const triggerReason = inlineTriggerReasonRef.current;
+                    inlineTriggerReasonRef.current = "typing";
+                    const preferSingleLine = triggerReason === "newline" ? true : !isExplicit;
+
+                    const forceInline = forceInlineOnceRef.current;
+                    if (forceInline) forceInlineOnceRef.current = false;
+
                     const now = Date.now();
-                    if (now - lastInlineRequestRef.current < cfg.aiSuggestionThrottleMs) {
+                    const throttleMs = isExplicit || forceInline ? 0 : Math.max(80, Math.min(cfg.aiSuggestionThrottleMs, 180));
+                    if (!isExplicit && !forceInline && now - lastInlineRequestRef.current < throttleMs) {
                         return { items: [] };
                     }
                     lastInlineRequestRef.current = now;
 
-                    const textUntilCursor = model.getValueInRange({
-                        startLineNumber: 1,
-                        startColumn: 1,
-                        endLineNumber: position.lineNumber,
-                        endColumn: position.column,
-                    });
+                    const fullSql = model.getValue();
+                    const cursorOffset = model.getOffsetAt(position);
+                    const textUntilCursor = fullSql.slice(0, cursorOffset);
 
-                    if (textUntilCursor.trim().length < cfg.aiSuggestionMinChars) {
+                    if (!isExplicit && !forceInline && !shouldTriggerInlineAi(textUntilCursor, cfg.aiSuggestionMinChars)) {
                         return { items: [] };
                     }
 
@@ -818,24 +1157,48 @@ export function MonacoSqlEditor({
 
                     beginAiRequest();
                     try {
-                        const result = await aiSuggestionEngine.getInlineCompletionWithTelemetry(
-                            textUntilCursor,
-                            ctx,
-                            {
-                                signal: abortController.signal,
-                                contextWindowChars: cfg.aiSuggestionContextWindowChars,
-                            }
-                        );
+                        const result = await aiSuggestionEngine.getInlineCompletionWithTelemetry(textUntilCursor, ctx, {
+                            signal: abortController.signal,
+                            contextWindowChars: cfg.aiSuggestionContextWindowChars,
+                            fullSql,
+                            cursorOffset,
+                            preferSingleLine,
+                            recentCompletions: recentInlineCompletionsRef.current,
+                            recentRejections: recentInlineRejectionsRef.current,
+                        });
+
+                        if (result.error) {
+                            reportAiErrorRef.current(result.error);
+                        } else {
+                            clearAiErrorRef.current();
+                        }
 
                         if (!result.completion || token.isCancellationRequested || abortController.signal.aborted) {
                             return { items: [] };
                         }
 
+                        lastInlineCompletionRef.current = result.completion;
                         setLiveAi({
                             mode: "inline",
                             latencyMs: result.telemetry.latencyMs,
                             source: result.telemetry.source,
                         });
+
+                        showInlineHintRef.current();
+                        const hintStyle = (monacoInstance.languages as any).InlineCompletionHintStyle?.Label;
+                        const hint = hintStyle
+                            ? {
+                                range: {
+                                    startLineNumber: position.lineNumber,
+                                    startColumn: position.column,
+                                    endLineNumber: position.lineNumber,
+                                    endColumn: position.column,
+                                },
+                                style: hintStyle,
+                                content: "Tab to accept",
+                                jumpToEdit: false,
+                            }
+                            : undefined;
 
                         return {
                             items: [
@@ -847,8 +1210,10 @@ export function MonacoSqlEditor({
                                         endLineNumber: position.lineNumber,
                                         endColumn: position.column,
                                     },
+                                    hint,
                                 },
                             ],
+                            enableForwardStability: true,
                         };
                     } catch {
                         return { items: [] };
@@ -857,6 +1222,8 @@ export function MonacoSqlEditor({
                     }
                 },
                 freeInlineCompletions: () => { },
+                // Some Monaco builds call disposeInlineCompletions instead.
+                disposeInlineCompletions: () => { },
             });
 
             disposablesRef.current.push(schemaProvider, aiDropdownProvider);
@@ -901,11 +1268,12 @@ export function MonacoSqlEditor({
 
             editorInstance.addAction({
                 id: "format-sql",
-                label: "Format SQL",
+                label: "Format SQL (collapsed)",
+                // Match FORMAT_SQL_KEY_COMBO in @/lib/format-sql
                 keybindings: [
                     monacoInstance.KeyMod.Shift |
-                    monacoInstance.KeyMod.Alt |
-                    monacoInstance.KeyCode.KeyF,
+                        monacoInstance.KeyMod.Alt |
+                        monacoInstance.KeyCode.KeyF,
                 ],
                 run: () => {
                     const current = editorInstance.getValue();
@@ -939,6 +1307,32 @@ export function MonacoSqlEditor({
                     editorInstance.trigger("keyboard", "editor.action.inlineSuggest.trigger", {});
                 },
             });
+
+            editorInstance.addAction({
+                id: "accept-next-ai-line",
+                label: "Accept Next AI Line",
+                keybindings: [monacoInstance.KeyMod.Alt | monacoInstance.KeyCode.DownArrow],
+                run: () => {
+                    editorInstance.trigger("keyboard", "editor.action.inlineSuggest.acceptNextLine", {});
+                },
+            });
+
+            const scheduleInlineSuggest = () => {
+                const cfg = aiConfigRef.current;
+                if (!cfg.aiAutocompleteEnabled || !cfg.aiInlineSuggestions || disabledRef.current) return;
+                const model = editorInstance.getModel();
+                const position = editorInstance.getPosition();
+                if (!model || !position) return;
+                const fullSql = model.getValue();
+                const cursorOffset = model.getOffsetAt(position);
+                const textUntilCursor = fullSql.slice(0, cursorOffset);
+                if (!shouldTriggerInlineAi(textUntilCursor, cfg.aiSuggestionMinChars)) return;
+                if (inlineTriggerTimerRef.current) clearTimeout(inlineTriggerTimerRef.current);
+                const delay = Math.max(80, Math.min(cfg.aiSuggestionThrottleMs, 180));
+                inlineTriggerTimerRef.current = setTimeout(() => {
+                    editorInstance.trigger("keyboard", "editor.action.inlineSuggest.trigger", { explicit: false });
+                }, delay);
+            };
 
             // ── AI Explain Query actions ─────────────────────────────────────
             editorInstance.addAction({
@@ -1000,6 +1394,66 @@ export function MonacoSqlEditor({
                     });
                 },
             });
+
+            editorInstance.addAction({
+                id: "ai-command-palette",
+                label: "✦ AI Command (Edit Selection)",
+                keybindings: [monacoInstance.KeyMod.CtrlCmd | monacoInstance.KeyCode.KeyK],
+                contextMenuGroupId: "1_modification",
+                contextMenuOrder: 1.4,
+                run: () => {
+                    if (disabledRef.current) return;
+                    openAiCommand();
+                },
+            });
+
+            const inlineContentDisposable = editorInstance.onDidChangeModelContent((e) => {
+                scheduleInlineSuggest();
+                hideInlineHintRef.current();
+                const insertedText = e.changes.map((c) => c.text).join("");
+                if (insertedText.includes("\n")) {
+                    scheduleEnterInlineSuggest(editorInstance);
+                }
+                const lastCompletion = lastInlineCompletionRef.current;
+                if (!lastCompletion) return;
+                const inserted = e.changes.map((c) => c.text).join("");
+                if (!/[A-Za-z0-9]/.test(inserted)) return;
+                const matches =
+                    lastCompletion.startsWith(inserted) || inserted.startsWith(lastCompletion);
+                if (matches) {
+                    if (inserted.length >= 3) {
+                        pushRecentInlineCompletionRef.current(inserted);
+                    }
+                    lastInlineCompletionRef.current = "";
+                    if (inserted.length >= 3) {
+                        setTimeout(() => {
+                            editorInstance.trigger("keyboard", "editor.action.inlineSuggest.trigger", { explicit: false });
+                        }, 80);
+                    }
+                } else {
+                    pushRecentInlineRejectionRef.current(lastCompletion);
+                    lastInlineCompletionRef.current = "";
+                }
+            });
+            const inlineTypeDisposable = editorInstance.onDidType((text) => {
+                if (text === "\n" || text === "\r\n") {
+                    scheduleEnterInlineSuggest(editorInstance);
+                    setTimeout(() => {
+                        if (inlineTriggerReasonRef.current === "newline") {
+                            inlineTriggerReasonRef.current = "typing";
+                        }
+                    }, 500);
+                }
+            });
+            const inlineCursorDisposable = editorInstance.onDidChangeCursorPosition(() => {
+                hideInlineHintRef.current();
+            });
+            const inlineBlurDisposable = editorInstance.onDidBlurEditorText?.(() => {
+                hideInlineHintRef.current();
+            });
+
+            disposablesRef.current.push(inlineContentDisposable, inlineTypeDisposable, inlineCursorDisposable);
+            if (inlineBlurDisposable) disposablesRef.current.push(inlineBlurDisposable);
 
             // Custom paste (Cmd+V / Ctrl+V): read clipboard, insert at cursor, sync to parent.
             // Ensures paste works when default paste is blocked (e.g. Tauri before native Edit menu).
@@ -1090,7 +1544,7 @@ export function MonacoSqlEditor({
                 editorInstance.trigger("external", actionId, null);
             });
         },
-        [] // Using refs for all callbacks to avoid stale closures in handleEditorDidMount
+        [scheduleEnterInlineSuggest, openAiCommand] // Using refs for all callbacks (except Enter scheduling) to avoid stale closures
     );
 
     return (
@@ -1180,11 +1634,121 @@ export function MonacoSqlEditor({
                         // Enable inline ghost-text (Copilot-style Tab-to-accept)
                         inlineSuggest: {
                             enabled: aiAutocompleteEnabled && aiInlineSuggestions && !disabled,
-                            mode: "prefix",
+                            mode: "subwordSmart",
                             suppressSuggestions: true,
+                            showToolbar: "always",
+                            minShowDelay: 0,
                         },
                     }}
                 />
+                {aiCommandOpen && aiCommandAnchor && (
+                    <div
+                        className="absolute inset-0 z-40"
+                        onMouseDown={(e) => {
+                            if ((e.target as HTMLElement).closest("[data-ai-command]")) return;
+                            closeAiCommand();
+                        }}
+                    >
+                        <div
+                            data-ai-command
+                            className={cn(
+                                "absolute w-[360px] rounded-lg border border-border/35 bg-background/85",
+                                "shadow-lg backdrop-blur-xl overflow-hidden",
+                                "animate-in fade-in-0 zoom-in-95"
+                            )}
+                            style={{ top: aiCommandAnchor.top, left: aiCommandAnchor.left }}
+                            onMouseDown={(e) => e.stopPropagation()}
+                        >
+                            <div className="flex items-center justify-between px-2.5 py-1.5 border-b border-border/30 bg-muted/15">
+                                <div className="flex items-center gap-2">
+                                    <span className="text-[10.5px] font-semibold text-foreground/80">AI Command</span>
+                                    <span className="text-[9.5px] text-muted-foreground/70">{aiCommandContextLabel}</span>
+                                </div>
+                                <button
+                                    className="rounded-md p-1 text-muted-foreground/70 hover:text-foreground hover:bg-muted/40 transition"
+                                    onClick={closeAiCommand}
+                                    aria-label="Close"
+                                >
+                                    <X className="h-3.5 w-3.5" />
+                                </button>
+                            </div>
+                            <div className="p-2.5 space-y-2.5">
+                                <Textarea
+                                    ref={aiCommandInputRef}
+                                    value={aiCommandPrompt}
+                                    onChange={(e) => setAiCommandPrompt(e.target.value)}
+                                    onKeyDown={(e) => {
+                                        if ((e.metaKey || e.ctrlKey) && e.key === "Enter") {
+                                            e.preventDefault();
+                                            runAiCommandRequest();
+                                        }
+                                    }}
+                                    placeholder="Describe the change you want..."
+                                    rows={3}
+                                    className="resize-none bg-background/60 border-border/50 text-xs font-mono leading-relaxed"
+                                />
+                                {aiCommandError && (
+                                    <div className="text-[10px] text-red-400 bg-red-500/10 border border-red-500/20 rounded px-2 py-1">
+                                        {aiCommandError}
+                                    </div>
+                                )}
+                                <div className="flex items-center justify-between gap-2">
+                                    <div className="relative flex items-center">
+                                        <select
+                                            value={aiCommandModel}
+                                            onChange={(e) => setAiCommandModel(e.target.value as AiCommandModel)}
+                                            className="h-7 appearance-none rounded-md border border-border/50 bg-background/60 pl-2 pr-6 text-[10px] font-medium text-foreground/80 focus:outline-none focus:ring-1 focus:ring-primary/40"
+                                        >
+                                            {AI_COMMAND_MODEL_OPTIONS.map((opt) => (
+                                                <option key={opt.id} value={opt.id}>
+                                                    {opt.label}
+                                                </option>
+                                            ))}
+                                        </select>
+                                        <ChevronDown className="pointer-events-none absolute right-1.5 h-3.5 w-3.5 text-muted-foreground/70" />
+                                    </div>
+                                    <Button
+                                        size="sm"
+                                        className="h-7 gap-1.5 text-xs"
+                                        onClick={runAiCommandRequest}
+                                        disabled={aiCommandLoading}
+                                    >
+                                        {aiCommandLoading ? (
+                                            <Loader2 className="h-4 w-4 animate-spin" />
+                                        ) : (
+                                            <Send className="h-3.5 w-3.5" />
+                                        )}
+                                        {aiCommandLoading ? "Working..." : "Run"}
+                                    </Button>
+                                </div>
+                                <div className="flex items-center gap-2 text-[9.5px] text-muted-foreground/60">
+                                    <Kbd className="h-4 px-1 text-[9px]">⌘</Kbd>
+                                    <span>+</span>
+                                    <Kbd className="h-4 px-1 text-[9px]">Enter</Kbd>
+                                    <span>to run</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                )}
+                {aiAutocompleteEnabled && aiInlineSuggestions && !disabled && inlineHintVisible && (
+                    <div className="pointer-events-none absolute right-3 bottom-3 z-20 transition-opacity duration-200">
+                        <div className="inline-flex items-center gap-1.5 rounded-full border border-border/40 bg-background/70 px-2 py-1 text-[10px] font-medium text-muted-foreground shadow-sm backdrop-blur-md">
+                            <Kbd className="h-4 px-1 text-[9px]">Tab</Kbd>
+                            <span>accept</span>
+                            <span className="text-muted-foreground/50">•</span>
+                            <Kbd className="h-4 px-1 text-[9px]">Alt</Kbd>
+                            <span className="text-muted-foreground/50">+</span>
+                            <Kbd className="h-4 px-1 text-[9px]">→</Kbd>
+                            <span>word</span>
+                            <span className="text-muted-foreground/50">•</span>
+                            <Kbd className="h-4 px-1 text-[9px]">Alt</Kbd>
+                            <span className="text-muted-foreground/50">+</span>
+                            <Kbd className="h-4 px-1 text-[9px]">↓</Kbd>
+                            <span>line</span>
+                        </div>
+                    </div>
+                )}
                 {aiAutocompleteEnabled && aiShowSuggestionLatency && !disabled && (
                     <div className="pointer-events-none absolute right-3 top-3 z-20 transition-opacity duration-300" style={{ opacity: liveAi.mode === "idle" && !aiRequestInFlight ? 0.4 : 0.9 }}>
                         <div
@@ -1210,6 +1774,14 @@ export function MonacoSqlEditor({
                             {liveAi.source && liveAi.source !== "network" && (
                                 <span className="rounded-full bg-emerald-500/15 px-1.5 py-px text-[8px] font-semibold uppercase tracking-wider text-emerald-400">
                                     {liveAi.source}
+                                </span>
+                            )}
+                            {aiError && (
+                                <span
+                                    className="rounded-full bg-red-500/15 px-1.5 py-px text-[8px] font-semibold uppercase tracking-wider text-red-400"
+                                    title={aiError.message}
+                                >
+                                    AI error
                                 </span>
                             )}
                         </div>
@@ -1263,6 +1835,76 @@ export function MonacoSqlEditor({
                             ))}
                     </div>
                 )}
+
+            <Dialog
+                open={aiDiffOpen}
+                onOpenChange={(open) => {
+                    setAiDiffOpen(open);
+                    if (!open) setAiDiffMode("diff");
+                }}
+            >
+                <DialogContent className="max-w-5xl w-[88vw] max-h-[82vh] flex flex-col gap-2.5">
+                    <DialogHeader>
+                        <DialogTitle className="flex items-center justify-between text-sm">
+                            <span>AI Suggested Changes</span>
+                            {aiDiffModel && (
+                                <span className="text-[10px] font-mono text-muted-foreground/60">
+                                    {aiDiffModel}
+                                </span>
+                            )}
+                        </DialogTitle>
+                    </DialogHeader>
+                    {aiDiffMode === "edit" && (
+                        <div className="rounded-lg border border-border/40 bg-muted/20 p-2">
+                            <Textarea
+                                value={aiDiffModified}
+                                onChange={(e) => setAiDiffModified(e.target.value)}
+                                rows={6}
+                                className="resize-none text-xs font-mono bg-background/60 border-border/40 leading-relaxed"
+                            />
+                        </div>
+                    )}
+                    <div className="flex-1 rounded-lg overflow-hidden border border-border/40">
+                        <DiffEditor
+                            original={aiDiffOriginal}
+                            modified={aiDiffModified}
+                            language="sql"
+                            theme={monacoTheme}
+                            height="100%"
+                            options={{
+                                readOnly: true,
+                                renderSideBySide: true,
+                                minimap: { enabled: false },
+                                renderOverviewRuler: false,
+                                scrollBeyondLastLine: false,
+                                renderLineHighlight: "none",
+                                fontSize: editorFontSize,
+                                fontFamily: "var(--font-mono), 'JetBrains Mono', 'Fira Code', ui-monospace, monospace",
+                            }}
+                        />
+                    </div>
+                    <DialogFooter className="flex items-center justify-between">
+                        <div className="text-[10px] text-muted-foreground/70">
+                            {aiDiffIsFullFile ? "Applying to full file" : "Applying to selection"}
+                        </div>
+                        <div className="flex items-center gap-2">
+                            <Button
+                                variant="ghost"
+                                size="sm"
+                                onClick={() => setAiDiffMode(aiDiffMode === "edit" ? "diff" : "edit")}
+                            >
+                                {aiDiffMode === "edit" ? "Preview" : "Edit"}
+                            </Button>
+                            <Button variant="outline" size="sm" onClick={() => setAiDiffOpen(false)}>
+                                Reject
+                            </Button>
+                            <Button size="sm" onClick={acceptAiDiff}>
+                                Accept
+                            </Button>
+                        </div>
+                    </DialogFooter>
+                </DialogContent>
+            </Dialog>
         </div>
     );
 }

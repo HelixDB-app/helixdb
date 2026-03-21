@@ -6,6 +6,8 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { explainQueryErrorWithAI } from "@/lib/query-error-ai";
 import { AIError } from "@/lib/ai-chat-engine";
+import { isDbInfrastructureError } from "@/lib/db-errors";
+import { DbInfrastructureErrorState } from "@/components/db-infrastructure-error-state";
 
 function extractObjectName(raw: string, prefix: string): string | null {
     const lower = raw.toLowerCase();
@@ -88,9 +90,12 @@ export interface QueryErrorPanelProps {
     message: string;
     sql?: string;
     schemaContextForAi?: string;
+    /** Re-run the current query (shown for connection / transport failures). */
+    onRetry?: () => void;
+    isRetrying?: boolean;
 }
 
-export function QueryErrorPanel({ message, sql, schemaContextForAi }: QueryErrorPanelProps) {
+export function QueryErrorPanel({ message, sql, schemaContextForAi, onRetry, isRetrying }: QueryErrorPanelProps) {
     const [copied, setCopied] = useState(false);
     const [showTechnical, setShowTechnical] = useState(false);
     const [aiExplanation, setAiExplanation] = useState<string | null>(null);
@@ -115,6 +120,28 @@ export function QueryErrorPanel({ message, sql, schemaContextForAi }: QueryError
             setAiLoading(false);
         }
     }, [sql, message, schemaContextForAi]);
+
+    if (isDbInfrastructureError(message)) {
+        const infraExplain = explainQueryError(message);
+        return (
+            <div className="flex h-full min-h-0 flex-col animate-in fade-in slide-in-from-bottom-2 duration-200">
+                <DbInfrastructureErrorState
+                    className="flex-1"
+                    headline="Couldn’t reach the database"
+                    description={
+                        infraExplain?.summary ??
+                        "Your app couldn’t complete the request to PostgreSQL. Check the server, network, and credentials, then try again."
+                    }
+                    hint={infraExplain?.fix}
+                    technicalMessage={message}
+                    onRetry={onRetry}
+                    isRetrying={isRetrying}
+                    retryLabel="Retry query"
+                    compact
+                />
+            </div>
+        );
+    }
 
     return (
         <div className="flex flex-col h-full overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200">

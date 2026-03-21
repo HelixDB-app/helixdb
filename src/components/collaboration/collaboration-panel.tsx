@@ -654,23 +654,23 @@ export function CollaborationPanel({ connectionId, className }: CollaborationPan
                             </Button>
                             <Button
                                 size="sm"
-                                variant={localCameraEnabled ? "default" : "outline"}
+                                variant="outline"
                                 className="h-7 gap-1.5 px-2 text-[10px]"
-                                disabled={!mediaSupport.getUserMedia}
-                                onClick={() => void setLocalCameraEnabled(!localCameraEnabled)}
+                                //   onClick={() => void setLocalCameraEnabled(!localCameraEnabled)}
+                                onClick={() => toast.info("Coming soon", { description: "Camera is not available yet." })}
                             >
-                                {localCameraEnabled ? <Video className="h-3 w-3" /> : <VideoOff className="h-3 w-3" />}
-                                {localCameraEnabled ? "Cam on" : "Cam off"}
+                                <VideoOff className="h-3 w-3" />
+                                Cam off
                             </Button>
                             <Button
                                 size="sm"
-                                variant={localScreenEnabled ? "default" : "outline"}
+                                variant="outline"
                                 className="h-7 gap-1.5 px-2 text-[10px]"
-                                disabled={!mediaSupport.getDisplayMedia}
-                                onClick={() => void setLocalScreenEnabled(!localScreenEnabled)}
+                                //   onClick={() => void setLocalScreenEnabled(!localScreenEnabled)}
+                                onClick={() => toast.info("Coming soon", { description: "Screen share is not available yet." })}
                             >
-                                {localScreenEnabled ? <MonitorUp className="h-3 w-3" /> : <MonitorX className="h-3 w-3" />}
-                                {localScreenEnabled ? "Sharing" : "Share"}
+                                <MonitorX className="h-3 w-3" />
+                                Share
                             </Button>
                         </div>
                         {/* {showMediaHelp && (

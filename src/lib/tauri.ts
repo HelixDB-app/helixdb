@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
     ConnectionResponse,
     ConnectionEnvironment,
+    SshTunnelConfig,
     CreateDatabaseRoleRequest,
     CreateDatabaseUserRequest,
     SchemaInfo,
@@ -47,14 +48,16 @@ import type {
 import type { ExportRequest, ExportResult } from "./export-types";
 import type { SchemaProject } from "./schema-designer-types";
 
-/** Connect to a PostgreSQL database. Pass optional connectionId (e.g. saved connection id) to reuse it. */
+/** Connect to a PostgreSQL database. Pass optional connectionId (e.g. saved connection id) to reuse it. Pass optional sshTunnel to connect via SSH tunnel. */
 export async function dbConnect(
     connectionString: string,
-    connectionId?: string | null
+    connectionId?: string | null,
+    sshTunnel?: SshTunnelConfig | null
 ): Promise<ConnectionResponse> {
     return invoke<ConnectionResponse>("db_connect", {
         connectionString,
         connectionId: connectionId ?? undefined,
+        sshTunnel: sshTunnel ?? undefined,
     });
 }
 
@@ -245,6 +248,14 @@ export async function dbLintSql(
         sql,
         schemaContext: schemaContext ?? null,
     });
+}
+
+/** POST JSON to the SQL AI worker (Tauri only). Avoids WebView fetch/CORS edge cases on desktop. */
+export async function aiSuggestionsWorkerPost(
+    url: string,
+    body: Record<string, unknown>
+): Promise<string> {
+    return invoke<string>("ai_suggestions_worker_post", { url, body });
 }
 
 /** Export database to SQL file. Progress via "db-export-progress" event. */

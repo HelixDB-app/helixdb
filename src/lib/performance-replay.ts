@@ -60,7 +60,7 @@ export async function buildPerformanceReplayBundle(args: {
     createdAtMs: Date.now(),
     app: { name: APP_NAME, version: APP_VERSION },
     query: {
-      id: args.summary.id,
+      id: String(args.summary.id),
       executedAtMs: args.summary.executed_at ?? undefined,
       environment: args.summary.environment ?? null,
       queryType: args.summary.query_type ?? null,
@@ -74,8 +74,8 @@ export async function buildPerformanceReplayBundle(args: {
       raw: explainRaw,
     },
     notes: {
-      userNote: args.detail?.note ?? null,
-      aiAnalysis: (args.detail as unknown as { ai_analysis?: unknown } | undefined)?.ai_analysis ?? null,
+      userNote: args.detail?.item.note ?? args.summary.note ?? null,
+      aiAnalysis: args.detail?.ai_analysis ?? null,
     },
     detail: args.detail,
   };

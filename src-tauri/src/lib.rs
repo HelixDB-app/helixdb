@@ -1,4 +1,5 @@
 mod account_security_storage;
+mod ai_suggestions_worker;
 mod auth;
 mod commands;
 mod connections_storage;
@@ -11,16 +12,15 @@ mod local_postgres;
 mod notes_storage;
 mod query_history_storage;
 mod schema_designer_storage;
+mod ssh_tunnel;
 mod sql_lint;
+mod native_menu;
 mod trial;
 mod updates;
 
 use commands::AppState;
 use git::GitState;
-use tauri::{
-    menu::{MenuBuilder, MenuItemBuilder, SubmenuBuilder},
-    Emitter, Listener,
-};
+use tauri::{Emitter, Listener};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -78,31 +78,7 @@ pub fn run() {
                     }
                 });
 
-            // Native macOS menu: File + Edit (Cut/Copy/Paste required for Cmd+C/V/X to work in webview)
-            let new_window_item = MenuItemBuilder::with_id("new_window", "New Window")
-                .accelerator("CmdOrCtrl+Shift+N")
-                .build(app)?;
-            let file_menu = SubmenuBuilder::new(app, "File")
-                .item(&new_window_item)
-                .separator()
-                .close_window()
-                .build()?;
-            let edit_menu = SubmenuBuilder::new(app, "Edit")
-                .cut()
-                .copy()
-                .paste()
-                .select_all()
-                .build()?;
-            let menu = MenuBuilder::new(app)
-                .item(&file_menu)
-                .item(&edit_menu)
-                .build()?;
-            app.set_menu(menu)?;
-            app.on_menu_event(|app, event| {
-                if event.id() == "new_window" {
-                    commands::create_app_window(app);
-                }
-            });
+            native_menu::install_native_menu(app)?;
 
             Ok(())
         })
@@ -122,6 +98,7 @@ pub fn run() {
             commands::db_export_sql,
             commands::db_execute_query,
             sql_lint::db_lint_sql,
+            ai_suggestions_worker::ai_suggestions_worker_post,
             commands::db_refresh_cache,
             commands::db_list_databases,
             commands::db_get_access_profile,

@@ -10,6 +10,7 @@ import type {
     PreviewSelection,
     ConnectionEnvironment,
     ConnectionCriticality,
+    SshTunnelConfig,
 } from "@/lib/types";
 import {
     normalizeConnectionMetadata,
@@ -344,7 +345,8 @@ interface ConnectionState {
         connectionString: string,
         savedConnectionId?: string,
         savedLabel?: string,
-        metadata?: ConnectionMetadataInput
+        metadata?: ConnectionMetadataInput,
+        sshTunnel?: SshTunnelConfig | null
     ) => Promise<void>;
     disconnect: (connectionId: string) => Promise<void>;
     setActiveConnection: (connectionId: string | null) => void;
@@ -614,14 +616,15 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
             }
         },
 
-        connect: async (connectionString, savedConnectionId, savedLabel, metadata) => {
+        connect: async (connectionString, savedConnectionId, savedLabel, metadata, sshTunnel) => {
             clearAllPendingLoads();
             set({ isConnecting: true, connectionError: null, connectionString });
             try {
                 void track("db_connect_attempt", { has_saved_id: !!savedConnectionId });
                 const response: ConnectionResponse = await dbConnect(
                     connectionString,
-                    savedConnectionId ?? undefined
+                    savedConnectionId ?? undefined,
+                    sshTunnel ?? undefined
                 );
                 const connId = response.connection_id;
                 void track("db_connect_success", { has_saved_id: !!savedConnectionId });

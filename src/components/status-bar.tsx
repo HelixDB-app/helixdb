@@ -14,7 +14,7 @@ export function StatusBar() {
         : "";
 
     return (
-        <div className="flex h-6 items-center justify-between border-t border-border/15 bg-card/30 px-4 select-none shrink-0">
+        <div className="flex h-6 items-center justify-between border-t border-border/30 bg-muted/35 dark:bg-card/30 px-4 select-none shrink-0 backdrop-blur-sm">
             <div className="flex items-center gap-3">
                 {isConnected ? (
                     <>

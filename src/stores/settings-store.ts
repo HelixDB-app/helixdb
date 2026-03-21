@@ -59,6 +59,8 @@ export interface AppSettings {
     aiSuggestionThrottleMs: number;
     aiSuggestionContextWindowChars: number;
     aiShowSuggestionLatency: boolean;
+    aiCompletionUrl: string;
+    aiWorkerUrl: string;
 
     // Git AI
     gitAiProvider: GitAiProvider;
@@ -102,6 +104,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     aiSuggestionThrottleMs: 220,
     aiSuggestionContextWindowChars: 1200,
     aiShowSuggestionLatency: true,
+    aiCompletionUrl: "",
+    aiWorkerUrl: "",
     gitAiProvider: "cloudflare",
     cloudflareApiToken: "",
     cloudflareAccountId: "",

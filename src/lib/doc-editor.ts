@@ -127,6 +127,129 @@ function buildDocDataFromPlainText(content: string): JSONContent {
     };
 }
 
+function textNode(text: string): JSONContent {
+    return text ? { type: "text", text } : { type: "text", text: "" };
+}
+
+function headingNode(level: 1 | 2 | 3, text: string): JSONContent {
+    return {
+        type: "heading",
+        attrs: { level },
+        content: [textNode(text)],
+    };
+}
+
+function codeBlockNode(text: string): JSONContent {
+    return {
+        type: "codeBlock",
+        content: [textNode(text)],
+    };
+}
+
+function listItemNode(text: string): JSONContent {
+    return {
+        type: "listItem",
+        content: [{ type: "paragraph", content: [textNode(text)] }],
+    };
+}
+
+/**
+ * Converts a subset of markdown to Novel/Tiptap JSONContent.
+ * Supports: # ## ###, paragraphs, - / * lists, 1. lists, ``` code blocks.
+ */
+export function markdownToDocData(md: string): JSONContent {
+    const trimmed = (md ?? "").trim();
+    if (!trimmed) return createDefaultDocData();
+
+    const blocks: JSONContent[] = [];
+    const lines = trimmed.split(/\r?\n/);
+    let i = 0;
+
+    while (i < lines.length) {
+        const line = lines[i];
+        const rest = line.replace(/^#+\s*/, "").trim();
+
+        // Code block
+        if (line.trim().startsWith("```")) {
+            const lang = line.trim().slice(3).trim();
+            const codeLines: string[] = [];
+            i++;
+            while (i < lines.length && !lines[i].trim().startsWith("```")) {
+                codeLines.push(lines[i]);
+                i++;
+            }
+            if (i < lines.length) i++;
+            const code = codeLines.join("\n");
+            blocks.push(codeBlockNode(code));
+            continue;
+        }
+
+        // Headings
+        if (line.startsWith("### ")) {
+            blocks.push(headingNode(3, rest));
+            i++;
+            continue;
+        }
+        if (line.startsWith("## ")) {
+            blocks.push(headingNode(2, rest));
+            i++;
+            continue;
+        }
+        if (line.startsWith("# ")) {
+            blocks.push(headingNode(1, rest));
+            i++;
+            continue;
+        }
+
+        // Unordered list (collect consecutive - or * lines)
+        if (/^[-*]\s+/.test(line) || /^\d+\.\s+/.test(line)) {
+            const listItems: JSONContent[] = [];
+            const isOrdered = /^\d+\.\s+/.test(line);
+            while (i < lines.length) {
+                const curr = lines[i];
+                const bulletMatch = curr.match(/^[-*]\s+(.*)$/);
+                const numMatch = curr.match(/^\d+\.\s+(.*)$/);
+                if (bulletMatch && !isOrdered) {
+                    listItems.push(listItemNode(bulletMatch[1].trim()));
+                    i++;
+                } else if (numMatch && isOrdered) {
+                    listItems.push(listItemNode(numMatch[1].trim()));
+                    i++;
+                } else if (/^\s*$/.test(curr)) {
+                    i++;
+                } else {
+                    break;
+                }
+            }
+            blocks.push({
+                type: isOrdered ? "orderedList" : "bulletList",
+                content: listItems,
+            });
+            continue;
+        }
+
+        // Paragraph: current line and any following non-empty lines until blank or block start
+        const paraLines: string[] = [];
+        while (i < lines.length) {
+            const curr = lines[i];
+            if (/^\s*$/.test(curr)) {
+                i++;
+                break;
+            }
+            if (curr.startsWith("#") || curr.startsWith("```") || /^[-*]\s+/.test(curr) || /^\d+\.\s+/.test(curr)) {
+                break;
+            }
+            paraLines.push(curr);
+            i++;
+        }
+        const paraText = paraLines.join(" ").trim();
+        if (paraText) blocks.push(paragraphNode(paraText));
+    }
+
+    if (blocks.length === 0) return createDefaultDocData();
+    return { type: "doc", content: blocks };
+}
+
 export function createDefaultDocData(): JSONContent {
     return {
         type: "doc",

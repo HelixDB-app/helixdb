@@ -30,6 +30,10 @@ import {
 } from "@/components/ui/dialog";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { createDefaultDocData, markdownToDocData, serializeDocData } from "@/lib/doc-editor";
+import { generateSchemaDocContent } from "@/lib/schema-doc-ai";
+import { notifySchemaDocFileUpdated } from "@/stores/schema-doc-gen-store";
+import { useSettingsStore } from "@/stores/settings-store";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -102,13 +106,19 @@ interface ImportProgress {
 
 // ── File tree builder ─────────────────────────────────────────────────────────
 
+export interface ReadmeNodeRef {
+    schemaName: string;
+    nodeId: string;
+}
+
 function buildFileTree(
     result: DbImportResult,
     connectionId: string,
-): { folderCount: number; fileCount: number } {
+): { folderCount: number; fileCount: number; readmeNodeIds: ReadmeNodeRef[] } {
     const { createNode, setExpanded } = useIdeFsStore.getState();
     let folderCount = 0;
     let fileCount = 0;
+    const readmeNodeIds: ReadmeNodeRef[] = [];
 
     const now = Date.now();
     const header = (label: string) =>
@@ -206,43 +216,26 @@ function buildFileTree(
             }
         }
 
-        // ── README ────────────────────────────────────────────────────────────
-        const nonPkCount = nonPkIndexes.length;
-        const tableList = schema.tables
-            .map((t) => {
-                const rows = typeof t.estimated_rows === "number" && t.estimated_rows > 0
-                    ? ` (~${t.estimated_rows.toLocaleString()} rows)`
-                    : "";
-                return `- \`${t.name}\`${rows}${t.comment ? ` — ${t.comment}` : ""}`;
-            })
-            .join("\n");
-
-        const readme = [
-            `# Schema: \`${schema.schema}\``,
-            ``,
-            `> Imported from **${result.database}** on ${new Date(now).toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" })}`,
-            ``,
-            `## Summary`,
-            ``,
-            `| Object | Count |`,
-            `|--------|------:|`,
-            `| Tables | ${schema.tables.length} |`,
-            `| Views | ${schema.views.length} |`,
-            `| Functions | ${schema.functions.length} |`,
-            `| Indexes | ${nonPkCount} |`,
-            `| Triggers | ${schema.triggers.length} |`,
-            `| Sequences | ${schema.sequences.length} |`,
-            ``,
-            schema.tables.length > 0 ? `## Tables\n\n${tableList}` : "",
-        ]
-            .filter((l) => l !== "")
-            .join("\n");
-
-        createNode(connectionId, "README.md", "file", schemaFolder.id, readme);
+        // ── README.doc (placeholder; AI fills in background) ──────────────────
+        const placeholderDoc = createDefaultDocData();
+        if (placeholderDoc.content && placeholderDoc.content.length > 0 && placeholderDoc.content[0]) {
+            placeholderDoc.content[0] = {
+                type: "paragraph",
+                content: [{ type: "text", text: "Generating documentation…" }],
+            };
+        }
+        const readmeNode = createNode(
+            connectionId,
+            "README.doc",
+            "file",
+            schemaFolder.id,
+            serializeDocData(placeholderDoc)
+        );
+        readmeNodeIds.push({ schemaName: schema.schema, nodeId: readmeNode.id });
         fileCount++;
     }
 
-    return { folderCount, fileCount };
+    return { folderCount, fileCount, readmeNodeIds };
 }
 
 // ── Schema selector row ───────────────────────────────────────────────────────
@@ -481,7 +474,7 @@ export function SchemaImporter({ open, onClose, connectionId, databaseName }: Sc
             setProgress({ current: selected.length, total: selected.length, message: "Building file structure…" });
 
             // Build file tree (synchronous, fast)
-            const { fileCount } = buildFileTree(result, connectionId);
+            const { fileCount, readmeNodeIds } = buildFileTree(result, connectionId);
 
             setImportResult(result);
             setPhase("done");
@@ -489,6 +482,37 @@ export function SchemaImporter({ open, onClose, connectionId, databaseName }: Sc
                 `Imported ${result.total_tables} tables · ${result.total_functions} functions · ${fileCount} files created`,
                 { duration: 4000 }
             );
+
+            // Background: generate AI schema docs for each README.doc
+            const apiKey = useSettingsStore.getState().geminiApiKey?.trim();
+            if (apiKey && readmeNodeIds.length > 0) {
+                const { updateContent } = useIdeFsStore.getState();
+                const schemaByName = new Map(result.schemas.map((s) => [s.schema, s]));
+                Promise.allSettled(
+                    readmeNodeIds.map(async ({ schemaName, nodeId }) => {
+                        const schema = schemaByName.get(schemaName);
+                        if (!schema) return;
+                        try {
+                            const markdown = await generateSchemaDocContent(schema, result.database);
+                            const docData = markdownToDocData(markdown);
+                            const docJson = serializeDocData(docData);
+                            updateContent(nodeId, docJson);
+                            notifySchemaDocFileUpdated(nodeId, docJson);
+                        } catch (e) {
+                            const msg = e instanceof Error ? e.message : String(e);
+                            toast.error(`Documentation failed for schema "${schemaName}"`, { description: msg });
+                            const errorDoc = createDefaultDocData();
+                            if (errorDoc.content?.[0]) {
+                                errorDoc.content[0] = {
+                                    type: "paragraph",
+                                    content: [{ type: "text", text: `Documentation generation failed: ${msg}` }],
+                                };
+                            }
+                            updateContent(nodeId, serializeDocData(errorDoc));
+                        }
+                    })
+                );
+            }
         } catch (e) {
             if (progressTimerRef.current) {
                 clearInterval(progressTimerRef.current);

@@ -5,6 +5,7 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { listen } from "@tauri-apps/api/event";
 import { useConnectionStore } from "@/stores/connection-store";
+import type { LayoutTab } from "@/stores/layout-store";
 import { hasGeometryColumn, isGeometryColumn, extractLatLngFromGeoJSON } from "@/lib/geometry";
 import { useSettingsStore } from "@/stores/settings-store";
 import {
@@ -129,7 +130,8 @@ import {
     PopoverTrigger,
 } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
-import { formatDbError } from "@/lib/db-errors";
+import { formatDbError, formatLoadDataError, isDbInfrastructureError } from "@/lib/db-errors";
+import { DbInfrastructureErrorState } from "@/components/db-infrastructure-error-state";
 import { toast } from "sonner";
 import { InsertRowDialog } from "@/components/insert-row-dialog";
 import { SeedDataDialog } from "@/components/seed-data-dialog";
@@ -294,6 +296,14 @@ function cellToApiValue(cell: CellValue): string | null {
     return formatCellValue(cell);
 }
 
+/** Match result column to metadata name (Postgres may fold unquoted identifiers). */
+function findColumnIndex(columns: { name: string }[], name: string): number {
+    const i = columns.findIndex((c) => c.name === name);
+    if (i >= 0) return i;
+    const lower = name.toLowerCase();
+    return columns.findIndex((c) => c.name.toLowerCase() === lower);
+}
+
 /** Stable row key from PK values for selection/edit. */
 function getRowKey(
     row: CellValue[],
@@ -303,7 +313,7 @@ function getRowKey(
     if (pkColumns.length === 0) return "";
     return pkColumns
         .map((name) => {
-            const i = columns.findIndex((c) => c.name === name);
+            const i = findColumnIndex(columns, name);
             return i >= 0 ? formatCellValue(row[i] ?? { type: "Null" }) : "";
         })
         .join("\t");
@@ -316,9 +326,102 @@ function getRowPkValues(
     pkColumns: string[]
 ): (string | null)[] {
     return pkColumns.map((name) => {
-        const i = columns.findIndex((c) => c.name === name);
+        const i = findColumnIndex(columns, name);
         return i >= 0 ? cellToApiValue(row[i] ?? { type: "Null" }) : null;
     });
+}
+
+/** Rich column metadata — card layout for header hover tooltip. */
+function ColumnHeaderInfoCard({
+    col,
+    colInfo,
+    comment,
+}: {
+    col: ResultColumn;
+    colInfo: ColumnInfo | undefined;
+    comment: string | undefined;
+}) {
+    const labels = col.enum_labels;
+    const enumPreview =
+        labels && labels.length > 0
+            ? labels.length <= 14
+                ? labels.join(", ")
+                : `${labels.slice(0, 12).join(", ")}… (+${labels.length - 12} more)`
+            : null;
+    const defaultStr = colInfo?.column_default?.trim();
+
+    return (
+        <div className="min-w-[min(100%,260px)] max-w-[min(400px,calc(100vw-1.5rem))] overflow-hidden rounded-xl border border-border/50 bg-popover text-popover-foreground shadow-2xl ring-1 ring-black/5 dark:ring-white/10">
+            <header className="border-b border-border/50 bg-gradient-to-b from-muted/40 to-muted/10 px-4 py-2.5">
+                <p className="truncate text-[13px] font-semibold leading-snug tracking-tight text-foreground">
+                    {col.name}
+                </p>
+            </header>
+            <div className="space-y-3.5 px-4 py-3.5">
+                <section>
+                    <h3 className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/90">
+                        Data type
+                    </h3>
+                    <p className="mt-1.5 break-all rounded-md border border-border/35 bg-muted/20 px-2.5 py-2 font-mono text-[11px] leading-relaxed text-foreground/95">
+                        {col.data_type}
+                    </p>
+                </section>
+
+                {colInfo ? (
+                    <section className="space-y-2">
+                        <h3 className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/90">
+                            Properties
+                        </h3>
+                        <ul className="divide-y divide-border/40 rounded-md border border-border/35 bg-muted/10">
+                            {colInfo.is_primary_key ? (
+                                <li className="flex items-center justify-between gap-3 px-2.5 py-2 text-xs">
+                                    <span className="text-muted-foreground">Primary key</span>
+                                    <span className="font-medium text-emerald-500 dark:text-emerald-400/90">Yes</span>
+                                </li>
+                            ) : null}
+                            <li className="flex items-center justify-between gap-3 px-2.5 py-2 text-xs">
+                                <span className="text-muted-foreground">Nullable</span>
+                                <span className="tabular-nums text-foreground/90">
+                                    {colInfo.is_nullable ? "Yes" : "No"}
+                                </span>
+                            </li>
+                            {defaultStr ? (
+                                <li className="flex flex-col gap-1 px-2.5 py-2 text-xs">
+                                    <span className="text-muted-foreground">Default</span>
+                                    <span className="break-all font-mono text-[10px] leading-relaxed text-foreground/85">
+                                        {defaultStr}
+                                    </span>
+                                </li>
+                            ) : null}
+                        </ul>
+                    </section>
+                ) : null}
+
+                {enumPreview ? (
+                    <section>
+                        <h3 className="mb-1.5 text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/90">
+                            Enum values
+                            <span className="ml-1.5 font-normal normal-case tracking-normal text-muted-foreground/55">
+                                ({labels?.length ?? 0})
+                            </span>
+                        </h3>
+                        <div className="rounded-md border border-border/35 bg-muted/20 px-2.5 py-2">
+                            <p className="text-[11px] leading-relaxed text-foreground/90">{enumPreview}</p>
+                        </div>
+                    </section>
+                ) : null}
+
+                {comment ? (
+                    <section className="border-t border-border/45 pt-3">
+                        <h3 className="text-[10px] font-semibold uppercase tracking-[0.08em] text-muted-foreground/90">
+                            Comment
+                        </h3>
+                        <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">{comment}</p>
+                    </section>
+                ) : null}
+            </div>
+        </div>
+    );
 }
 
 /** Validate edit value by data type. Returns error message or null. */
@@ -367,9 +470,7 @@ const BATCH_SIZE = 30;
 export function DataTable({ schema, table }: { schema: string; table: string }) {
     const {
         connectionId,
-        previewSelection,
         recentTables,
-        selectTable,
         eventTriggers,
         refreshTrigger,
     } = useConnectionStore();
@@ -380,7 +481,8 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
     // ── Core data ─────────────────────────────────────────────────────────────
     const [result, setResult] = useState<QueryResult | null>(null);
     const [isLoading, setIsLoading] = useState(false);
-    const [error, setError] = useState<string | null>(null);
+    const [error, setError] = useState<{ summary: string; detail: string } | null>(null);
+    const [retryInProgress, setRetryInProgress] = useState(false);
 
     const { defaultPageSize } = useSettingsStore();
 
@@ -545,8 +647,9 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                 setHasMore(data.rows.length > 0 && data.rows.length < total);
             }
         } catch (err) {
-            const msg = String(err);
-            setError(msg.replace(/^[a-z_]+:\s*/i, "").trim() || "Failed to load table data.");
+            const raw = String(err ?? "");
+            const { summary } = formatLoadDataError(raw);
+            setError({ summary, detail: raw });
             setResult(null);
         } finally {
             setIsLoading(false);
@@ -623,6 +726,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
         setSortColumn(null);
         setResult(null);
         setError(null);
+        setRetryInProgress(false);
         setTableColumns(null);
         setSelectedRowKeys(new Set());
         setEditingCell(null);
@@ -661,6 +765,22 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
         return map;
     }, [tableColumns]);
     const canEditDelete = pkColumnNames.length > 0;
+
+    const headerRowSelection = useMemo(() => {
+        if (!result || displayRows.length === 0 || pkColumnNames.length === 0) {
+            return { headerChecked: false as boolean | "indeterminate" };
+        }
+        const cols = result.columns;
+        const keys = displayRows.map((row) => getRowKey(row, cols, pkColumnNames));
+        const allSelected = keys.length > 0 && keys.every((k) => selectedRowKeys.has(k));
+        const someSelected = keys.some((k) => selectedRowKeys.has(k)) && !allSelected;
+        const headerChecked: boolean | "indeterminate" = allSelected
+            ? true
+            : someSelected
+              ? "indeterminate"
+              : false;
+        return { headerChecked };
+    }, [result, displayRows, pkColumnNames, selectedRowKeys]);
 
     const columnsForVisibility = useMemo(() => {
         if (result?.columns?.length) {
@@ -1039,6 +1159,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
     // They should now be handled separately. For now, we only render tables.
 
     if (error && !isLoading) {
+        const infra = isDbInfrastructureError(error.detail);
         return (
             <div className="flex h-full flex-col">
                 <TableToolbar
@@ -1061,24 +1182,60 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                     onShowAllColumns={showAllColumns}
                     onHideAllColumns={hideAllColumns}
                 />
-                <div className="flex-1 flex items-center justify-center p-8">
-                    <div className="max-w-md w-full rounded-xl bg-destructive/10 border border-destructive/20 p-6">
-                        <div className="flex items-start gap-3">
-                            <AlertCircle className="h-5 w-5 text-destructive shrink-0 mt-0.5" />
-                            <div>
-                                <p className="text-sm font-semibold text-destructive">Failed to load data</p>
-                                <p className="mt-1.5 text-xs font-mono text-destructive/70 leading-relaxed">{error}</p>
-                                <Button size="sm" variant="outline"
-                                    className="mt-4 h-8 text-xs border-destructive/30 text-destructive hover:bg-destructive/10"
-                                    onClick={fetchData}
-                                >
-                                    <RefreshCw className="h-3 w-3 mr-1.5" />
-                                    Try Again
-                                </Button>
+                {infra ? (
+                    <DbInfrastructureErrorState
+                        className="flex-1"
+                        headline="Couldn’t load table data"
+                        description={error.summary}
+                        technicalMessage={error.detail}
+                        onRetry={() => {
+                            setRetryInProgress(true);
+                            fetchData().finally(() => setRetryInProgress(false));
+                        }}
+                        isRetrying={retryInProgress}
+                        retryLabel="Try again"
+                    />
+                ) : (
+                    <div className="flex flex-1 items-center justify-center p-8">
+                        <div className="w-full max-w-md rounded-xl border border-destructive/20 bg-destructive/5 p-6 shadow-sm">
+                            <div className="flex items-start gap-3">
+                                <AlertCircle className="mt-0.5 h-5 w-5 shrink-0 text-destructive" />
+                                <div className="min-w-0">
+                                    <p className="text-sm font-semibold text-destructive">Couldn’t load table data</p>
+                                    <p className="mt-1.5 text-sm leading-relaxed text-muted-foreground">{error.summary}</p>
+                                    <p className="mt-2 text-xs text-muted-foreground/85">
+                                        Fix the issue if you can, then retry. Technical details are available below.
+                                    </p>
+                                    <details className="mt-3 rounded-lg border border-border/40 bg-muted/20 px-3 py-2 text-left">
+                                        <summary className="cursor-pointer text-xs font-medium text-muted-foreground">
+                                            Technical details
+                                        </summary>
+                                        <pre className="mt-2 max-h-32 overflow-auto whitespace-pre-wrap break-all font-mono text-[11px] text-foreground/80">
+                                            {error.detail}
+                                        </pre>
+                                    </details>
+                                    <Button
+                                        size="sm"
+                                        variant="outline"
+                                        className="mt-4 h-8 border-destructive/30 text-xs text-destructive hover:bg-destructive/10"
+                                        disabled={retryInProgress}
+                                        onClick={() => {
+                                            setRetryInProgress(true);
+                                            fetchData().finally(() => setRetryInProgress(false));
+                                        }}
+                                    >
+                                        {retryInProgress ? (
+                                            <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                                        ) : (
+                                            <RefreshCw className="mr-1.5 h-3 w-3" />
+                                        )}
+                                        {retryInProgress ? "Retrying…" : "Try again"}
+                                    </Button>
+                                </div>
                             </div>
                         </div>
                     </div>
-                </div>
+                )}
             </div>
         );
     }
@@ -1166,21 +1323,38 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                 </div>
             )}
 
-            {/* Delete bar */}
+            {/* Selection bar — neutral surface; destructive only on Delete */}
             {canEditDelete && selectedRowKeys.size > 0 && dataViewMode === "table" && (
-                <div className="flex items-center justify-between px-4 py-2 border-b border-destructive/20 bg-destructive/5 shrink-0">
-                    <span className="text-xs text-destructive/90">{selectedRowKeys.size} row(s) selected</span>
-                    <Button
-                        type="button"
-                        variant="destructive"
-                        size="sm"
-                        className="h-7 text-xs gap-1.5"
-                        disabled={isDeleting}
-                        onClick={openDeleteConfirm}
-                    >
-                        {isDeleting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
-                        {isDeleting ? "Deleting…" : "Delete"}
-                    </Button>
+                <div className="flex items-center justify-between gap-3 px-4 py-2.5 border-b border-border/50 bg-gradient-to-r from-muted/50 via-muted/35 to-muted/25 dark:from-muted/30 dark:via-muted/20 dark:to-muted/10 shrink-0 backdrop-blur-sm">
+                    <span className="text-xs font-medium tabular-nums text-foreground/85 flex items-center gap-2">
+                        <span className="inline-flex h-5 min-w-5 items-center justify-center rounded-md bg-emerald-500/12 text-emerald-600 dark:text-emerald-400 px-1.5 text-[11px] font-semibold">
+                            {selectedRowKeys.size}
+                        </span>
+                        row{selectedRowKeys.size === 1 ? "" : "s"} selected
+                    </span>
+                    <div className="flex items-center gap-2">
+                        <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            className="h-7 text-xs text-muted-foreground hover:text-foreground"
+                            disabled={isDeleting}
+                            onClick={() => setSelectedRowKeys(new Set())}
+                        >
+                            Clear selection
+                        </Button>
+                        <Button
+                            type="button"
+                            variant="destructive"
+                            size="sm"
+                            className="h-7 text-xs gap-1.5"
+                            disabled={isDeleting}
+                            onClick={openDeleteConfirm}
+                        >
+                            {isDeleting ? <Loader2 className="h-3 w-3 animate-spin" /> : <Trash2 className="h-3 w-3" />}
+                            {isDeleting ? "Deleting…" : "Delete"}
+                        </Button>
+                    </div>
                 </div>
             )}
 
@@ -1206,10 +1380,10 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                 </DialogContent>
             </Dialog>
 
-            {/* Body */}
-            <div className="flex-1 overflow-hidden relative">
+            {/* Body — min-h-0 so flex child can shrink and vertical scroll works */}
+            <div className="relative min-h-0 flex-1 overflow-hidden">
                 {dataViewMode === "json" ? (
-                    <div className="h-full overflow-auto [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/40">
+                    <div className="data-table-scroll h-full min-h-0 overflow-auto">
                         <div className="p-4 flex items-start justify-between gap-2">
                             <pre className="text-[11px] font-mono text-foreground/90 whitespace-pre overflow-x-auto flex-1 min-w-0 rounded-lg bg-muted/20 border border-border/30 p-4">
                                 <code>{tableDataJsonString}</code>
@@ -1228,7 +1402,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                 ) : (
                     <div
                         ref={scrollContainerRef}
-                        className="h-full overflow-auto [scrollbar-width:thin] [&::-webkit-scrollbar]:w-1.5 [&::-webkit-scrollbar]:h-1.5 [&::-webkit-scrollbar-thumb]:rounded-full [&::-webkit-scrollbar-thumb]:bg-border/40 [&::-webkit-scrollbar-track]:bg-transparent"
+                        className="data-table-scroll h-full min-h-0 overflow-auto overscroll-contain"
                     >
                         {isLoading && !result ? (
                             <div className="p-3 space-y-1.5">
@@ -1246,88 +1420,144 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                     aria-colcount={visibleColumnCount + (canEditDelete ? 2 : 1)}
                                 >
                                     <TableHeader>
-                                        <TableRow className="hover:bg-transparent border-border/20 bg-card/30 sticky top-0 z-10">
+                                        <TableRow className="hover:bg-transparent border-border bg-card sticky top-0 z-10">
                                             {canEditDelete && (
-                                                <TableHead className="w-10 px-2 sticky left-0 bg-card/80 backdrop-blur-sm z-20">
-                                                    <input
-                                                        type="checkbox"
-                                                        className="h-3.5 w-3.5 rounded border-border focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                                                        aria-label="Select all rows"
-                                                        checked={displayRows.length > 0 && displayRows.every((row) => selectedRowKeys.has(getRowKey(row, result.columns, pkColumnNames)))}
-                                                        onChange={(e) => {
-                                                            if (e.target.checked) setSelectedRowKeys(new Set(displayRows.map((row) => getRowKey(row, result.columns, pkColumnNames))));
-                                                            else setSelectedRowKeys(new Set());
-                                                        }}
-                                                    />
+                                                <TableHead className="w-10 min-w-10 sticky left-0 z-30 border-r border-border/40 bg-card p-0 align-middle [&:has([data-slot=checkbox])]:pr-0">
+                                                    <div className="flex h-10 items-center justify-center">
+                                                        <Checkbox
+                                                            checked={headerRowSelection.headerChecked}
+                                                            aria-label="Select all rows on this page"
+                                                            className="border-border shadow-none"
+                                                            onPointerDown={(e) => e.stopPropagation()}
+                                                            onClick={(e) => e.stopPropagation()}
+                                                            onCheckedChange={(checked) => {
+                                                                if (checked === true) {
+                                                                    setSelectedRowKeys(
+                                                                        new Set(
+                                                                            displayRows.map((row) =>
+                                                                                getRowKey(row, result.columns, pkColumnNames)
+                                                                            )
+                                                                        )
+                                                                    );
+                                                                } else {
+                                                                    setSelectedRowKeys(new Set());
+                                                                }
+                                                            }}
+                                                        />
+                                                    </div>
                                                 </TableHead>
                                             )}
-                                            <TableHead className={cn("w-10 text-center text-[10px] font-mono text-muted-foreground/30 px-2 sticky bg-card/80 backdrop-blur-sm z-20", canEditDelete ? "left-9" : "left-0")}>
+                                            <TableHead
+                                                className={cn(
+                                                    "sticky z-20 min-w-12 w-12 border-r border-border/40 bg-card px-3 py-2 text-center align-middle text-xs font-semibold font-mono tabular-nums text-muted-foreground/70",
+                                                    canEditDelete ? "left-10" : "left-0"
+                                                )}
+                                            >
                                                 #
                                             </TableHead>
-                                            {visibleColumns.map((col) => (
+                                            {visibleColumns.map((col) => {
+                                                const colMetaIdx =
+                                                    tableColumns && tableColumns.length > 0
+                                                        ? findColumnIndex(tableColumns, col.name)
+                                                        : -1;
+                                                const colMeta =
+                                                    colMetaIdx >= 0 && tableColumns ? tableColumns[colMetaIdx] : undefined;
+                                                const hoverComment =
+                                                    columnCommentsByName.get(col.name)?.trim() ||
+                                                    colMeta?.comment?.trim() ||
+                                                    undefined;
+
+                                                return (
                                                 <TableHead
                                                     key={col.name}
                                                     className="select-none group whitespace-nowrap px-3 py-2"
                                                     aria-sort={sortColumn === col.name ? (sortDirection === "ASC" ? "ascending" : "descending") : undefined}
                                                 >
-                                                    <div className="flex items-center gap-1">
-                                                        {/* Sort clickable area */}
-                                                        <button
-                                                            type="button"
-                                                            className="flex items-center gap-1.5 cursor-pointer flex-1 text-left rounded focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2"
-                                                            onClick={() => handleSort(col.name)}
-                                                            aria-label={`Sort by ${col.name}${sortColumn === col.name ? ` ${sortDirection === "ASC" ? "ascending" : "descending"}` : ""}`}
-                                                        >
-                                                            <span
-                                                                className="text-xs font-semibold text-foreground/80"
-                                                                title={columnCommentsByName.get(col.name)}
+                                                    <Tooltip delayDuration={320}>
+                                                        <TooltipTrigger asChild>
+                                                            <div
+                                                                className="flex min-w-0 cursor-default items-center gap-1 rounded-sm outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                                                                tabIndex={0}
                                                             >
-                                                                {col.name}
-                                                            </span>
-                                                            {col.enum_labels?.length ? (
-                                                                <Badge variant="secondary" className="text-[9px] font-normal px-1 py-0 opacity-70 group-hover:opacity-100">
-                                                                    enum
-                                                                </Badge>
-                                                            ) : null}
-                                                            <span className="text-[9px] font-mono text-muted-foreground/30 hidden group-hover:inline">{col.data_type}</span>
-                                                            {sortColumn === col.name ? (
-                                                                sortDirection === "ASC"
-                                                                    ? <ArrowUp className="h-3 w-3 text-emerald-400 shrink-0" />
-                                                                    : <ArrowDown className="h-3 w-3 text-emerald-400 shrink-0" />
-                                                            ) : (
-                                                                <ArrowUpDown className="h-3 w-3 opacity-0 group-hover:opacity-25 transition-opacity shrink-0" />
-                                                            )}
-                                                        </button>
-                                                        {/* Column stats popover */}
-                                                        <Popover
-                                                            onOpenChange={(open) => {
-                                                                if (open) fetchColStats(col.name);
-                                                                else { setColStats(null); setColStatsColumn(null); }
-                                                            }}
-                                                        >
-                                                            <PopoverTrigger asChild>
+                                                                {/* Sort */}
                                                                 <button
                                                                     type="button"
-                                                                    className="opacity-0 group-hover:opacity-60 hover:!opacity-100 transition-opacity p-0.5 rounded hover:bg-muted/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:opacity-100"
-                                                                    title={`Stats for ${col.name}`}
-                                                                    aria-label={`Column stats for ${col.name}`}
-                                                                    onClick={(e) => e.stopPropagation()}
+                                                                    className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 focus-visible:ring-offset-background"
+                                                                    onClick={() => handleSort(col.name)}
+                                                                    aria-label={`Sort by ${col.name}${
+                                                                        sortColumn === col.name
+                                                                            ? ` ${sortDirection === "ASC" ? "ascending" : "descending"}`
+                                                                            : ""
+                                                                    }`}
                                                                 >
-                                                                    <BarChart2 className="h-3 w-3 text-muted-foreground" />
+                                                                    <span className="truncate text-xs font-semibold text-foreground/80">
+                                                                        {col.name}
+                                                                    </span>
+                                                                    {col.enum_labels?.length ? (
+                                                                        <span className="shrink-0 rounded border border-border/60 bg-muted/40 px-1 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground/80">
+                                                                            enum
+                                                                        </span>
+                                                                    ) : null}
+                                                                    {sortColumn === col.name ? (
+                                                                        sortDirection === "ASC" ? (
+                                                                            <ArrowUp className="h-3 w-3 shrink-0 text-emerald-400" />
+                                                                        ) : (
+                                                                            <ArrowDown className="h-3 w-3 shrink-0 text-emerald-400" />
+                                                                        )
+                                                                    ) : (
+                                                                        <ArrowUpDown className="h-3 w-3 shrink-0 opacity-0 transition-opacity group-hover:opacity-25" />
+                                                                    )}
                                                                 </button>
-                                                            </PopoverTrigger>
-                                                            <PopoverContent className="w-72 p-0" align="start">
-                                                                <ColumnStatsPanel
-                                                                    colName={col.name}
-                                                                    dataType={col.data_type}
-                                                                    stats={colStatsColumn === col.name ? colStats : null}
-                                                                    loading={colStatsColumn === col.name && colStatsLoading}
-                                                                />
-                                                            </PopoverContent>
-                                                        </Popover>
-                                                    </div>
+                                                                {/* Column stats */}
+                                                                <Popover
+                                                                    onOpenChange={(open) => {
+                                                                        if (open) fetchColStats(col.name);
+                                                                        else {
+                                                                            setColStats(null);
+                                                                            setColStatsColumn(null);
+                                                                        }
+                                                                    }}
+                                                                >
+                                                                    <PopoverTrigger asChild>
+                                                                        <button
+                                                                            type="button"
+                                                                            className="shrink-0 rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-muted/60 hover:!opacity-100 focus:outline-none focus-visible:opacity-100 focus-visible:ring-2 focus-visible:ring-ring group-hover:opacity-55"
+                                                                            title={`Stats for ${col.name}`}
+                                                                            aria-label={`Column stats for ${col.name}`}
+                                                                            onClick={(e) => e.stopPropagation()}
+                                                                        >
+                                                                            <BarChart2 className="h-3 w-3" />
+                                                                        </button>
+                                                                    </PopoverTrigger>
+                                                                    <PopoverContent className="w-72 p-0" align="start">
+                                                                        <ColumnStatsPanel
+                                                                            colName={col.name}
+                                                                            dataType={col.data_type}
+                                                                            stats={colStatsColumn === col.name ? colStats : null}
+                                                                            loading={colStatsColumn === col.name && colStatsLoading}
+                                                                        />
+                                                                    </PopoverContent>
+                                                                </Popover>
+                                                            </div>
+                                                        </TooltipTrigger>
+                                                        <TooltipContent
+                                                            hideArrow
+                                                            side="bottom"
+                                                            align="start"
+                                                            sideOffset={10}
+                                                            collisionPadding={12}
+                                                            className="z-[8600] max-w-none rounded-none border-0 bg-transparent p-0 text-left shadow-none"
+                                                        >
+                                                            <ColumnHeaderInfoCard
+                                                                col={col}
+                                                                colInfo={colMeta}
+                                                                comment={hoverComment}
+                                                            />
+                                                        </TooltipContent>
+                                                    </Tooltip>
                                                 </TableHead>
-                                            ))}
+                                                );
+                                            })}
                                         </TableRow>
                                     </TableHeader>
                                     <TableBody>
@@ -1386,28 +1616,44 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                                                 >
                                                     {canEditDelete && (
                                                         <TableCell
-                                                            className="px-2 sticky left-0 bg-background group-hover:bg-accent/20 z-10"
+                                                            className="sticky left-0 z-30 w-10 min-w-10 border-r border-border/40 bg-card p-0 align-middle group-hover:bg-accent/20 [&:has([data-slot=checkbox])]:pr-0"
                                                             onClick={(e) => e.stopPropagation()}
+                                                            onPointerDown={(e) => e.stopPropagation()}
                                                         >
-                                                            <input
-                                                                type="checkbox"
-                                                                className="h-3.5 w-3.5 rounded border-border"
-                                                                checked={isSelected}
-                                                                onChange={(e) => {
-                                                                    e.stopPropagation();
-                                                                    setSelectedRowKeys((prev) => {
-                                                                        const next = new Set(prev);
-                                                                        if (next.has(rowKey)) next.delete(rowKey); else next.add(rowKey);
-                                                                        return next;
-                                                                    });
-                                                                }}
-                                                            />
+                                                            <div className="flex items-center justify-center py-2">
+                                                                <Checkbox
+                                                                    checked={isSelected}
+                                                                    aria-label={`Select row ${rowNumber}`}
+                                                                    disabled={!rowKey}
+                                                                    title={
+                                                                        !rowKey
+                                                                            ? "Cannot select row (primary key not in result)"
+                                                                            : isSelected
+                                                                              ? "Deselect row"
+                                                                              : "Select row"
+                                                                    }
+                                                                    className="border-border shadow-none"
+                                                                    onPointerDown={(e) => e.stopPropagation()}
+                                                                    onClick={(e) => e.stopPropagation()}
+                                                                    onCheckedChange={() => {
+                                                                        if (!rowKey) return;
+                                                                        setSelectedRowKeys((prev) => {
+                                                                            const next = new Set(prev);
+                                                                            if (next.has(rowKey)) next.delete(rowKey);
+                                                                            else next.add(rowKey);
+                                                                            return next;
+                                                                        });
+                                                                    }}
+                                                                />
+                                                            </div>
                                                         </TableCell>
                                                     )}
-                                                    <TableCell className={cn(
-                                                        "text-center text-[10px] font-mono text-muted-foreground/25 px-2 sticky bg-background group-hover:bg-accent/20 transition-colors z-10",
-                                                        canEditDelete ? "left-9" : "left-0"
-                                                    )}>
+                                                    <TableCell
+                                                        className={cn(
+                                                            "sticky z-20 min-w-12 w-12 border-r border-border/40 bg-card px-3 py-1.5 text-center align-middle text-xs font-mono tabular-nums text-muted-foreground/60 transition-colors group-hover:bg-accent/20",
+                                                            canEditDelete ? "left-10" : "left-0"
+                                                        )}
+                                                    >
                                                         {rowNumber}
                                                     </TableCell>
 
@@ -1960,7 +2206,7 @@ function TableToolbar({
     }, [table]);
 
     return (
-        <div className="flex items-center justify-between px-4 py-2 border-b border-border/20 bg-card/30 shrink-0">
+        <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-card shrink-0">
             <div className="flex items-center gap-2.5 min-w-0">
                 <div className="flex items-center gap-1.5 min-w-0">
                     <Table2 className="h-3.5 w-3.5 text-emerald-500 shrink-0" />
@@ -2739,6 +2985,7 @@ function ObjectPreviewPanel({
                 schema={previewSelection.schema}
                 name={previewSelection.name}
                 arguments={previewSelection.arguments}
+                isTrigger={Boolean(previewSelection.is_trigger_function)}
             />
         );
     }
@@ -2766,11 +3013,14 @@ function FunctionPreview({
     schema,
     name,
     arguments: args,
+    isTrigger = false,
 }: {
     connectionId: string | null;
     schema: string;
     name: string;
     arguments: string;
+    /** When true, show trigger-function styling (sidebar “Trigger Functions”). */
+    isTrigger?: boolean;
 }) {
     const [definition, setDefinition] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
@@ -2801,12 +3051,24 @@ function FunctionPreview({
         <div className="flex h-full flex-col min-h-0">
             <div className="shrink-0 border-b border-border/20 bg-card/30 px-4 py-2.5 flex items-center justify-between">
                 <div className="flex items-center gap-2 min-w-0">
-                    <Code2 className="h-3.5 w-3.5 text-violet-400 shrink-0" />
+                    {isTrigger ? (
+                        <Zap className="h-3.5 w-3.5 text-amber-400 shrink-0" />
+                    ) : (
+                        <Code2 className="h-3.5 w-3.5 text-violet-400 shrink-0" />
+                    )}
                     <span className="font-mono text-xs font-medium truncate">
                         {schema}.{name}({args || "..."})
                     </span>
-                    <Badge variant="outline" className="text-[10px] border-violet-500/30 text-violet-400/90 shrink-0">
-                        Function
+                    <Badge
+                        variant="outline"
+                        className={cn(
+                            "text-[10px] shrink-0",
+                            isTrigger
+                                ? "border-amber-500/35 text-amber-400/90"
+                                : "border-violet-500/30 text-violet-400/90"
+                        )}
+                    >
+                        {isTrigger ? "Trigger fn" : "Function"}
                     </Badge>
                 </div>
                 <div className="flex items-center gap-1 shrink-0">
@@ -3109,4 +3371,35 @@ function TypePreview({
             </div>
         </div>
     );
+}
+
+/** Renders function, type, or event-trigger definition in a Data view tab. */
+export function SchemaObjectTabContent({ tab }: { tab: LayoutTab }) {
+    const connectionId = useConnectionStore((s) => s.connectionId);
+    const eventTriggers = useConnectionStore((s) => s.eventTriggers);
+
+    if (tab.kind === "function") {
+        return (
+            <FunctionPreview
+                connectionId={connectionId}
+                schema={tab.schema}
+                name={tab.name}
+                arguments={tab.arguments}
+                isTrigger={tab.isTrigger}
+            />
+        );
+    }
+    if (tab.kind === "type") {
+        return <TypePreview connectionId={connectionId} schema={tab.schema} name={tab.name} />;
+    }
+    if (tab.kind === "event_trigger") {
+        return (
+            <ObjectPreviewPanel
+                connectionId={connectionId}
+                previewSelection={{ kind: "event_trigger", name: tab.name }}
+                eventTriggers={eventTriggers}
+            />
+        );
+    }
+    return null;
 }

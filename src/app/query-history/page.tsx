@@ -78,6 +78,7 @@ import {
     Timer,
     Wrench,
     WandSparkles,
+    Shield,
 } from "lucide-react";
 import { toast } from "sonner";
 import { buildPerformanceReplayBundle, downloadReplayBundle } from "@/lib/performance-replay";
@@ -1296,7 +1297,7 @@ export default function QueryHistoryPage() {
                                     <Button variant="outline" size="sm" className="h-7 gap-1.5" onClick={handleCopySql}>
                                         <Copy className="h-3.5 w-3.5" />
                                         Copy SQL
-                                    </Button>
+                                    </Button>image.png
                                     <Button
                                         variant="outline"
                                         size="sm"
@@ -1607,7 +1608,7 @@ export default function QueryHistoryPage() {
     );
 
     return (
-        <div className="flex h-screen flex-col bg-background">
+        <div className="flex h-screen flex-col bg-transparent">
             <header className="flex h-11 items-center justify-between border-b border-border/20 bg-card/20 px-3">
                 <div className="flex items-center gap-2.5 min-w-0">
                     <Link href="/" className="flex items-center gap-2">

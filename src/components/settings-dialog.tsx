@@ -19,6 +19,7 @@ import {
     SHORTCUT_DEFINITIONS,
     type ShortcutActionId,
 } from "@/stores/shortcuts-store";
+import { FORMAT_SQL_KEY_COMBO } from "@/lib/format-sql";
 import { formatShortcutKeys, eventToCombo } from "@/lib/shortcut-keys";
 import {
     Dialog,
@@ -62,7 +63,7 @@ import { toast } from "sonner";
 
 // ── Section Types ────────────────────────────────────────────────────────────
 
-type SettingsSection =
+export type SettingsSection =
     | "appearance"
     | "editor"
     | "data"
@@ -535,7 +536,7 @@ function QuerySection() {
 const EDITOR_SHORTCUTS_REF = [
     { keys: ["⌘", "R"], description: "Run AI Review Mode (query editor)" },
     { keys: ["⌘", "Enter"], description: "Execute query in editor" },
-    { keys: ["⇧", "⌥", "F"], description: "Format SQL in editor" },
+    { keys: formatShortcutKeys(FORMAT_SQL_KEY_COMBO), description: "Format SQL in editor" },
     { keys: ["⌘", "."], description: "Trigger AI inline suggestion" },
     { keys: ["⌥", "→"], description: "Accept next AI suggestion word" },
     { keys: ["⌘", "⇧", "P"], description: "Open editor command palette" },
@@ -716,6 +717,8 @@ function AISection() {
         aiSuggestionThrottleMs,
         aiSuggestionContextWindowChars,
         aiShowSuggestionLatency,
+        aiCompletionUrl,
+        aiWorkerUrl,
         updateSettings,
     } = useSettingsStore();
     const [showKey, setShowKey] = useState(false);
@@ -898,6 +901,30 @@ function AISection() {
                         checked={aiNextActionSuggestions}
                         onCheckedChange={(v) => updateSettings({ aiNextActionSuggestions: v })}
                         disabled={!aiAutocompleteEnabled}
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="Completion API URL"
+                    description="PgStudio worker URL for /complete (used by inline suggestions)."
+                >
+                    <input
+                        value={aiCompletionUrl}
+                        onChange={(e) => updateSettings({ aiCompletionUrl: e.target.value })}
+                        placeholder="https://your-worker.workers.dev/complete"
+                        className="h-7 w-72 rounded-md border border-border/40 bg-muted/20 px-2 text-xs font-mono text-foreground/80 placeholder:text-muted-foreground/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label="AI completion API URL"
+                    />
+                </SettingRow>
+                <SettingRow
+                    label="AI Worker URL (advanced)"
+                    description="Optional: base worker URL for non-completion features."
+                >
+                    <input
+                        value={aiWorkerUrl}
+                        onChange={(e) => updateSettings({ aiWorkerUrl: e.target.value })}
+                        placeholder="https://your-worker.workers.dev"
+                        className="h-7 w-72 rounded-md border border-border/40 bg-muted/20 px-2 text-xs font-mono text-foreground/80 placeholder:text-muted-foreground/30 focus:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                        aria-label="AI worker URL"
                     />
                 </SettingRow>
             </SettingSection>
@@ -1136,9 +1163,11 @@ interface SettingsDialogProps {
     onOpenChange: (open: boolean) => void;
     /** When provided, shows a "Take survey" button in About that closes settings and opens the survey modal. */
     onOpenSurvey?: () => void;
+    /** Set by the native app menu to jump to a section when the dialog opens. */
+    seedSection?: SettingsSection | null;
 }
 
-export function SettingsDialog({ open, onOpenChange, onOpenSurvey }: SettingsDialogProps) {
+export function SettingsDialog({ open, onOpenChange, onOpenSurvey, seedSection = null }: SettingsDialogProps) {
     const [activeSection, setActiveSection] = useState<SettingsSection>("appearance");
     const { resetSettings } = useSettingsStore();
     const { setTheme } = useTheme();
@@ -1148,6 +1177,12 @@ export function SettingsDialog({ open, onOpenChange, onOpenSurvey }: SettingsDia
         setTheme("dark");
         toast.success("Settings reset to defaults", { duration: 2000 });
     };
+
+    useEffect(() => {
+        if (open && seedSection) {
+            setActiveSection(seedSection);
+        }
+    }, [open, seedSection]);
 
     const renderSection = () => {
         switch (activeSection) {

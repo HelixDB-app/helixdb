@@ -78,6 +78,8 @@ interface DocumentCollaborator {
     colorIndex: number;
 }
 
+export type DocumentEditorVariant = "default" | "schema";
+
 export interface DocumentBlockEditorProps {
     value: string;
     onChange: (content: string) => void;
@@ -86,6 +88,8 @@ export interface DocumentBlockEditorProps {
     collaborators?: DocumentCollaborator[];
     placeholder?: string;
     aiAssist?: DocumentAiAssistConfig;
+    /** "schema" = minimal novel.sh-style UI for schema docs (e.g. README.doc) */
+    variant?: DocumentEditorVariant;
 }
 
 export interface DocumentAiAssistConfig {
@@ -158,6 +162,7 @@ export function DocumentBlockEditor({
     collaborators = [],
     placeholder = "Write your notes, plan, or docs here...",
     aiAssist,
+    variant = "default",
 }: DocumentBlockEditorProps) {
     const initialParsedRef = useRef(parseDocContent(value));
     const editorRef = useRef<EditorInstance | null>(null);
@@ -177,6 +182,7 @@ export function DocumentBlockEditor({
     const [, forceEditorRerender] = useState(0); // Used to refresh word count and bubble menu active state.
 
     const saveLabel = useMemo(() => formatSaveStateLabel(saveState, lastSavedAt), [saveState, lastSavedAt]);
+    const effectivePlaceholder = variant === "schema" ? "Schema documentation…" : placeholder;
 
     const imageUpload = useMemo(
         () =>
@@ -364,7 +370,7 @@ export function DocumentBlockEditor({
                 horizontalRule: false,
             }),
             Placeholder.configure({
-                placeholder,
+                placeholder: effectivePlaceholder,
                 includeChildren: true,
             }),
             TextStyle,
@@ -397,7 +403,7 @@ export function DocumentBlockEditor({
             imageExtension,
             slashCommand,
         ];
-    }, [placeholder]);
+    }, [placeholder, variant]);
 
     const flushSave = useCallback(
         (editorArg?: EditorInstance | null) => {
@@ -512,19 +518,36 @@ export function DocumentBlockEditor({
     const commandButtonClass = "inline-flex h-7 items-center justify-center rounded-md border border-border/60 px-2 text-[11px] text-muted-foreground transition hover:border-border hover:bg-accent hover:text-accent-foreground";
     const bubbleButtonClass = "inline-flex h-7 w-7 items-center justify-center rounded-md border border-transparent text-muted-foreground transition hover:bg-accent hover:text-accent-foreground";
 
+    const isSchema = variant === "schema";
+
     return (
-        <div className={cn("doc-editor-shell flex h-full min-h-0 flex-col bg-muted/5", className)}>
-            <div className="flex items-center justify-between border-b border-border/40 px-3 py-1.5 text-[11px] text-muted-foreground">
-                <div className="flex items-center gap-2">
+        <div
+            className={cn(
+                "doc-editor-shell flex h-full min-h-0 flex-col",
+                isSchema ? "doc-editor-shell--schema bg-background" : "bg-muted/5",
+                className
+            )}
+        >
+            <div
+                className={cn(
+                    "flex items-center justify-between text-muted-foreground",
+                    isSchema
+                        ? "border-b border-border/30 px-4 py-2 text-[11px] font-medium"
+                        : "border-b border-border/40 px-3 py-1.5 text-[11px]"
+                )}
+            >
+                <div className="flex items-center gap-3">
                     {saveState === "loading" || saveState === "saving" ? (
-                        <Loader2 className="h-3.5 w-3.5 animate-spin text-cyan-400" />
+                        <Loader2 className={cn("animate-spin", isSchema ? "h-3.5 w-3.5 text-muted-foreground" : "h-3.5 w-3.5 text-cyan-400")} />
                     ) : saveState === "error" ? (
-                        <AlertCircle className="h-3.5 w-3.5 text-red-400" />
+                        <AlertCircle className="h-3.5 w-3.5 text-destructive" />
                     ) : (
-                        <Save className="h-3.5 w-3.5 text-emerald-400" />
+                        <Save className={cn(isSchema ? "h-3.5 w-3.5 text-muted-foreground" : "h-3.5 w-3.5 text-emerald-400")} />
                     )}
                     <span>{saveLabel}</span>
-                    <span className="rounded-full border border-border/60 px-2 py-0.5 text-[10px]">{wordCount} words</span>
+                    <span className={cn(isSchema ? "text-muted-foreground/80" : "rounded-full border border-border/60 px-2 py-0.5 text-[10px]")}>
+                        {wordCount} words
+                    </span>
                     {readOnly && (
                         <span className="rounded-full border border-cyan-500/35 bg-cyan-500/10 px-2 py-0.5 text-[10px] font-medium text-cyan-300 dark:text-cyan-200">
                             Read-only
@@ -536,7 +559,10 @@ export function DocumentBlockEditor({
                         <Button
                             variant="outline"
                             size="xs"
-                            className="text-[10px] h-6 px-2 text-muted-foreground hover:text-foreground"
+                            className={cn(
+                                "text-[10px] h-6 px-2 text-muted-foreground hover:text-foreground",
+                                isSchema && "border-border/50 hover:bg-muted/50"
+                            )}
                             onClick={() => setAiAssistOpen(true)}
                         >
                             <Sparkles className="h-3 w-3 text-emerald-500" />
@@ -563,10 +589,15 @@ export function DocumentBlockEditor({
                 </div>
             </div>
 
-            <div className="relative flex-1 overflow-auto">
+            <div className={cn("relative flex-1 overflow-auto", isSchema && "doc-editor-scroll")}>
                 <EditorRoot>
                     <EditorContent
-                        className="prose prose-stone dark:prose-invert prose-p:my-2 prose-headings:mb-3 prose-headings:mt-6 max-w-3xl mx-auto h-full px-4 pb-12 pt-6 sm:px-8"
+                        className={cn(
+                            "h-full",
+                            isSchema
+                                ? "prose prose-neutral dark:prose-invert max-w-2xl mx-auto px-6 pb-16 pt-8 sm:px-10 doc-editor-content--schema"
+                                : "prose prose-stone dark:prose-invert prose-p:my-2 prose-headings:mb-3 prose-headings:mt-6 max-w-3xl mx-auto px-4 pb-12 pt-6 sm:px-8"
+                        )}
                         initialContent={initialParsedRef.current.data}
                         extensions={extensions}
                         immediatelyRender={false}

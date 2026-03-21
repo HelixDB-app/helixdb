@@ -129,11 +129,13 @@ export function ConnectionSwitcher({
 
     const handleConnect = useCallback(
         (saved: SavedConnection) => {
+            const sshTunnel = saved.ssh_tunnel?.use_ssh_tunneling ? saved.ssh_tunnel : undefined;
             connect(
                 saved.connection_string,
                 saved.id,
                 saved.name,
-                normalizeConnectionMetadata(saved)
+                normalizeConnectionMetadata(saved),
+                sshTunnel
             );
         },
         [connect]

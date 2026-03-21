@@ -79,9 +79,9 @@ export default function ReleaseNotesPage() {
     }
 
     return (
-        <div className="flex h-screen flex-col bg-background">
+        <div className="flex h-screen flex-col bg-transparent">
             {/* Header */}
-            <header className="flex items-center gap-3 px-4 py-3 border-b border-border/50 bg-background/80 backdrop-blur-sm shrink-0">
+            <header className="flex items-center gap-3 px-4 py-3 border-b border-border/35 bg-card/75 dark:bg-background/80 backdrop-blur-sm shrink-0">
                 <button
                     onClick={() => router.back()}
                     className="h-8 w-8 flex items-center justify-center rounded-md hover:bg-muted transition-colors"

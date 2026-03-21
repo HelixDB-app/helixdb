@@ -17,6 +17,7 @@ export type ApiFeatureType =
     | "index-optimization"
     | "query-error"
     | "query-explain"
+    | "schema-doc"
     | "git"
     | "other";
 

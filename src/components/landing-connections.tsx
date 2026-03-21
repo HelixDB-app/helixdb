@@ -4,7 +4,6 @@ import { useEffect, useState } from "react";
 import type { SavedConnection } from "@/lib/types";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useAuthStore } from "@/stores/auth-store";
-import { useTrialStore } from "@/stores/trial-store";
 import { APP_NAME } from "@/lib/app-config";
 import { useSavedConnectionsStore } from "@/stores/saved-connections-store";
 import { ConnectionDialog } from "@/components/connection-dialog";
@@ -14,8 +13,6 @@ import { LocalPostgresCard } from "@/components/local-postgres-card";
 import { StatusBar } from "@/components/status-bar";
 import { ProfilePanel } from "@/components/profile-panel";
 import { LoginPrompt } from "@/components/login-prompt";
-import { authOpenBrowser } from "@/lib/tauri";
-import { useCountdown } from "@/lib/use-countdown";
 import {
     formatCriticalityLabel,
     normalizeConnectionCriticality,
@@ -43,10 +40,9 @@ import {
     Globe,
     Search,
     AlertCircle,
-    Clock,
-    ChevronRight,
     Keyboard,
     Layers,
+    ChevronRight,
 } from "lucide-react";
 import {
     Select,
@@ -119,7 +115,6 @@ export function LandingConnections() {
         clearError: clearConnectionError,
     } = useConnectionStore();
     const { user, isAuthenticated } = useAuthStore();
-    const { result: trialResult, loadState: trialLoadState, isTrialActive } = useTrialStore();
 
     const [showQuickConnect, setShowQuickConnect] = useState(false);
     const [showSaveDialog, setShowSaveDialog] = useState(false);
@@ -132,19 +127,6 @@ export function LandingConnections() {
     const [environmentFilter, setEnvironmentFilter] = useState<"all" | "dev" | "staging" | "prod">("all");
     const [criticalityFilter, setCriticalityFilter] = useState<"all" | "low" | "medium" | "high">("all");
 
-    const trialCountdown = useCountdown(trialResult?.trial?.trialExpiryDate);
-    const showTrialCountdown =
-        !isAuthenticated &&
-        trialLoadState === "ready" &&
-        trialResult !== null &&
-        isTrialActive() &&
-        !trialCountdown.expired;
-
-    const pad = (value: number) => String(value).padStart(2, "0");
-    const trialCountdownLabel = trialCountdown.days > 0
-        ? `${trialCountdown.days}d ${pad(trialCountdown.hours)}h ${pad(trialCountdown.minutes)}m`
-        : `${pad(trialCountdown.hours)}:${pad(trialCountdown.minutes)}:${pad(trialCountdown.seconds)}`;
-
     useEffect(() => {
         load();
         requestAnimationFrame(() => setMounted(true));
@@ -153,11 +135,15 @@ export function LandingConnections() {
     useEffect(() => {
         if (pendingConnect) {
             const metadata = normalizeConnectionMetadata(pendingConnect);
+            const sshTunnel = pendingConnect.ssh_tunnel?.use_ssh_tunneling
+                ? pendingConnect.ssh_tunnel
+                : undefined;
             connect(
                 pendingConnect.connection_string,
                 pendingConnect.id,
                 pendingConnect.name,
-                metadata
+                metadata,
+                sshTunnel
             );
             setPendingConnect(null);
         }
@@ -182,7 +168,9 @@ export function LandingConnections() {
     const handleConnect = (conn: SavedConnection) => {
         setConnectingId(conn.id);
         const metadata = normalizeConnectionMetadata(conn);
-        connect(conn.connection_string, conn.id, conn.name, metadata);
+        const sshTunnel =
+            conn.ssh_tunnel?.use_ssh_tunneling ? conn.ssh_tunnel : undefined;
+        connect(conn.connection_string, conn.id, conn.name, metadata, sshTunnel);
     };
 
     const handleSaveAndConnect = (conn: SavedConnection) => setPendingConnect(conn);
@@ -248,7 +236,7 @@ export function LandingConnections() {
     const hasConnections = connections.length > 0;
 
     return (
-        <div className="flex h-screen flex-col bg-background overflow-hidden">
+        <div className="flex h-screen flex-col bg-transparent overflow-hidden">
             {/* Ambient background */}
             <div className="pointer-events-none fixed inset-0 overflow-hidden">
                 <div className="absolute -top-32 -left-32 h-96 w-96 rounded-full bg-emerald-500/4 blur-3xl" />
@@ -258,7 +246,7 @@ export function LandingConnections() {
             {/* ── Header ─────────────────────────────────────────────────── */}
             <header
                 className={cn(
-                    "relative flex h-12 shrink-0 items-center justify-between border-b border-border/20 bg-card/20 px-5 transition-all duration-500",
+                    "relative flex h-12 shrink-0 items-center justify-between border-b border-border/35 bg-card/75 dark:bg-card/20 px-5 backdrop-blur-md shadow-[0_1px_0_oklch(0_0_0_/0.03)] dark:shadow-none transition-all duration-500",
                     mounted ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-2"
                 )}
             >
@@ -331,48 +319,12 @@ export function LandingConnections() {
             {/* ── Main ───────────────────────────────────────────────────── */}
             <main id="main" className="relative flex-1 overflow-auto" tabIndex={-1} aria-label="Main content">
                 <div className="max-w-5xl mx-auto px-6 py-8">
-                    {showTrialCountdown && (
-                        <div
-                            className={cn(
-                                "mb-6 rounded-2xl border border-emerald-500/20 bg-gradient-to-r from-emerald-500/10 via-cyan-500/5 to-transparent px-4 py-3 shadow-sm",
-                                mounted ? "opacity-100 translate-y-0" : "opacity-0 -translate-y-2"
-                            )}
-                        >
-                            <div className="flex flex-wrap items-center justify-between gap-3">
-                                <div className="space-y-1">
-                                    <div className="flex items-center gap-2 text-[11px] uppercase tracking-wide text-muted-foreground/60">
-                                        <Clock className="h-3.5 w-3.5 text-emerald-400" />
-                                        Free Trial Active
-                                    </div>
-                                    <p className="text-sm font-semibold text-foreground">
-                                        All Pro features are unlocked for your device
-                                    </p>
-                                    <p className="text-xs text-muted-foreground">
-                                        Ends in{" "}
-                                        <span className="font-mono text-foreground">{trialCountdownLabel}</span>
-                                    </p>
-                                </div>
-                                <Button
-                                    size="sm"
-                                    className="h-8 gap-1.5 px-3 text-xs bg-emerald-500 hover:bg-emerald-400 text-black"
-                                    onClick={() =>
-                                        authOpenBrowser(
-                                            `${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app"}/pricing`
-                                        )
-                                    }
-                                >
-                                    Upgrade
-                                    <ChevronRight className="h-3.5 w-3.5" />
-                                </Button>
-                            </div>
-                        </div>
-                    )}
                     <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
 
                         {/* ── Left column: Local ─────────────────────────── */}
                         <div
                             className={cn(
-                                "space-y-4 transition-all duration-500 delay-[50ms]",
+                                "space-y-4 rounded-2xl border border-border/40 bg-card/60 p-4 shadow-sm dark:rounded-none dark:border-transparent dark:bg-transparent dark:p-0 dark:shadow-none transition-all duration-500 delay-[50ms]",
                                 mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-3"
                             )}
                         >
@@ -403,18 +355,18 @@ export function LandingConnections() {
                         {/* ── Right column: Saved connections ────────────── */}
                         <div
                             className={cn(
-                                "space-y-4 transition-all duration-500 delay-[120ms]",
+                                "space-y-4 rounded-2xl border border-border/30 bg-muted/25 p-4 shadow-sm dark:rounded-none dark:border-transparent dark:bg-transparent dark:p-0 dark:shadow-none transition-all duration-500 delay-[120ms]",
                                 mounted ? "opacity-100 translate-y-0" : "opacity-0 translate-y-3"
                             )}
                         >
-                            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+                            <div className="space-y-3 min-w-0">
                                 <SectionHeader
                                     icon={<Globe className="h-3.5 w-3.5" />}
                                     title="Saved connections"
                                     count={connections.length}
                                 />
-                                <div className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:justify-end">
-                                    <div className="relative flex-1 min-w-0 max-w-xs">
+                                <div className="grid grid-cols-1 gap-2 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:gap-3">
+                                    <div className="relative min-w-0 w-full">
                                         <Search className="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground/40" />
                                         <Input
                                             value={searchQuery}
@@ -423,14 +375,14 @@ export function LandingConnections() {
                                             className="h-8 w-full pl-7 text-xs bg-background/40 border-border/30 focus-visible:ring-1 focus-visible:ring-emerald-500/40"
                                         />
                                     </div>
-                                    <div className="flex items-center gap-1.5">
+                                    <div className="flex w-full items-stretch gap-2 sm:w-auto sm:shrink-0 sm:justify-end">
                                         <Select
                                             value={environmentFilter}
                                             onValueChange={(value: "all" | "dev" | "staging" | "prod") =>
                                                 setEnvironmentFilter(value)
                                             }
                                         >
-                                            <SelectTrigger className="h-8 w-[120px] text-xs bg-background/40 border-border/30">
+                                            <SelectTrigger className="h-8 min-w-0 flex-1 sm:w-[118px] sm:flex-none text-xs bg-background/40 border-border/30">
                                                 <SelectValue placeholder="Environment" />
                                             </SelectTrigger>
                                             <SelectContent>
@@ -446,7 +398,7 @@ export function LandingConnections() {
                                                 setCriticalityFilter(value)
                                             }
                                         >
-                                            <SelectTrigger className="h-8 w-[120px] text-xs bg-background/40 border-border/30">
+                                            <SelectTrigger className="h-8 min-w-0 flex-1 sm:w-[118px] sm:flex-none text-xs bg-background/40 border-border/30">
                                                 <SelectValue placeholder="Criticality" />
                                             </SelectTrigger>
                                             <SelectContent>
@@ -493,11 +445,11 @@ export function LandingConnections() {
                             )}
 
                             {isConnecting && (
-                                <div className="flex items-center gap-2 rounded-lg border border-emerald-500/25 bg-emerald-500/5 px-3 py-2 text-[11px] text-emerald-300/95">
+                                <div className="flex items-center gap-2 rounded-lg border border-emerald-500/25 bg-emerald-500/5 px-3 py-2 text-[11px] text-emerald-800 dark:text-emerald-300/95">
                                     <Loader2 className="h-3.5 w-3.5 animate-spin shrink-0" />
                                     <div className="flex-1">
                                         <p className="font-medium">Connecting to database…</p>
-                                        <p className="text-[10px] text-emerald-200/80">
+                                        <p className="text-[10px] text-emerald-700/90 dark:text-emerald-200/80">
                                             This can take a few seconds. You can keep browsing while we connect.
                                         </p>
                                     </div>

@@ -17,6 +17,8 @@ import { Button } from "@/components/ui/button";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Separator } from "@/components/ui/separator";
 import { cn } from "@/lib/utils";
+import { FORMAT_SQL_KEY_COMBO } from "@/lib/format-sql";
+import { formatShortcut } from "@/lib/shortcut-keys";
 
 export interface QueryToolbarProps {
     isExecuting: boolean;
@@ -77,10 +79,15 @@ export function QueryToolbar({
                             disabled={!hasSql || isExecuting}
                         >
                             <AlignLeft className="h-3.5 w-3.5" />
-                            Format
+                            <span>Format</span>
+                            <kbd className="hidden sm:inline-flex h-5 items-center rounded border border-border/60 bg-muted/50 px-1 font-mono text-[10px] font-medium text-muted-foreground tabular-nums">
+                                {formatShortcut(FORMAT_SQL_KEY_COMBO)}
+                            </kbd>
                         </Button>
                     </TooltipTrigger>
-                    <TooltipContent>Format SQL (⇧⌥F)</TooltipContent>
+                    <TooltipContent side="bottom" className="max-w-[220px]">
+                        Collapsed, column-aligned SQL ({formatShortcut(FORMAT_SQL_KEY_COMBO)})
+                    </TooltipContent>
                 </Tooltip>
 
                 <Separator orientation="vertical" className="h-4 mx-0.5" />

@@ -2,10 +2,10 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { usePathname, useRouter } from "next/navigation";
+import { createElement, useEffect, useMemo, useState } from "react";
 import { useConnectionStore } from "@/stores/connection-store";
-import { useShortcutsStore } from "@/stores/shortcuts-store";
+import { useShortcutsStore, type ShortcutActionId } from "@/stores/shortcuts-store";
 import { useAuthStore } from "@/stores/auth-store";
 import { useTrialStore } from "@/stores/trial-store";
 import { useCollaborationStore } from "@/stores/collaboration-store";
@@ -26,6 +26,21 @@ import { ProfilePanel } from "@/components/profile-panel";
 import { LoginPrompt } from "@/components/login-prompt";
 import { SurveyModal } from "@/components/survey-modal";
 import { getSurveyStatus } from "@/lib/survey";
+import type { SettingsSection } from "@/components/settings-dialog";
+
+function parseMenuSettingsSection(raw: string | null): SettingsSection | null {
+    if (!raw) return null;
+    const allowed: SettingsSection[] = [
+        "appearance",
+        "editor",
+        "data",
+        "query",
+        "ai",
+        "shortcuts",
+        "about",
+    ];
+    return allowed.includes(raw as SettingsSection) ? (raw as SettingsSection) : null;
+}
 import { Avatar, AvatarFallback, AvatarImage } from "@/components/ui/avatar";
 
 // Heavy components loaded lazily to reduce initial bundle size
@@ -50,13 +65,23 @@ import {
     TooltipContent,
     TooltipTrigger,
 } from "@/components/ui/tooltip";
+import {
+    DropdownMenu,
+    DropdownMenuContent,
+    DropdownMenuItem,
+    DropdownMenuSeparator,
+    DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Badge } from "@/components/ui/badge";
 import { ConnectionEnvBadge } from "@/components/connection-env-badge";
 import { cn } from "@/lib/utils";
 import {
     Activity,
     AppWindowMac,
+    Check,
+    ChevronDown,
     Layers,
+    MoreHorizontal,
     Network,
     PlugZap,
     RefreshCw,
@@ -73,16 +98,57 @@ import {
     Unplug,
     FlaskConical,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
+
+type HeaderPrimaryView = "data" | "query" | "sessions" | "indexes" | "topology" | "ai";
+
+type HeaderViewShortcutId = Extract<
+    ShortcutActionId,
+    "view_data" | "view_query" | "view_sessions" | "view_indexes" | "view_topology" | "view_ai"
+>;
+
+const HEADER_PRIMARY_VIEWS: {
+    id: HeaderPrimaryView;
+    label: string;
+    Icon: LucideIcon;
+    shortcutKey: HeaderViewShortcutId;
+    labelClassName: string;
+}[] = [
+    { id: "data", label: "Data", Icon: Table2, shortcutKey: "view_data", labelClassName: "" },
+    { id: "query", label: "Query", Icon: Terminal, shortcutKey: "view_query", labelClassName: "" },
+    {
+        id: "sessions",
+        label: "Sessions",
+        Icon: Activity,
+        shortcutKey: "view_sessions",
+        labelClassName: "hidden sm:inline",
+    },
+    {
+        id: "indexes",
+        label: "Indexes",
+        Icon: Layers,
+        shortcutKey: "view_indexes",
+        labelClassName: "hidden sm:inline",
+    },
+    {
+        id: "topology",
+        label: "Topology",
+        Icon: Network,
+        shortcutKey: "view_topology",
+        labelClassName: "hidden md:inline",
+    },
+    { id: "ai", label: "AI", Icon: Sparkles, shortcutKey: "view_ai", labelClassName: "" },
+];
 
 export default function Home() {
     const router = useRouter();
+    const pathname = usePathname();
     const {
         isConnected,
         connectionId,
         disconnect,
         databaseName,
         serverVersion,
-        selectTable,
         refreshAll,
         isRefreshingAll,
         connections,
@@ -99,7 +165,29 @@ export default function Home() {
     const [showWelcome, setShowWelcome] = useState(false);
     const [showSurveyModal, setShowSurveyModal] = useState(false);
     const [settingsOpen, setSettingsOpen] = useState(false);
+    const [settingsSeed, setSettingsSeed] = useState<SettingsSection | null>(null);
     const [showProfile, setShowProfile] = useState(false);
+
+    /** Native app menu (Tauri) signals via query params on `/` so this works from any route. */
+    useEffect(() => {
+        if (typeof window === "undefined" || pathname !== "/") return;
+        const sp = new URLSearchParams(window.location.search);
+        const d = sp.get("pgstudio_desktop");
+        if (!d) return;
+        const sectionRaw = sp.get("pgstudio_section");
+        router.replace("/", { scroll: false });
+        if (d === "settings") {
+            setSettingsSeed(parseMenuSettingsSection(sectionRaw));
+            setSettingsOpen(true);
+        } else if (d === "palette") {
+            if (!isConnected) setShowConnectionDialog(true);
+            else setSearchOpen(true);
+        }
+    }, [pathname, router, isConnected]);
+
+    useEffect(() => {
+        if (!settingsOpen) setSettingsSeed(null);
+    }, [settingsOpen]);
 
     useEffect(() => {
         if (typeof window === "undefined" || localStorage.getItem("helix_welcomed")) return;
@@ -270,6 +358,11 @@ export default function Home() {
     );
     const sc = (id: Parameters<typeof getCombo>[0]) => formatShortcut(getCombo(id));
 
+    const headerMobileView = useMemo(() => {
+        const cur = HEADER_PRIMARY_VIEWS.find((v) => v.id === activeView);
+        return { icon: cur?.Icon ?? Table2, label: cur?.label ?? "View" };
+    }, [activeView]);
+
     // Landing: saved connections list + quick connect
     if (!isConnected) {
         return (
@@ -284,12 +377,32 @@ export default function Home() {
                         getToken={authGetToken}
                     />
                 )}
+                <ConnectionDialog
+                    open={showConnectionDialog}
+                    onOpenChange={setShowConnectionDialog}
+                />
+                <CommandPalette
+                    open={searchOpen}
+                    onOpenChange={setSearchOpen}
+                    onNavigateToQuery={() => setActiveView("query")}
+                    onNavigateToData={() => setActiveView("data")}
+                    onNavigateToTable={(schema, table) => {
+                        setActiveView("data");
+                        openTab(schema, table);
+                    }}
+                />
+                <SettingsDialog
+                    open={settingsOpen}
+                    onOpenChange={setSettingsOpen}
+                    onOpenSurvey={user ? () => { setSettingsOpen(false); setShowSurveyModal(true); } : undefined}
+                    seedSection={settingsSeed}
+                />
             </>
         );
     }
 
     return (
-        <div className="flex h-screen flex-col bg-background">
+        <div className="flex h-screen flex-col bg-transparent">
             {showSurveyModal && (
                 <SurveyModal
                     open={showSurveyModal}
@@ -298,40 +411,40 @@ export default function Home() {
                     getToken={authGetToken}
                 />
             )}
-            {/* Top bar — 3-zone grid: left | center | right */}
-            <header className="grid h-14 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-3 border-b border-border/20 bg-background/95 px-4 backdrop-blur-md shrink-0">
+            {/* Top bar — compact flex: brand | views | actions; scroll/menus on narrow widths */}
+            <header className="flex min-h-11 shrink-0 items-center gap-2 border-b border-border/35 bg-card/75 dark:bg-background/95 px-2 pt-[max(0px,env(safe-area-inset-top))] sm:px-3 backdrop-blur-md shadow-[0_1px_0_oklch(0_0_0_/0.03)] dark:shadow-none">
                 {/* Left: Logo + connection indicator */}
-                <div className="flex items-center gap-2.5 min-w-0">
+                <div className="flex min-w-0 max-w-[min(42vw,14rem)] sm:max-w-[min(50vw,20rem)] items-center gap-2 shrink-0">
                     <button
                         onClick={() => !isConnected && setShowConnectionDialog(true)}
-                        className="flex items-center gap-2 group focus-ring rounded-md shrink-0"
+                        className="flex min-w-0 items-center gap-1.5 rounded-md group focus-ring shrink-0"
                         aria-label={isConnected ? `${APP_NAME} home` : "Connect to database"}
                     >
                         <Image
                             src="/logo.png"
                             alt=""
-                            width={22}
-                            height={22}
-                            className="h-[22px] w-[22px] rounded-md object-contain shrink-0"
+                            width={20}
+                            height={20}
+                            className="h-5 w-5 rounded-md object-contain shrink-0"
                         />
-                        <span className="font-bold text-sm bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent">
+                        <span className="truncate font-semibold text-xs bg-gradient-to-r from-emerald-400 to-cyan-400 bg-clip-text text-transparent max-[360px]:hidden">
                             {APP_NAME}
                         </span>
                     </button>
 
                     {isConnected && (
                         <>
-                            <div className="h-3.5 w-px bg-border/40 shrink-0" />
-                            <div className="flex items-center gap-1.5 min-w-0">
-                                <div className="h-1.5 w-1.5 rounded-full bg-emerald-500 animate-pulse shrink-0" />
-                                <span className="text-xs font-mono text-muted-foreground/80 truncate">
+                            <div className="h-3 w-px bg-border/40 shrink-0" />
+                            <div className="flex min-w-0 flex-1 items-center gap-1">
+                                <div className="h-1.5 w-1.5 shrink-0 rounded-full bg-emerald-500 animate-pulse" />
+                                <span className="min-w-0 truncate font-mono text-[10px] text-muted-foreground/80 sm:text-[11px]">
                                     {databaseName}
                                 </span>
                                 <ConnectionEnvBadge environment={activeConnectionEnvironment} compact />
                                 {pgVersion && (
                                     <Badge
                                         variant="outline"
-                                        className="h-4 px-1.5 text-[9px] font-mono border-border/30 text-muted-foreground/45 shrink-0"
+                                        className="hidden h-4 shrink-0 border-border/30 px-1.5 font-mono text-[9px] text-muted-foreground/45 sm:inline-flex"
                                     >
                                         PG {pgVersion}
                                     </Badge>
@@ -341,66 +454,74 @@ export default function Home() {
                     )}
                 </div>
 
-                {/* Center: Primary view tabs */}
-                <div className="flex min-w-0 items-center justify-center">
+                {/* Center: view switcher — dropdown on small screens, tabs on md+ */}
+                <div className="flex min-w-0 flex-1 items-center justify-center">
                     {isConnected && (
-                        <Tabs value={activeView} onValueChange={(v) => setActiveView(v as typeof activeView)}>
-                            <TabsList aria-label="View tabs" className="h-9 gap-1 rounded-xl border border-border/10 bg-muted/40 p-1 shadow-sm backdrop-blur-sm">
-                                <TabsTrigger
-                                    value="data"
-                                    className="h-7 gap-1.5 px-3 text-[11px] data-[state=active]:bg-background data-[state=active]:shadow-sm rounded-lg"
-                                    title={sc("view_data") ? `Data (${sc("view_data")})` : "Data"}
-                                >
-                                    <Table2 className="h-3 w-3" />
-                                    <span>Data</span>
-                                </TabsTrigger>
-                                <TabsTrigger
-                                    value="query"
-                                    className="h-7 gap-1.5 px-3 text-[11px] data-[state=active]:bg-background data-[state=active]:shadow-sm rounded-lg"
-                                    title={sc("view_query") ? `Query (${sc("view_query")})` : "Query"}
-                                >
-                                    <Terminal className="h-3 w-3" />
-                                    <span>Query</span>
-                                </TabsTrigger>
-                                <TabsTrigger
-                                    value="sessions"
-                                    className="h-7 gap-1.5 px-3 text-[11px] data-[state=active]:bg-background data-[state=active]:shadow-sm rounded-lg"
-                                    title={sc("view_sessions") ? `Sessions (${sc("view_sessions")})` : "Sessions"}
-                                >
-                                    <Activity className="h-3 w-3" />
-                                    <span className="hidden sm:inline">Sessions</span>
-                                </TabsTrigger>
-                                <TabsTrigger
-                                    value="indexes"
-                                    className="h-7 gap-1.5 px-3 text-[11px] data-[state=active]:bg-background data-[state=active]:shadow-sm rounded-lg"
-                                    title={sc("view_indexes") ? `Indexes (${sc("view_indexes")})` : "Indexes"}
-                                >
-                                    <Layers className="h-3 w-3" />
-                                    <span className="hidden sm:inline">Indexes</span>
-                                </TabsTrigger>
-                                <TabsTrigger
-                                    value="topology"
-                                    className="h-7 gap-1.5 px-3 text-[11px] data-[state=active]:bg-background data-[state=active]:shadow-sm rounded-lg"
-                                    title={sc("view_topology") ? `Topology (${sc("view_topology")})` : "Topology"}
-                                >
-                                    <Network className="h-3 w-3" />
-                                    <span className="hidden md:inline">Topology</span>
-                                </TabsTrigger>
-                                <TabsTrigger
-                                    value="ai"
-                                    className="h-7 gap-1.5 px-3 text-[11px] data-[state=active]:bg-background data-[state=active]:shadow-sm rounded-lg"
-                                    title={sc("view_ai") ? `AI (${sc("view_ai")})` : "AI"}
-                                >
-                                    <Sparkles className="h-3 w-3" />
-                                    <span>AI</span>
-                                </TabsTrigger>
-                            </TabsList>
-                        </Tabs>
+                        <>
+                            <div className="flex w-full min-w-0 justify-center md:hidden">
+                                <DropdownMenu>
+                                    <DropdownMenuTrigger asChild>
+                                        <Button
+                                            variant="outline"
+                                            size="sm"
+                                            className="h-7 max-w-[min(100%,11rem)] gap-1 border-border/25 bg-muted/30 px-2 text-[10px] font-medium shadow-none"
+                                            aria-label={`Current view: ${headerMobileView.label}. Open view menu.`}
+                                        >
+                                            {createElement(headerMobileView.icon, {
+                                                className: "h-3 w-3 shrink-0 opacity-80",
+                                            })}
+                                            <span className="truncate">{headerMobileView.label}</span>
+                                            <ChevronDown className="h-3 w-3 shrink-0 opacity-50" />
+                                        </Button>
+                                    </DropdownMenuTrigger>
+                                    <DropdownMenuContent align="center" className="z-[8500] w-52">
+                                        {HEADER_PRIMARY_VIEWS.map(({ id, label, Icon }) => (
+                                            <DropdownMenuItem
+                                                key={id}
+                                                className="gap-2 text-xs"
+                                                onClick={() => setActiveView(id)}
+                                            >
+                                                <Icon className="h-3.5 w-3.5 opacity-70" />
+                                                {label}
+                                                {activeView === id && (
+                                                    <Check className="ml-auto h-3.5 w-3.5 opacity-70" />
+                                                )}
+                                            </DropdownMenuItem>
+                                        ))}
+                                    </DropdownMenuContent>
+                                </DropdownMenu>
+                            </div>
+
+                            <div className="hidden min-w-0 max-w-full justify-center overflow-x-auto py-0.5 [scrollbar-width:none] md:flex md:justify-center [&::-webkit-scrollbar]:hidden">
+                                <Tabs value={activeView} onValueChange={(v) => setActiveView(v as typeof activeView)}>
+                                    <TabsList
+                                        aria-label="View tabs"
+                                        className="h-8 gap-0.5 rounded-lg border border-border/10 bg-muted/35 p-0.5 shadow-none backdrop-blur-sm"
+                                    >
+                                        {HEADER_PRIMARY_VIEWS.map(({ id, label, Icon, shortcutKey, labelClassName }) => (
+                                            <TabsTrigger
+                                                key={id}
+                                                value={id}
+                                                className={cn(
+                                                    "h-7 shrink-0 gap-1 rounded-md px-2 text-[10px] font-medium data-[state=active]:bg-background data-[state=active]:shadow-sm sm:px-2.5 sm:text-[11px]",
+                                                )}
+                                                title={
+                                                    sc(shortcutKey) ? `${label} (${sc(shortcutKey)})` : label
+                                                }
+                                            >
+                                                <Icon className="h-3 w-3 shrink-0" />
+                                                <span className={labelClassName}>{label}</span>
+                                            </TabsTrigger>
+                                        ))}
+                                    </TabsList>
+                                </Tabs>
+                            </div>
+                        </>
                     )}
                 </div>
 
                 {/* Right: Action buttons — grouped with dividers */}
-                <div className="flex min-w-0 items-center justify-end gap-1 overflow-x-auto pb-0.5 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                <div className="flex shrink-0 items-center justify-end gap-0.5 sm:gap-1">
                     {/* Primary actions: Refresh + Search */}
                     {isConnected && (
                         <>
@@ -417,7 +538,7 @@ export default function Home() {
                                         <RefreshCw className={cn("h-3.5 w-3.5", isRefreshingAll && "animate-spin")} />
                                     </Button>
                                 </TooltipTrigger>
-                                <TooltipContent>
+                                <TooltipContent side="bottom" sideOffset={6}>
                                     Refresh{sc("refresh") && ` (${sc("refresh")})`}
                                 </TooltipContent>
                             </Tooltip>
@@ -440,7 +561,7 @@ export default function Home() {
                                         )}
                                     </Button>
                                 </TooltipTrigger>
-                                <TooltipContent>
+                                <TooltipContent side="bottom" sideOffset={6}>
                                     Search tables & columns{sc("search") && ` (${sc("search")})`}
                                 </TooltipContent>
                             </Tooltip>
@@ -449,82 +570,126 @@ export default function Home() {
                         </>
                     )}
 
-                    {/* Nav links: History, Extensions, Bug */}
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <Button
-                                asChild
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
-                            >
-                                <Link href="/query-history">
-                                    <Clock3 className="h-3.5 w-3.5" />
-                                    <span className="hidden lg:inline">Hist</span>
-                                </Link>
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                            Query History{sc("query_history") && ` (${sc("query_history")})`}
-                        </TooltipContent>
-                    </Tooltip>
+                    {/* Nav links: History, Extensions, Bug, Migrate — inline from lg; overflow menu on narrow */}
+                    <div className="hidden lg:contents">
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    asChild
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
+                                >
+                                    <Link href="/query-history">
+                                        <Clock3 className="h-3.5 w-3.5" />
+                                        <span className="hidden 2xl:inline">Hist</span>
+                                    </Link>
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" sideOffset={6}>
+                                Query History{sc("query_history") && ` (${sc("query_history")})`}
+                            </TooltipContent>
+                        </Tooltip>
 
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <Button
-                                asChild
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
-                            >
-                                <Link href="/extensions-management">
-                                    <ShieldCheck className="h-3.5 w-3.5" />
-                                    <span className="hidden lg:inline">Ext</span>
-                                </Link>
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                            Extensions & Users{sc("extensions") && ` (${sc("extensions")})`}
-                        </TooltipContent>
-                    </Tooltip>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    asChild
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
+                                >
+                                    <Link href="/extensions-management">
+                                        <ShieldCheck className="h-3.5 w-3.5" />
+                                        <span className="hidden 2xl:inline">Ext</span>
+                                    </Link>
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" sideOffset={6}>
+                                Extensions & Users{sc("extensions") && ` (${sc("extensions")})`}
+                            </TooltipContent>
+                        </Tooltip>
 
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <Button
-                                asChild
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
-                            >
-                                <Link href="/bug-report">
-                                    <Bug className="h-3.5 w-3.5" />
-                                    <span className="hidden lg:inline">Bug</span>
-                                </Link>
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                            Submit feedback & bug reports{sc("bug_report") && ` (${sc("bug_report")})`}
-                        </TooltipContent>
-                    </Tooltip>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    asChild
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
+                                >
+                                    <Link href="/bug-report">
+                                        <Bug className="h-3.5 w-3.5" />
+                                        <span className="hidden 2xl:inline">Bug</span>
+                                    </Link>
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" sideOffset={6}>
+                                Submit feedback & bug reports{sc("bug_report") && ` (${sc("bug_report")})`}
+                            </TooltipContent>
+                        </Tooltip>
 
-                    <Tooltip>
-                        <TooltipTrigger asChild>
-                            <Button
-                                asChild
-                                variant="ghost"
-                                size="sm"
-                                className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
-                            >
-                                <Link href="/migration-studio">
-                                    <GitCompare className="h-3.5 w-3.5" />
-                                    <span className="hidden lg:inline">Migrate</span>
-                                </Link>
-                            </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>
-                            Migration Studio
-                        </TooltipContent>
-                    </Tooltip>
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    asChild
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
+                                >
+                                    <Link href="/migration-studio">
+                                        <GitCompare className="h-3.5 w-3.5" />
+                                        <span className="hidden 2xl:inline">Migrate</span>
+                                    </Link>
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" sideOffset={6}>
+                                Migration Studio
+                            </TooltipContent>
+                        </Tooltip>
+                    </div>
+
+                    <div className="lg:hidden">
+                        <DropdownMenu>
+                            <DropdownMenuTrigger asChild>
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 w-7 p-0 text-muted-foreground/55 hover:text-foreground hover:bg-muted/55"
+                                    aria-label="More tools"
+                                >
+                                    <MoreHorizontal className="h-3.5 w-3.5" />
+                                </Button>
+                            </DropdownMenuTrigger>
+                            <DropdownMenuContent align="end" className="z-[8500] w-52">
+                                <DropdownMenuItem asChild className="gap-2 text-xs">
+                                    <Link href="/query-history">
+                                        <Clock3 className="h-3.5 w-3.5" />
+                                        Query History
+                                    </Link>
+                                </DropdownMenuItem>
+                                <DropdownMenuItem asChild className="gap-2 text-xs">
+                                    <Link href="/extensions-management">
+                                        <ShieldCheck className="h-3.5 w-3.5" />
+                                        Extensions & Users
+                                    </Link>
+                                </DropdownMenuItem>
+                                <DropdownMenuItem asChild className="gap-2 text-xs">
+                                    <Link href="/bug-report">
+                                        <Bug className="h-3.5 w-3.5" />
+                                        Report a bug
+                                    </Link>
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                                <DropdownMenuItem asChild className="gap-2 text-xs">
+                                    <Link href="/migration-studio">
+                                        <GitCompare className="h-3.5 w-3.5" />
+                                        Migration Studio
+                                    </Link>
+                                </DropdownMenuItem>
+                            </DropdownMenuContent>
+                        </DropdownMenu>
+                    </div>
 
                     {/* <Tooltip>
                         <TooltipTrigger asChild>
@@ -539,7 +704,7 @@ export default function Home() {
                                 <span className="hidden lg:inline">New</span>
                             </Button>
                         </TooltipTrigger>
-                        <TooltipContent>
+                        <TooltipContent side="bottom" sideOffset={6}>
                             New Window{sc("new_window") && ` (${sc("new_window")})`}
                         </TooltipContent>
                     </Tooltip> */}
@@ -558,10 +723,10 @@ export default function Home() {
                                     aria-label="Disconnect from database"
                                 >
                                     <Unplug className="h-3.5 w-3.5" />
-                                    <span className="hidden lg:inline">Disconnect</span>
+                                    <span className="hidden sm:inline">Disconnect</span>
                                 </Button>
                             </TooltipTrigger>
-                            <TooltipContent>
+                            <TooltipContent side="bottom" sideOffset={6}>
                                 Disconnect{sc("disconnect") && ` (${sc("disconnect")})`}
                             </TooltipContent>
                         </Tooltip>
@@ -579,7 +744,7 @@ export default function Home() {
                                     <span className="hidden lg:inline">Connect</span>
                                 </Button>
                             </TooltipTrigger>
-                            <TooltipContent>
+                            <TooltipContent side="bottom" sideOffset={6}>
                                 Connect{sc("connect") && ` (${sc("connect")})`}
                             </TooltipContent>
                         </Tooltip>
@@ -597,7 +762,7 @@ export default function Home() {
                                 <Settings className="h-3.5 w-3.5" />
                             </Button>
                         </TooltipTrigger>
-                        <TooltipContent>
+                        <TooltipContent side="bottom" sideOffset={6}>
                             Settings{sc("settings") && ` (${sc("settings")})`}
                         </TooltipContent>
                     </Tooltip>
@@ -620,7 +785,9 @@ export default function Home() {
                                     </Avatar>
                                 </button>
                             </TooltipTrigger>
-                            <TooltipContent>{user.name}</TooltipContent>
+                            <TooltipContent side="bottom" sideOffset={6}>
+                                {user.name}
+                            </TooltipContent>
                         </Tooltip>
                     ) : (
                         <LoginPrompt compact onLoginSuccess={() => {}} />
@@ -642,7 +809,7 @@ export default function Home() {
                         <ResizableHandle className="w-px bg-border/20 hover:bg-emerald-500/40 transition-colors data-[resize-handle-active]:bg-emerald-500/60" />
 
                         <ResizablePanel defaultSize={80}>
-                            <div className="h-full min-h-0" role="tabpanel" tabIndex={0} aria-label="Active view content">
+                            <div className="h-full min-h-0 bg-card/40 dark:bg-transparent border-l border-border/25 dark:border-transparent" role="tabpanel" tabIndex={0} aria-label="Active view content">
                                 {activeView === "data" && <TableLayoutView />}
                                 {activeView === "query" && <QueryEditor />}
                                 {activeView === "tests" && <SqlUnitTestRunner />}
@@ -681,6 +848,7 @@ export default function Home() {
                 open={settingsOpen}
                 onOpenChange={setSettingsOpen}
                 onOpenSurvey={user ? () => { setSettingsOpen(false); setShowSurveyModal(true); } : undefined}
+                seedSection={settingsSeed}
             />
 
             <ProfilePanel open={showProfile} onClose={() => setShowProfile(false)} />

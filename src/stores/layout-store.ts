@@ -1,9 +1,52 @@
 import { create } from "zustand";
 
-export interface TableTab {
-    id: string; // e.g., "schema:table"
-    schema: string;
-    table: string;
+/** One tab in the Data view (table, view, function, type, or event trigger). */
+export type LayoutTab =
+    | { kind: "table"; id: string; schema: string; table: string }
+    | { kind: "view"; id: string; schema: string; table: string }
+    | {
+          kind: "function";
+          id: string;
+          schema: string;
+          name: string;
+          arguments: string;
+          isTrigger: boolean;
+      }
+    | { kind: "type"; id: string; schema: string; name: string }
+    | { kind: "event_trigger"; id: string; name: string };
+
+/** @deprecated Use LayoutTab */
+export type TableTab = LayoutTab;
+
+export function layoutTabIdForFunction(schema: string, name: string, args: string): string {
+    return `fn:${encodeURIComponent(schema)}:${encodeURIComponent(name)}:${encodeURIComponent(args)}`;
+}
+
+export function layoutTabIdForType(schema: string, name: string): string {
+    return `ty:${encodeURIComponent(schema)}:${encodeURIComponent(name)}`;
+}
+
+export function layoutTabIdForEventTrigger(name: string): string {
+    return `et:${encodeURIComponent(name)}`;
+}
+
+/** Short label for the Data view tab bar (truncates long argument lists). */
+export function layoutTabTitle(tab: LayoutTab, maxArgChars = 32): string {
+    switch (tab.kind) {
+        case "table":
+        case "view":
+            return tab.table;
+        case "function": {
+            const a = tab.arguments.trim();
+            if (!a) return `${tab.name}()`;
+            const short = a.length > maxArgChars ? `${a.slice(0, maxArgChars)}…` : a;
+            return `${tab.name}(${short})`;
+        }
+        case "type":
+            return tab.name;
+        case "event_trigger":
+            return tab.name;
+    }
 }
 
 export type SplitDirection = "horizontal" | "vertical";
@@ -11,7 +54,7 @@ export type SplitDirection = "horizontal" | "vertical";
 export interface PaneNode {
     type: "pane";
     id: string;
-    tabs: TableTab[];
+    tabs: LayoutTab[];
     activeTabId: string | null;
 }
 
@@ -30,14 +73,17 @@ interface LayoutState {
     activePaneId: string | null;
     
     // Actions
-    openTab: (schema: string, table: string) => void;
+    openTab: (schema: string, table: string, options?: { isView?: boolean }) => void;
+    openFunctionTab: (schema: string, name: string, args: string, isTrigger: boolean) => void;
+    openTypeTab: (schema: string, name: string) => void;
+    openEventTriggerTab: (name: string) => void;
     closeTab: (paneId: string, tabId: string) => void;
     closeOtherTabs: (paneId: string, tabId: string) => void;
     closeTabsToRight: (paneId: string, tabId: string) => void;
     closeAllTabs: (paneId: string) => void;
     setActiveTab: (paneId: string, tabId: string) => void;
     setActivePane: (paneId: string) => void;
-    splitPane: (paneId: string, direction: SplitDirection, newTab?: TableTab) => void;
+    splitPane: (paneId: string, direction: SplitDirection, newTab?: LayoutTab) => void;
     moveTab: (sourcePaneId: string, targetPaneId: string, tabId: string) => void;
     setSizes: (splitNodeId: string, sizes: number[]) => void;
     resetLayout: () => void;
@@ -126,7 +172,7 @@ function cleanupTree(node: LayoutNode): LayoutNode | null {
     };
 }
 
-export const useLayoutStore = create<LayoutState>((set, get) => {
+export const useLayoutStore = create<LayoutState>((set) => {
     
     const defaultRoot: PaneNode = {
         type: "pane",
@@ -135,67 +181,95 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
         activeTabId: null
     };
 
+    const upsertLayoutTab = (newTab: LayoutTab) => {
+        const tabId = newTab.id;
+        set((state) => {
+            let paneId = state.activePaneId;
+            let pane = paneId ? findPane(state.root, paneId) : null;
+
+            if (!pane) {
+                const firstPane = (function findFirst(n: LayoutNode): PaneNode | null {
+                    if (n.type === "pane") return n;
+                    for (const c of n.children) {
+                        const found = findFirst(c);
+                        if (found) return found;
+                    }
+                    return null;
+                })(state.root);
+
+                if (firstPane) {
+                    pane = firstPane;
+                    paneId = pane.id;
+                } else {
+                    const newRoot: PaneNode = {
+                        ...defaultRoot,
+                        id: generatePaneId(),
+                        tabs: [newTab],
+                        activeTabId: tabId,
+                    };
+                    return { root: newRoot, activePaneId: newRoot.id };
+                }
+            }
+
+            if (pane.tabs.some((t) => t.id === tabId)) {
+                return {
+                    root: mapTree(state.root, paneId!, (p) => ({
+                        ...p,
+                        activeTabId: tabId,
+                    })) as LayoutNode,
+                    activePaneId: paneId,
+                };
+            }
+
+            return {
+                root: mapTree(state.root, paneId!, (p) => {
+                    const pp = p as PaneNode;
+                    return {
+                        ...pp,
+                        tabs: [...pp.tabs, newTab],
+                        activeTabId: tabId,
+                    };
+                }) as LayoutNode,
+                activePaneId: paneId,
+            };
+        });
+    };
+
     return {
         root: defaultRoot,
         activePaneId: defaultRoot.id,
 
-        openTab: (schema: string, table: string) => {
+        openTab: (schema: string, table: string, options?: { isView?: boolean }) => {
             const tabId = `${schema}:${table}`;
-            const newTab: TableTab = { id: tabId, schema, table };
-            
-            set(state => {
-                let paneId = state.activePaneId;
-                let pane = paneId ? findPane(state.root, paneId) : null;
-                
-                // If active pane wasn't found (e.g., cleared out), just pick the first pane
-                if (!pane) {
-                    const firstPane = (function findFirst(n: LayoutNode): PaneNode | null {
-                        if (n.type === "pane") return n;
-                        for (const c of n.children) {
-                            const found = findFirst(c);
-                            if (found) return found;
-                        }
-                        return null;
-                    })(state.root);
-                    
-                    if (firstPane) {
-                        pane = firstPane;
-                        paneId = pane.id;
-                    } else {
-                        // Recreate root if everything got closed
-                        const newRoot: PaneNode = {
-                            ...defaultRoot,
-                            id: generatePaneId(),
-                            tabs: [newTab],
-                            activeTabId: tabId
-                        };
-                        return { root: newRoot, activePaneId: newRoot.id };
-                    }
-                }
-                
-                // If tab is already open in this pane, just switch to it
-                if (pane.tabs.some(t => t.id === tabId)) {
-                    return {
-                        root: mapTree(state.root, paneId!, p => ({
-                            ...p,
-                            activeTabId: tabId
-                        })) as LayoutNode,
-                        activePaneId: paneId
-                    };
-                }
-                
-                // Add tab and activate
-                return {
-                    root: mapTree(state.root, paneId!, p => {
-                        const pp = p as PaneNode;
-                        return {
-                            ...pp,
-                            tabs: [...pp.tabs, newTab],
-                            activeTabId: tabId
-                        };
-                    }) as LayoutNode,
-                    activePaneId: paneId
-                };
+            const kind = options?.isView ? ("view" as const) : ("table" as const);
+            upsertLayoutTab({ kind, id: tabId, schema, table });
+        },
+
+        openFunctionTab: (schema: string, name: string, args: string, isTrigger: boolean) => {
+            upsertLayoutTab({
+                kind: "function",
+                id: layoutTabIdForFunction(schema, name, args),
+                schema,
+                name,
+                arguments: args,
+                isTrigger,
+            });
+        },
+
+        openTypeTab: (schema: string, name: string) => {
+            upsertLayoutTab({
+                kind: "type",
+                id: layoutTabIdForType(schema, name),
+                schema,
+                name,
+            });
+        },
+
+        openEventTriggerTab: (name: string) => {
+            upsertLayoutTab({
+                kind: "event_trigger",
+                id: layoutTabIdForEventTrigger(name),
+                name,
             });
         },
 
@@ -320,7 +394,7 @@ export const useLayoutStore = create<LayoutState>((set, get) => {
             set({ activePaneId: paneId });
         },
 
-        splitPane: (paneId: string, direction: SplitDirection, newTab?: TableTab) => {
+        splitPane: (paneId: string, direction: SplitDirection, newTab?: LayoutTab) => {
             set(state => {
                 const sourcePane = findPane(state.root, paneId);
                 if (!sourcePane) return state;

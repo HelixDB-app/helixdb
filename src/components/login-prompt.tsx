@@ -1,24 +1,10 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect } from "react";
+import { useDesktopAuthLogin } from "@/hooks/use-desktop-auth-login";
 import { useAuthStore } from "@/stores/auth-store";
-import { useTrialStore } from "@/stores/trial-store";
-import { authOpenLogin, authStoreToken, authFetchProfile } from "@/lib/tauri";
-import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LogIn, Loader2, X, RefreshCw, AlertCircle, Wifi } from "lucide-react";
-
-// How long to wait for the desktop deep-link callback before showing a timeout UI
-const LOGIN_TIMEOUT_MS = 120_000; // 2 minutes
-
-type LoginPhase =
-    | "idle"        // Not logging in
-    | "opening"     // Opening the browser
-    | "waiting"     // Waiting for the deep-link callback
-    | "processing"  // Got callback, storing token + fetching profile
-    | "timedout"    // No callback within timeout
-    | "error";      // Something went wrong
 
 interface LoginPromptProps {
     /** Called after successful login */
@@ -29,135 +15,12 @@ interface LoginPromptProps {
 }
 
 export function LoginPrompt({ onLoginSuccess, onDismiss, compact = false }: LoginPromptProps) {
-    const { setUser, setPendingState, isLoading: authLoading } = useAuthStore();
-    const { associateUser } = useTrialStore();
-    const [phase, setPhase] = useState<LoginPhase>("idle");
-    const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-    // Tracks the active Tauri event unlisten function + timeout handle so we can
-    // clean up if the component unmounts or the user retries.
-    const unlistenRef = useRef<UnlistenFn | null>(null);
-    const timeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
-
-    // Always clean up listeners and timers on unmount
-    useEffect(() => {
-        return () => {
-            unlistenRef.current?.();
-            if (timeoutRef.current) clearTimeout(timeoutRef.current);
-        };
-    }, []);
-
-    const cleanupListeners = useCallback(() => {
-        unlistenRef.current?.();
-        unlistenRef.current = null;
-        if (timeoutRef.current) {
-            clearTimeout(timeoutRef.current);
-            timeoutRef.current = null;
-        }
-    }, []);
-
-    const handleLogin = useCallback(async () => {
-        // Prevent concurrent login attempts
-        if (phase !== "idle" && phase !== "timedout" && phase !== "error") return;
-
-        cleanupListeners();
-        setErrorMsg(null);
-        setPhase("opening");
-
-        const state = crypto.randomUUID();
-        setPendingState(state);
-
-        try {
-            // Register the deep-link listener BEFORE opening the browser so we never
-            // miss the callback even if the user authenticates very quickly.
-            const unlisten = await listen<string>("pgstudio-auth-callback", async (event) => {
-                cleanupListeners();
-                setPhase("processing");
-
-                try {
-                    let url: URL;
-                    try {
-                        url = new URL(event.payload);
-                    } catch {
-                        // Fallback: manually parse query string if URL constructor fails
-                        const qIndex = event.payload.indexOf("?");
-                        const params = new URLSearchParams(qIndex >= 0 ? event.payload.slice(qIndex + 1) : "");
-                        url = { searchParams: params } as URL;
-                    }
-
-                    const receivedState = url.searchParams.get("state");
-                    const token = url.searchParams.get("token");
-
-                    if (!token) {
-                        setErrorMsg("No token received from the browser. Please try again.");
-                        setPhase("error");
-                        setPendingState(null);
-                        return;
-                    }
-
-                    // CSRF state validation — only enforce when we have a state param
-                    if (receivedState && receivedState !== state) {
-                        setErrorMsg("Security check failed (state mismatch). Please try again.");
-                        setPhase("error");
-                        setPendingState(null);
-                        return;
-                    }
-
-                    // Store JWT in OS keychain
-                    await authStoreToken(token);
-
-                    // Fetch profile from web API using the newly stored token
-                    const profile = await authFetchProfile();
-                    if (profile) {
-                        setUser(profile);
-                        void associateUser(profile.id);
-                        setPendingState(null);
-                        setPhase("idle");
-                        onLoginSuccess?.();
-                    } else {
-                        setErrorMsg("Signed in but could not load your profile. Please try again.");
-                        setPhase("error");
-                        setPendingState(null);
-                    }
-                } catch (err) {
-                    setErrorMsg(err instanceof Error ? err.message : "Login failed. Please try again.");
-                    setPhase("error");
-                    setPendingState(null);
-                }
-            });
-
-            unlistenRef.current = unlisten;
-
-            // Open browser at login page
-            await authOpenLogin(state);
-            setPhase("waiting");
-
-            // Timeout guard: if the deep-link callback never arrives, inform the user
-            timeoutRef.current = setTimeout(() => {
-                cleanupListeners();
-                setPendingState(null);
-                setPhase("timedout");
-            }, LOGIN_TIMEOUT_MS);
-        } catch (err) {
-            cleanupListeners();
-            setPendingState(null);
-            setErrorMsg(err instanceof Error ? err.message : "Failed to open the browser");
-            setPhase("error");
-        }
-    }, [phase, cleanupListeners, setUser, setPendingState, onLoginSuccess]);
-
-    const handleCancel = useCallback(() => {
-        cleanupListeners();
-        setPendingState(null);
-        setPhase("idle");
-        setErrorMsg(null);
-    }, [cleanupListeners, setPendingState]);
-
-    const isActive = phase === "opening" || phase === "waiting" || phase === "processing";
+    const { isLoading: authLoading } = useAuthStore();
+    const { phase, errorMsg, startLogin: handleLogin, cancel: handleCancel, isActive } =
+        useDesktopAuthLogin({ onLoginSuccess });
 
     // ── Compact (header button) mode ─────────────────────────────────────────
     if (compact) {
-        // While startup session restore is in progress, show a skeleton
         if (authLoading) {
             return <Skeleton className="h-7 w-16 rounded-md" />;
         }
@@ -215,11 +78,12 @@ export function LoginPrompt({ onLoginSuccess, onDismiss, compact = false }: Logi
             <Button
                 size="sm"
                 variant="outline"
-                className="gap-1.5 text-xs"
+                className="h-7 gap-1.5 px-2.5 text-xs max-sm:w-7 max-sm:px-0 max-sm:[&>svg]:shrink-0"
                 onClick={handleLogin}
+                aria-label="Sign in"
             >
                 <LogIn className="h-3.5 w-3.5" />
-                Sign In
+                <span className="max-sm:sr-only">Sign In</span>
             </Button>
         );
     }
@@ -244,7 +108,6 @@ export function LoginPrompt({ onLoginSuccess, onDismiss, compact = false }: Logi
                 )}
             </div>
 
-            {/* Status / error banner */}
             {phase === "timedout" && (
                 <div className="mb-3 flex items-start gap-2 rounded-md bg-amber-500/10 border border-amber-500/20 px-2.5 py-2 text-xs text-amber-400">
                     <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
@@ -267,33 +130,19 @@ export function LoginPrompt({ onLoginSuccess, onDismiss, compact = false }: Logi
                 </div>
             )}
 
-            {/* Primary action button */}
             {isActive ? (
                 <div className="flex gap-2">
-                    <Button
-                        size="sm"
-                        className="flex-1 gap-2"
-                        disabled
-                    >
+                    <Button size="sm" className="flex-1 gap-2" disabled>
                         <Loader2 className="h-3.5 w-3.5 animate-spin" />
                         {phase === "processing" ? "Signing in…" : "Waiting for browser…"}
                     </Button>
-                    <Button
-                        size="sm"
-                        variant="outline"
-                        className="gap-2 px-3"
-                        onClick={handleCancel}
-                    >
+                    <Button size="sm" variant="outline" className="gap-2 px-3" onClick={handleCancel}>
                         <X className="h-3.5 w-3.5" />
                         Cancel
                     </Button>
                 </div>
             ) : (
-                <Button
-                    size="sm"
-                    className="w-full gap-2"
-                    onClick={handleLogin}
-                >
+                <Button size="sm" className="w-full gap-2" onClick={handleLogin}>
                     {phase === "timedout" || phase === "error" ? (
                         <RefreshCw className="h-3.5 w-3.5" />
                     ) : (

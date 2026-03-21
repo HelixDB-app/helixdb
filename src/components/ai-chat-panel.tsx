@@ -24,6 +24,11 @@ import {
     DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
+    Tooltip,
+    TooltipContent,
+    TooltipTrigger,
+} from "@/components/ui/tooltip";
+import {
     Sparkles, Send, Square, Plus, Trash2, Copy, Check, PlayCircle,
     RefreshCw, Pencil, ChevronDown, Database, AlertCircle, Zap,
     MessageSquare, X, PanelLeftClose, PanelLeftOpen, Clock, Search,
@@ -280,16 +285,26 @@ function ChatMessageBubble({ message, onRegenerate, onEdit, onInsertSql, isLast 
 
 // ── Model Selector ───────────────────────────────────────────────────────────
 
-function ModelSelector({ model, onChange, disabled }: { model: GeminiModelId; onChange: (m: GeminiModelId) => void; disabled: boolean }) {
+function ModelSelector({ model, onChange, disabled, compact }: { model: GeminiModelId; onChange: (m: GeminiModelId) => void; disabled: boolean; compact?: boolean }) {
     const [open, setOpen] = useState(false);
     const ref = useRef<HTMLDivElement>(null);
     useEffect(() => { const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false); }; document.addEventListener("mousedown", h); return () => document.removeEventListener("mousedown", h); }, []);
 
     return (
         <div className="relative" ref={ref}>
-            <button onClick={() => !disabled && setOpen(!open)} disabled={disabled}
-                className={cn("flex items-center gap-1.5 px-2 py-1 rounded-md text-xs font-medium transition-all border border-border/30 hover:border-border/50 text-muted-foreground/70 hover:text-foreground", disabled && "opacity-50 cursor-not-allowed")}>
-                <Zap className="h-3 w-3 text-amber-600 dark:text-amber-400" />{GEMINI_MODELS[model].displayName}<ChevronDown className="h-3 w-3" />
+            <button
+                type="button"
+                onClick={() => !disabled && setOpen(!open)}
+                disabled={disabled}
+                className={cn(
+                    "flex items-center rounded-md border font-medium transition-colors bg-background/30 text-muted-foreground/75 hover:text-foreground hover:border-border/55",
+                    compact ? "h-6 gap-0.5 border-border/35 px-1.5 text-[10px]" : "gap-1.5 border-border/30 px-2 py-1 text-xs",
+                    disabled && "opacity-50 cursor-not-allowed"
+                )}
+            >
+                <Zap className={cn("text-amber-600 dark:text-amber-400 shrink-0", compact ? "h-2.5 w-2.5" : "h-3 w-3")} />
+                <span className={cn(compact && "max-w-[5rem] truncate text-left")}>{GEMINI_MODELS[model].displayName}</span>
+                <ChevronDown className={cn("opacity-50 shrink-0", compact ? "h-2.5 w-2.5" : "h-3 w-3")} />
             </button>
             {open && (
                 <div className="absolute right-0 top-full mt-1 w-56 rounded-lg border border-border/40 bg-popover shadow-xl z-50 overflow-hidden">
@@ -514,7 +529,23 @@ export function AIChatPanel({
 
     useEffect(() => { if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight; }, [messages, isStreaming]);
     useEffect(() => { if (isConnected) refreshSchema(); }, [isConnected, refreshSchema]);
-    useEffect(() => { if (inputRef.current) { inputRef.current.style.height = "auto"; inputRef.current.style.height = Math.min(inputRef.current.scrollHeight, 96) + "px"; } }, [inputValue]);
+    useEffect(() => {
+        if (!inputRef.current) return;
+        const max = isSidebar ? 72 : 96;
+        inputRef.current.style.height = "auto";
+        inputRef.current.style.height = `${Math.min(inputRef.current.scrollHeight, max)}px`;
+    }, [inputValue, isSidebar]);
+
+    useEffect(() => {
+        if (!isSidebar) return;
+        const t = window.setTimeout(() => {
+            const el = inputRef.current;
+            if (el && !el.disabled) {
+                el.focus({ preventScroll: true });
+            }
+        }, 0);
+        return () => window.clearTimeout(t);
+    }, [isSidebar]);
 
     const MAX_CONTEXT_FILE_BYTES = 300 * 1024;
     const MAX_CONTEXT_FILE_CHARS = 200_000;
@@ -774,21 +805,63 @@ export function AIChatPanel({
                 onClearAll={clearAll} onTogglePin={togglePinConversation} collapsed={sidebarCollapsed} onToggle={() => setSidebarCollapsed(!sidebarCollapsed)} />
 
             <div className="flex flex-col flex-1 min-w-0">
-                {/* Header */}
-                <div className="flex items-center justify-between px-4 py-2.5 border-b border-border/20 shrink-0">
-                    <div className="flex items-center gap-2.5">
-                        <div className="h-7 w-7 rounded-lg bg-primary/10 border border-primary/20 flex items-center justify-center"><Sparkles className="h-3.5 w-3.5 text-primary" /></div>
-                        <div>
-                            <h2 className="text-sm font-semibold text-foreground/90">{activeConv ? activeConv.title : "Nova AI"}</h2>
-                            <p className="text-[10px] text-muted-foreground/50">{activeConv ? `${activeConv.messages.filter(m => m.role === "user").length} messages · ${formatRelativeTime(activeConv.updatedAt)}` : "SQL Query Assistant"}</p>
-                        </div>
+                {/* Header — single dense row, title detail in tooltip */}
+                <div
+                    className={cn(
+                        "flex items-center gap-2 border-b border-border/25 shrink-0",
+                        isSidebar ? "px-2.5 py-1.5" : "px-3 py-2"
+                    )}
+                >
+                    <div className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-primary/10 ring-1 ring-primary/15">
+                        <Sparkles className="h-3 w-3 text-primary" aria-hidden />
                     </div>
-                    <div className="flex items-center gap-1.5">
-                        {activeConv && <ModelSelector model={activeConv.model} onChange={switchModel} disabled={isStreaming} />}
+                    <Tooltip>
+                        <TooltipTrigger asChild>
+                            <div className="min-w-0 flex-1 text-left">
+                                <h2
+                                    className={cn(
+                                        "font-semibold text-foreground/90 truncate leading-tight",
+                                        isSidebar ? "text-[11px]" : "text-xs"
+                                    )}
+                                >
+                                    {activeConv ? activeConv.title : "Nova AI"}
+                                </h2>
+                                {activeConv && !isSidebar && (
+                                    <p className="mt-0.5 truncate text-[10px] text-muted-foreground/45 leading-tight">
+                                        {activeConv.messages.filter((m) => m.role === "user").length} messages · {formatRelativeTime(activeConv.updatedAt)}
+                                    </p>
+                                )}
+                            </div>
+                        </TooltipTrigger>
+                        <TooltipContent side="bottom" align="start" className="max-w-[min(280px,70vw)]">
+                            <p className="text-xs font-medium">{activeConv ? activeConv.title : "Nova AI"}</p>
+                            {activeConv ? (
+                                <p className="mt-1 text-[10px] text-muted-foreground">
+                                    {activeConv.messages.filter((m) => m.role === "user").length} messages · {formatRelativeTime(activeConv.updatedAt)}
+                                </p>
+                            ) : (
+                                <p className="mt-1 text-[10px] text-muted-foreground">SQL and schema assistant</p>
+                            )}
+                        </TooltipContent>
+                    </Tooltip>
+                    <div className="flex shrink-0 items-center gap-0.5">
+                        {activeConv && (
+                            <ModelSelector
+                                model={activeConv.model}
+                                onChange={switchModel}
+                                disabled={isStreaming}
+                                compact={isSidebar}
+                            />
+                        )}
                         <DropdownMenu>
                             <DropdownMenuTrigger asChild>
-                                <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground/50 hover:text-foreground" title="More options">
-                                    <MoreHorizontal className="h-3.5 w-3.5" />
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    className={cn("p-0 text-muted-foreground/45 hover:text-foreground", isSidebar ? "h-6 w-6" : "h-7 w-7")}
+                                    title="More options"
+                                >
+                                    <MoreHorizontal className={cn(isSidebar ? "h-3 w-3" : "h-3.5 w-3.5")} />
                                 </Button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="w-48">
@@ -811,7 +884,15 @@ export function AIChatPanel({
                                 </DropdownMenuItem>
                             </DropdownMenuContent>
                         </DropdownMenu>
-                        <Button variant="ghost" size="sm" className="h-7 w-7 p-0 text-muted-foreground/50 hover:text-foreground" onClick={() => createConversation()} title="New chat"><Plus className="h-3.5 w-3.5" /></Button>
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            className={cn("p-0 text-muted-foreground/45 hover:text-foreground", isSidebar ? "h-6 w-6" : "h-7 w-7")}
+                            onClick={() => createConversation()}
+                            title="New chat"
+                        >
+                            <Plus className={cn(isSidebar ? "h-3 w-3" : "h-3.5 w-3.5")} />
+                        </Button>
                     </div>
                 </div>
 
@@ -847,9 +928,9 @@ export function AIChatPanel({
                 </div>
 
                 {/* Input Area */}
-                <div className="shrink-0 border-t border-border/20 bg-card/10" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
+                <div className="shrink-0 border-t border-border/20 bg-muted/5 dark:bg-card/25" onDrop={handleDrop} onDragOver={(e) => e.preventDefault()}>
                     {pendingImages.length > 0 && (
-                        <div className="px-4 pt-3">
+                        <div className="px-2.5 pt-2">
                             <div className="flex gap-2 flex-wrap">
                                 {pendingImages.map((img, i) => (
                                     <div key={i} className="relative w-16 h-16 rounded-lg border border-border/30 overflow-hidden bg-muted/10">
@@ -861,16 +942,71 @@ export function AIChatPanel({
                             </div>
                         </div>
                     )}
-                    <div className="px-3 py-2">
-                        <div className="flex items-end gap-1.5">
-                            {/* Context Picker */}
-                            <Popover>
-                                <PopoverTrigger asChild>
-                                    <button className="h-8 w-8 p-0 shrink-0 flex items-center justify-center rounded-md border border-border/25 text-muted-foreground/40 hover:text-foreground hover:border-border/50 hover:bg-muted/20 transition-all" title="Add context">
-                                        <Layers className="h-4 w-4" />
-                                    </button>
-                                </PopoverTrigger>
-                                <PopoverContent align="start" className="w-96 p-3">
+                    <div className={cn("px-2.5 sm:px-3", "pb-1.5 pt-1.5")}>
+                        {contextItems.length > 0 && (
+                            <div className="mb-1.5 flex flex-wrap gap-1">
+                                {contextItems.map((item) => {
+                                    const Icon = item.kind === "sql" ? Database : FileText;
+                                    return (
+                                        <div
+                                            key={item.id}
+                                            className="group flex max-w-full items-center gap-1 rounded-md border border-border/35 bg-muted/15 px-1.5 py-0.5 text-[10px] text-muted-foreground/80"
+                                        >
+                                            <Icon className="h-2.5 w-2.5 shrink-0" />
+                                            <span className={cn("truncate", isSidebar ? "max-w-[7rem]" : "max-w-[200px]")}>{item.label}</span>
+                                            {item.truncated && (
+                                                <span className="shrink-0 text-[9px] text-amber-500/75">trunc.</span>
+                                            )}
+                                            <button
+                                                type="button"
+                                                onClick={() => removeContextItem(item.id)}
+                                                className="ml-0.5 rounded p-0.5 text-muted-foreground/40 hover:bg-muted/50 hover:text-foreground"
+                                                aria-label="Remove context"
+                                            >
+                                                <X className="h-2.5 w-2.5" />
+                                            </button>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                        <div className="rounded-lg border border-border/50 bg-background/90 shadow-sm transition-[border-color,box-shadow] focus-within:border-primary/35 focus-within:ring-1 focus-within:ring-primary/12 dark:bg-background/50">
+                            <textarea
+                                ref={inputRef}
+                                value={inputValue}
+                                onChange={(e) => setInputValue(e.target.value)}
+                                onPaste={handlePaste}
+                                onKeyDown={(e) => {
+                                    if (e.key === "Enter" && !e.shiftKey) {
+                                        e.preventDefault();
+                                        handleSend();
+                                    }
+                                }}
+                                placeholder={isSidebar ? "Message…  ⌘L = editor query" : "Ask about schema, SQL, or data…"}
+                                rows={1}
+                                disabled={isStreaming}
+                                className={cn(
+                                    "w-full resize-none border-0 bg-transparent focus:outline-none placeholder:text-muted-foreground/35 disabled:opacity-50",
+                                    isSidebar
+                                        ? "min-h-[34px] max-h-[72px] px-2.5 py-2 text-xs leading-relaxed"
+                                        : "min-h-[40px] max-h-[96px] px-3 py-2 text-[13px] leading-snug"
+                                )}
+                            />
+                            <div className="flex items-center gap-0.5 border-t border-border/30 px-1 py-0.5">
+                                <Popover>
+                                    <PopoverTrigger asChild>
+                                        <button
+                                            type="button"
+                                            className={cn(
+                                                "flex shrink-0 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-muted/60 hover:text-foreground",
+                                                isSidebar ? "h-6 w-6" : "h-7 w-7"
+                                            )}
+                                            title="Attach context"
+                                        >
+                                            <Layers className={cn(isSidebar ? "h-3 w-3" : "h-3.5 w-3.5")} />
+                                        </button>
+                                    </PopoverTrigger>
+                                    <PopoverContent align="start" className="w-96 p-3">
                                     <div className="flex items-center justify-between">
                                         <span className="text-xs font-semibold text-foreground/80">Context</span>
                                         <button onClick={() => setContextItems([])} className="text-[10px] text-muted-foreground/60 hover:text-foreground">Clear</button>
@@ -981,12 +1117,18 @@ export function AIChatPanel({
                                             </ScrollArea>
                                         </div>
                                     )}
-                                </PopoverContent>
-                            </Popover>
-
-                            {/* File Upload (Context) */}
-                            <button onClick={() => contextFileInputRef.current?.click()} className="h-8 w-8 p-0 shrink-0 flex items-center justify-center rounded-md border border-border/25 text-muted-foreground/40 hover:text-foreground hover:border-border/50 hover:bg-muted/20 transition-all" title="Attach file as context">
-                                <Paperclip className="h-4 w-4" />
+                                    </PopoverContent>
+                                </Popover>
+                            <button
+                                type="button"
+                                onClick={() => contextFileInputRef.current?.click()}
+                                className={cn(
+                                    "flex shrink-0 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-muted/60 hover:text-foreground",
+                                    isSidebar ? "h-6 w-6" : "h-7 w-7"
+                                )}
+                                title="Attach file"
+                            >
+                                <Paperclip className={cn(isSidebar ? "h-3 w-3" : "h-3.5 w-3.5")} />
                             </button>
                             <input
                                 ref={contextFileInputRef}
@@ -996,85 +1138,73 @@ export function AIChatPanel({
                                 className="hidden"
                                 onChange={(e) => { handleContextFileUpload(e.target.files); e.target.value = ""; }}
                             />
-
-                            {/* Image Upload */}
-                            <button onClick={() => fileInputRef.current?.click()} className="h-8 w-8 p-0 shrink-0 flex items-center justify-center rounded-md border border-border/25 text-muted-foreground/40 hover:text-foreground hover:border-border/50 hover:bg-muted/20 transition-all" title="Attach image">
-                                <ImageIcon className="h-4 w-4" />
+                            <button
+                                type="button"
+                                onClick={() => fileInputRef.current?.click()}
+                                className={cn(
+                                    "flex shrink-0 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-muted/60 hover:text-foreground",
+                                    isSidebar ? "h-6 w-6" : "h-7 w-7"
+                                )}
+                                title="Attach image"
+                            >
+                                <ImageIcon className={cn(isSidebar ? "h-3 w-3" : "h-3.5 w-3.5")} />
                             </button>
                             <input ref={fileInputRef} type="file" accept="image/*" multiple className="hidden" onChange={(e) => { handleImageUpload(e.target.files); e.target.value = ""; }} />
-
-                            {/* Template Browser */}
-                            <button onClick={() => setTemplateBrowserOpen(true)} className="h-8 w-8 p-0 shrink-0 flex items-center justify-center rounded-md border border-border/25 text-muted-foreground/40 hover:text-primary hover:border-primary/40 hover:bg-primary/5 transition-all" title="Prompt templates">
-                                <BookOpen className="h-4 w-4" />
-                            </button>
-                            <div className="flex-1">
-                                <div className="rounded-md border border-border/25 bg-muted/5 focus-within:ring-1 focus-within:ring-primary/35 focus-within:border-primary/30">
-                                    <div className="flex flex-wrap gap-1.5 px-2.5 pt-1.5">
-                                        {contextItems.length > 0 ? (
-                                            contextItems.map((item) => {
-                                                const Icon = item.kind === "sql" ? Database : FileText;
-                                                return (
-                                                    <div key={item.id} className="group flex items-center gap-1.5 rounded-full border border-border/25 bg-background/40 px-2 py-[2px] text-[10px] text-muted-foreground/70">
-                                                        <Icon className="h-3 w-3" />
-                                                        <span className="max-w-[200px] truncate">{item.label}</span>
-                                                        {item.truncated && <span className="text-[9px] text-amber-500/80">truncated</span>}
-                                                        <button
-                                                            onClick={() => removeContextItem(item.id)}
-                                                            className="ml-1 rounded-full p-0.5 text-muted-foreground/40 hover:text-foreground hover:bg-muted/40 transition-colors"
-                                                            aria-label="Remove context"
-                                                        >
-                                                            <X className="h-3 w-3" />
-                                                        </button>
-                                                    </div>
-                                                );
-                                            })
-                                        ) : (
-                                            <div className="text-[10px] text-muted-foreground/40">
-                                                Context: press ⌘L to add active query or use the context picker.
-                                            </div>
-                                        )}
-                                    </div>
-                                    <textarea
-                                        ref={inputRef}
-                                        value={inputValue}
-                                        onChange={(e) => setInputValue(e.target.value)}
-                                        onPaste={handlePaste}
-                                        onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); handleSend(); } }}
-                                        placeholder="Ask about your database or attach SQL/context..."
-                                        rows={1}
-                                        disabled={isStreaming}
-                                        className={cn("w-full bg-transparent border-0 px-2.5 py-1.5 text-[13px] leading-snug resize-none focus:outline-none placeholder:text-muted-foreground/30 disabled:opacity-50 max-h-[96px]")}
-                                    />
-                                </div>
-                                {contextStats.count > 0 && (
-                                    <div className="mt-2 flex items-center gap-2 text-[10px] text-muted-foreground/40">
-                                        <Layers className="h-3 w-3" />
-                                        <span>{contextStats.count} context items</span>
-                                        <span>• {contextStats.totalChars.toLocaleString()} chars</span>
-                                        <button onClick={() => setContextItems([])} className="ml-auto text-[10px] text-muted-foreground/50 hover:text-foreground">Clear context</button>
-                                    </div>
+                            <button
+                                type="button"
+                                onClick={() => setTemplateBrowserOpen(true)}
+                                className={cn(
+                                    "flex shrink-0 items-center justify-center rounded-md text-muted-foreground/50 transition-colors hover:bg-muted/55 hover:text-primary",
+                                    isSidebar ? "h-6 w-6" : "h-7 w-7"
                                 )}
-                            </div>
+                                title="Prompt templates"
+                            >
+                                <BookOpen className={cn(isSidebar ? "h-3 w-3" : "h-3.5 w-3.5")} />
+                            </button>
+                            <div className="min-w-2 flex-1" />
                             {isStreaming ? (
-                                <Button size="sm" variant="ghost" onClick={stopStreaming} className="h-8 w-8 p-0 shrink-0 text-destructive hover:bg-destructive/10"><Square className="h-4 w-4" /></Button>
+                                <Button size="sm" variant="ghost" onClick={stopStreaming} className={cn("p-0 shrink-0 text-destructive hover:bg-destructive/10", isSidebar ? "h-6 w-6" : "h-7 w-7")}><Square className={cn(isSidebar ? "h-3 w-3" : "h-4 w-4")} /></Button>
                             ) : (
                                 <Button size="sm" onClick={handleSend} disabled={!canSend}
-                                    className={cn("h-8 w-8 p-0 shrink-0 transition-all", canSend ? "bg-primary hover:bg-primary/90 text-primary-foreground" : "bg-muted/30 text-muted-foreground/30")}>
-                                    <Send className="h-4 w-4" />
+                                    className={cn("p-0 shrink-0 transition-all", isSidebar ? "h-6 w-6" : "h-7 w-7", canSend ? "bg-primary hover:bg-primary/90 text-primary-foreground" : "bg-muted/30 text-muted-foreground/30")}>
+                                    <Send className={cn(isSidebar ? "h-3 w-3" : "h-4 w-4")} />
                                 </Button>
                             )}
+                            </div>
                         </div>
+                        {contextStats.count > 0 && (
+                            <div className="mt-1 flex items-center gap-2 px-0.5 text-[9px] text-muted-foreground/45">
+                                <Layers className="h-2.5 w-2.5 shrink-0" />
+                                <span>{contextStats.count} attached · {contextStats.totalChars.toLocaleString()} chars</span>
+                                <button type="button" onClick={() => setContextItems([])} className="ml-auto hover:text-foreground">
+                                    Clear
+                                </button>
+                            </div>
+                        )}
                     </div>
-                    <div className="flex items-center justify-between px-4 py-1.5 border-t border-border/10 text-[10px] text-muted-foreground/40">
-                        <div className="flex items-center gap-3">
-                            {isConnected && <div className="flex items-center gap-1"><Database className="h-3 w-3" /><span>{schemaTableCount} tables</span></div>}
-                            {activeConv && <div className="flex items-center gap-1"><Zap className="h-3 w-3 text-amber-600/70 dark:text-amber-400/60" /><span>{GEMINI_MODELS[activeConv.model].displayName}</span></div>}
-                        </div>
-                        <div className="flex items-center gap-2">
-                            <span className="text-muted-foreground/25">Paste or drag files/images</span>
-                            <kbd className="inline-flex h-4 items-center rounded border border-border/20 bg-muted/20 px-1 font-mono text-[9px]">⌘J</kbd>
-                            <kbd className="inline-flex h-4 items-center rounded border border-border/20 bg-muted/20 px-1 font-mono text-[9px]">⌘L</kbd>
-                        </div>
+                    <div
+                        className={cn(
+                            "flex items-center justify-between gap-2 border-t border-border/10 text-muted-foreground/40",
+                            isSidebar ? "px-2.5 py-1 text-[9px]" : "px-3 py-1.5 text-[10px]"
+                        )}
+                    >
+                        {isConnected ? (
+                            <span className="flex min-w-0 items-center gap-1 truncate">
+                                <Database className="h-2.5 w-2.5 shrink-0 opacity-60" />
+                                <span className="truncate">{schemaTableCount} tables</span>
+                            </span>
+                        ) : (
+                            <span />
+                        )}
+                        <span className="flex shrink-0 items-center gap-1.5">
+                            <span className={cn("hidden text-muted-foreground/30", !isSidebar && "sm:inline")}>Drop files</span>
+                            <kbd className="inline-flex h-3.5 min-w-0 items-center rounded border border-border/25 bg-muted/25 px-1 font-mono text-[9px] leading-none">
+                                ⌘J
+                            </kbd>
+                            <kbd className="inline-flex h-3.5 min-w-0 items-center rounded border border-border/25 bg-muted/25 px-1 font-mono text-[9px] leading-none">
+                                ⌘L
+                            </kbd>
+                        </span>
                     </div>
                 </div>
             </div>

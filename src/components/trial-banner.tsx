@@ -1,12 +1,34 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useTrialStore } from "@/stores/trial-store";
 import { useAuthStore } from "@/stores/auth-store";
-import { authFetchPlans, authOpenBrowser, type PlanInfo } from "@/lib/tauri";
+import {
+    authFetchPlans,
+    authOpenBrowser,
+    authCreateCheckout,
+    type PlanInfo,
+} from "@/lib/tauri";
+import { useDesktopAuthLogin } from "@/hooks/use-desktop-auth-login";
 import { useCountdown } from "@/lib/use-countdown";
 import { isTauriRuntime } from "@/lib/runtime";
-import { X, Timer, Zap, AlertTriangle, Shield, Crown, Check, Sparkles } from "lucide-react";
+import { cn } from "@/lib/utils";
+import {
+    X,
+    Timer,
+    Zap,
+    AlertTriangle,
+    Shield,
+    Crown,
+    Check,
+    Sparkles,
+    Loader2,
+    RefreshCw,
+    AlertCircle,
+    Wifi,
+} from "lucide-react";
+
+const WEB_APP_URL = process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app";
 
 // ─── Trial Expired Full-Screen Gate ──────────────────────────────────────────
 
@@ -59,6 +81,34 @@ export function TrialExpiredGate() {
         return savings > 0 ? { annualId: annual.id, savings } : null;
     }, [plans]);
 
+    const featuredPlanIdRef = useRef<string | null>(null);
+    useEffect(() => {
+        featuredPlanIdRef.current = planCards[0]?.id ?? null;
+    }, [planCards]);
+
+    const onSignedInOpenCheckout = useCallback(async () => {
+        const planId = featuredPlanIdRef.current;
+        try {
+            if (planId) {
+                const url = await authCreateCheckout(planId);
+                await authOpenBrowser(url);
+            } else {
+                await authOpenBrowser(`${WEB_APP_URL}/pricing`);
+            }
+        } catch {
+            await authOpenBrowser(`${WEB_APP_URL}/pricing`);
+        }
+        void useTrialStore.getState().refreshStatus();
+    }, []);
+
+    const {
+        phase: authPhase,
+        errorMsg: authErrorMsg,
+        startLogin,
+        cancel: cancelAuth,
+        isActive: authActive,
+    } = useDesktopAuthLogin({ onLoginSuccess: onSignedInOpenCheckout });
+
     function formatPrice(cents: number, currency: string) {
         return new Intl.NumberFormat("en-US", {
             style: "currency",
@@ -102,20 +152,72 @@ export function TrialExpiredGate() {
                             </div>
                         </div>
 
+                        {authPhase === "timedout" && (
+                            <div className="flex items-start gap-2 rounded-xl border border-amber-500/20 bg-amber-500/10 px-3 py-2 text-xs text-amber-400">
+                                <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                                <span>
+                                    No response from the browser. Finish signing in in the tab that opened, then{" "}
+                                    <strong>retry</strong>.
+                                </span>
+                            </div>
+                        )}
+                        {authPhase === "error" && authErrorMsg && (
+                            <div className="flex items-start gap-2 rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
+                                <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
+                                {authErrorMsg}
+                            </div>
+                        )}
+                        {authPhase === "waiting" && (
+                            <div className="flex items-center gap-2 rounded-xl border border-border/40 bg-muted/20 px-3 py-2 text-xs text-muted-foreground">
+                                <Wifi className="h-3.5 w-3.5 shrink-0 text-primary/60" />
+                                Browser opened — complete sign-in there. We&apos;ll open checkout when you return.
+                            </div>
+                        )}
+
                         <div className="flex flex-wrap gap-2">
-                            <button
-                                onClick={() => authOpenBrowser(`${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app"}/login`)}
-                                className="h-10 rounded-xl bg-primary px-4 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors flex items-center gap-2"
-                            >
-                                <Zap className="h-4 w-4" />
-                                Sign In &amp; Upgrade
-                            </button>
-                            <button
-                                onClick={() => authOpenBrowser(`${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app"}/pricing`)}
-                                className="h-10 rounded-xl border border-border/60 px-4 text-xs text-muted-foreground hover:border-border hover:text-foreground transition-colors"
-                            >
-                                View All Plans
-                            </button>
+                            {authActive ? (
+                                <>
+                                    <button
+                                        type="button"
+                                        disabled
+                                        className="h-10 rounded-xl bg-primary/80 px-4 text-xs font-semibold text-primary-foreground flex items-center gap-2 cursor-wait opacity-90"
+                                    >
+                                        <Loader2 className="h-4 w-4 animate-spin" />
+                                        {authPhase === "processing" ? "Signing in…" : "Waiting for browser…"}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={cancelAuth}
+                                        className="h-10 rounded-xl border border-border/60 px-4 text-xs text-muted-foreground hover:border-border hover:text-foreground transition-colors"
+                                    >
+                                        Cancel
+                                    </button>
+                                </>
+                            ) : (
+                                <>
+                                    <button
+                                        type="button"
+                                        onClick={() => void startLogin()}
+                                        className="h-10 rounded-xl bg-primary px-4 text-xs font-semibold text-primary-foreground hover:bg-primary/90 transition-colors flex items-center gap-2"
+                                    >
+                                        {authPhase === "timedout" || authPhase === "error" ? (
+                                            <RefreshCw className="h-4 w-4" />
+                                        ) : (
+                                            <Zap className="h-4 w-4" />
+                                        )}
+                                        {authPhase === "timedout" || authPhase === "error"
+                                            ? "Retry sign in"
+                                            : "Sign In & Upgrade"}
+                                    </button>
+                                    <button
+                                        type="button"
+                                        onClick={() => authOpenBrowser(`${WEB_APP_URL}/pricing`)}
+                                        className="h-10 rounded-xl border border-border/60 px-4 text-xs text-muted-foreground hover:border-border hover:text-foreground transition-colors"
+                                    >
+                                        View All Plans
+                                    </button>
+                                </>
+                            )}
                         </div>
                     </div>
 
@@ -192,10 +294,19 @@ export function TrialExpiredGate() {
 // ─── Active Trial Top Banner ──────────────────────────────────────────────────
 
 export function TrialBanner() {
-    const { result, isTrialActive, daysRemaining, loadState, refreshStatus } = useTrialStore();
+    const { result, isTrialActive, loadState, refreshStatus } = useTrialStore();
     const { isAuthenticated } = useAuthStore();
     const [dismissed, setDismissed] = useState(false);
     const countdown = useCountdown(result?.trial?.trialExpiryDate);
+
+    const showBanner =
+        isTauriRuntime() &&
+        !isAuthenticated &&
+        loadState === "ready" &&
+        result !== null &&
+        isTrialActive() &&
+        !dismissed &&
+        !countdown.expired;
 
     useEffect(() => {
         if (countdown.expired && loadState === "ready") {
@@ -203,16 +314,18 @@ export function TrialBanner() {
         }
     }, [countdown.expired, loadState, refreshStatus]);
 
-    // Don't show if: user is authenticated, trial data isn't ready, or not in Tauri
-    if (!isTauriRuntime()) return null;
-    if (isAuthenticated) return null;
-    if (loadState !== "ready") return null;
-    if (!result) return null;
-    if (!isTrialActive()) return null;
-    if (dismissed) return null;
-    if (countdown.expired) return null;
+    useEffect(() => {
+        if (typeof document === "undefined") return;
+        if (showBanner) {
+            document.documentElement.setAttribute("data-trial-banner", "");
+        } else {
+            document.documentElement.removeAttribute("data-trial-banner");
+        }
+        return () => document.documentElement.removeAttribute("data-trial-banner");
+    }, [showBanner]);
 
-    const days = daysRemaining();
+    if (!showBanner) return null;
+
     const hoursRemaining = Math.max(1, Math.ceil(countdown.totalMs / 3600000));
     const isUrgent = hoursRemaining <= 24;
     const isWarning = hoursRemaining <= 48;
@@ -222,65 +335,60 @@ export function TrialBanner() {
         ? `${countdown.days}d ${pad(countdown.hours)}h ${pad(countdown.minutes)}m`
         : `${pad(countdown.hours)}:${pad(countdown.minutes)}:${pad(countdown.seconds)}`;
 
-    const bannerColor = isUrgent
-        ? "from-red-500/10 via-red-500/5 to-transparent border-red-500/20 text-red-400"
+    const accentBorder = isUrgent
+        ? "border-l-red-500/75"
         : isWarning
-        ? "from-amber-500/10 via-amber-500/5 to-transparent border-amber-500/20 text-amber-400"
-        : "from-emerald-500/10 via-emerald-500/5 to-transparent border-emerald-500/20 text-emerald-400";
+        ? "border-l-amber-500/70"
+        : "border-l-emerald-500/55";
 
-    const badgeColor = isUrgent
-        ? "bg-red-500/15 text-red-400 border-red-500/30"
+    const iconClass = isUrgent
+        ? "text-red-400"
         : isWarning
-        ? "bg-amber-500/15 text-amber-400 border-amber-500/30"
-        : "bg-emerald-500/15 text-emerald-400 border-emerald-500/30";
+        ? "text-amber-400"
+        : "text-emerald-400";
 
     return (
         <div
-            className={`
-                fixed top-0 left-0 right-0 z-[8000]
-                flex items-center justify-between gap-3
-                bg-gradient-to-r ${bannerColor}
-                border-b px-4 h-9
-                backdrop-blur-sm
-            `}
+            className={cn(
+                "fixed top-0 left-0 right-0 z-[8000] flex h-10 items-center justify-between gap-3 border-b border-border/40",
+                "bg-background/92 backdrop-blur-md pl-3 pr-2 sm:pl-4 sm:pr-3",
+                "border-l-[3px]",
+                accentBorder
+            )}
+            role="status"
+            aria-live="polite"
         >
-            {/* Left: Icon + message */}
-            <div className="flex items-center gap-2 min-w-0">
+            <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
                 {isUrgent || isWarning ? (
-                    <AlertTriangle className="h-3.5 w-3.5 shrink-0" />
+                    <AlertTriangle className={cn("h-3.5 w-3.5 shrink-0", iconClass)} aria-hidden />
                 ) : (
-                    <Timer className="h-3.5 w-3.5 shrink-0" />
+                    <Timer className={cn("h-3.5 w-3.5 shrink-0", iconClass)} aria-hidden />
                 )}
-                <span className="text-xs font-medium truncate">
-                    Free Trial
-                </span>
-                <span
-                    className={`
-                        hidden sm:inline-flex items-center rounded-full border px-2 py-0.5 text-[10px] font-medium
-                        ${badgeColor}
-                    `}
-                >
-                    Ends in {timeLabel}
-                </span>
+                <div className="flex min-w-0 flex-col gap-0 sm:flex-row sm:items-baseline sm:gap-2">
+                    <span className="truncate text-xs font-medium text-foreground">
+                        Pro trial — all features unlocked
+                    </span>
+                    <span className="shrink-0 font-mono text-[11px] tabular-nums text-muted-foreground sm:text-xs">
+                        Ends in <span className="text-foreground/90">{timeLabel}</span>
+                    </span>
+                </div>
             </div>
 
-            {/* Right: CTA + dismiss */}
-            <div className="flex items-center gap-2 shrink-0">
+            <div className="flex shrink-0 items-center gap-1.5">
                 <button
-                    onClick={() => authOpenBrowser(`${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app"}/pricing`)}
-                    className="
-                        hidden sm:flex items-center gap-1.5 rounded-lg border border-current/30
-                        px-2.5 py-1 text-[11px] font-semibold
-                        hover:bg-current/10 transition-colors
-                    "
+                    type="button"
+                    onClick={() => authOpenBrowser(`${WEB_APP_URL}/pricing`)}
+                    className="inline-flex h-7 items-center gap-1.5 rounded-md bg-gradient-to-r from-emerald-600 to-cyan-600 px-2.5 text-[11px] font-semibold text-white shadow-none transition-[filter] hover:brightness-110 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-500/50 focus-visible:ring-offset-2 focus-visible:ring-offset-background"
                 >
-                    <Zap className="h-3 w-3" />
-                    Upgrade Now
+                    <Zap className="h-3 w-3 opacity-90" aria-hidden />
+                    <span className="hidden min-[400px]:inline">Upgrade</span>
+                    <span className="min-[400px]:hidden">Pro</span>
                 </button>
                 <button
+                    type="button"
                     onClick={() => setDismissed(true)}
-                    className="rounded p-0.5 hover:bg-white/10 transition-colors"
-                    aria-label="Dismiss trial banner"
+                    className="rounded-md p-1.5 text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground"
+                    aria-label="Dismiss trial reminder"
                 >
                     <X className="h-3.5 w-3.5" />
                 </button>

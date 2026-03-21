@@ -28,35 +28,50 @@ import { cn } from "@/lib/utils";
 import { toast } from "sonner";
 import { SchemaImporter } from "@/components/schema-importer";
 
-// ── File-type icon system (Cursor-style, memoized, fast lookup) ─────────────────
+// ── File-type icons: inline SVG (no network), few paths, memoized; currentColor + row tint ──
 const ICON_CLS = "h-4 w-4 shrink-0";
 
 type IconProps = { className?: string };
+type FileIconEntry = { C: React.ComponentType<IconProps>; cls: string };
+
 const SqlIcon = React.memo(function SqlIcon({ className }: IconProps) {
     return (
         <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
-            <rect x="1" y="3.5" width="14" height="9" rx="1.2" fill="#0ea5e9" opacity="0.2" />
-            <ellipse cx="8" cy="5.8" rx="5.2" ry="1.6" fill="#0ea5e9" />
-            <path d="M3 5.8v5.2c0 .95 2.2 1.7 5 1.7s5-.75 5-1.7V5.8" stroke="#0ea5e9" strokeWidth="1" strokeLinecap="round" fill="none" />
-            <path d="M3 7.8c0 .95 2.2 1.7 5 1.7s5-.75 5-1.7" stroke="#0ea5e9" strokeWidth="1" strokeLinecap="round" fill="none" opacity="0.85" />
+            <path
+                d="M4 2.25h4.55L11 4.7v9.05a.85.85 0 01-.85.85H4a.85.85 0 01-.85-.85V3.1c0-.47.38-.85.85-.85z"
+                fill="currentColor"
+                fillOpacity={0.12}
+                stroke="currentColor"
+                strokeWidth={1}
+                strokeLinejoin="round"
+            />
+            <path d="M8.5 2.35v2.55h2.45" stroke="currentColor" strokeWidth={1} strokeLinecap="round" strokeLinejoin="round" opacity={0.45} />
+            <path d="M5.35 7.1h5.3M5.35 9.05h4.2M5.35 11h3.1" stroke="currentColor" strokeWidth={1.05} strokeLinecap="round" opacity={0.9} />
         </svg>
     );
 });
 const MdIcon = React.memo(function MdIcon({ className }: IconProps) {
     return (
         <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
-            <rect x="2" y="2" width="12" height="12" rx="1.5" fill="#94a3b8" opacity="0.12" />
-            <path d="M4 11V5l2.5 3L9 5v6" stroke="#94a3b8" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
-            <path d="M11 5v6M11 11l-1.5-1.5M11 11l1.5-1.5" stroke="#94a3b8" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+            <rect x="2" y="2" width="12" height="12" rx="1.5" fill="currentColor" opacity="0.12" />
+            <path d="M4 11V5l2.5 3L9 5v6" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
+            <path d="M11 5v6M11 11l-1.5-1.5M11 11l1.5-1.5" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
         </svg>
     );
 });
 const DocIcon = React.memo(function DocIcon({ className }: IconProps) {
     return (
         <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
-            <rect x="2.2" y="1.8" width="11.6" height="12.4" rx="1.6" fill="#38bdf8" opacity="0.15" />
-            <path d="M5 5h6M5 7.8h6M5 10.6h4.2" stroke="#38bdf8" strokeWidth="1.15" strokeLinecap="round" />
-            <path d="M10.5 1.8v2.8h3.3" stroke="#38bdf8" strokeWidth="1.05" strokeLinecap="round" strokeLinejoin="round" opacity="0.65" />
+            <path
+                d="M4 2.25h4.55L11 4.7v9.05a.85.85 0 01-.85.85H4a.85.85 0 01-.85-.85V3.1c0-.47.38-.85.85-.85z"
+                fill="currentColor"
+                fillOpacity={0.14}
+                stroke="currentColor"
+                strokeWidth={1}
+                strokeLinejoin="round"
+            />
+            <path d="M8.5 2.35v2.55h2.45" stroke="currentColor" strokeWidth={1} strokeLinecap="round" strokeLinejoin="round" opacity={0.5} />
+            <path d="M5.35 6.35h5.3M5.35 8.35h5.3M5.35 10.35h3.6" stroke="currentColor" strokeWidth={1.05} strokeLinecap="round" opacity={0.88} />
         </svg>
     );
 });
@@ -126,39 +141,70 @@ const DefaultFileIcon = React.memo(function DefaultFileIcon({ className }: IconP
 const FolderIcon = React.memo(function FolderIcon({ isOpen, className }: { isOpen: boolean; className?: string }) {
     return (
         <svg className={className} viewBox="0 0 16 16" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden>
-            <path
-                d="M1.5 5.2a1 1 0 011-1h4.2l1.2 1.8h6.1a1 1 0 011 1v5a1 1 0 01-1 1H2.5a1 1 0 01-1-1V5.2z"
-                fill="#eab308"
-                fillOpacity={isOpen ? 0.5 : 0.85}
-                stroke="#ca8a04"
-                strokeWidth={0.6}
-                strokeOpacity={isOpen ? 0.4 : 0.6}
-            />
+            {isOpen ? (
+                <>
+                    <path
+                        d="M1.75 7.25h12.5v5.5a.85.85 0 01-.85.85H2.6a.85.85 0 01-.85-.85v-5.5z"
+                        fill="currentColor"
+                        fillOpacity={0.14}
+                        stroke="currentColor"
+                        strokeWidth={1}
+                        strokeLinejoin="round"
+                    />
+                    <path
+                        d="M1.75 7.25L3.35 5.1h4.1l1.25 1.65h7.55"
+                        stroke="currentColor"
+                        strokeWidth={1}
+                        strokeLinecap="round"
+                        strokeLinejoin="round"
+                        opacity={0.55}
+                    />
+                </>
+            ) : (
+                <path
+                    d="M2.6 4.25h3.55l1.25 1.65h7.55a.85.85 0 01.85.85v5.5a.85.85 0 01-.85.85H2.6a.85.85 0 01-.85-.85V5.1c0-.47.38-.85.85-.85z"
+                    fill="currentColor"
+                    fillOpacity={0.12}
+                    stroke="currentColor"
+                    strokeWidth={1}
+                    strokeLinejoin="round"
+                />
+            )}
         </svg>
     );
 });
 
-const FILE_ICON_MAP: Record<string, React.ComponentType<IconProps>> = {
-    sql: SqlIcon,
-    md: MdIcon,
-    doc: DocIcon,
-    json: JsonIcon,
-    tsbuildinfo: JsonIcon,
-    ts: TsIcon,
-    tsx: TsIcon,
-    js: JsIcon,
-    jsx: JsIcon,
-    env: EnvIcon,
-    sh: ShIcon,
-    csv: CsvIcon,
-};
+const FILE_ICON_MAP: Record<string, FileIconEntry> = Object.freeze({
+    sql: { C: SqlIcon, cls: `${ICON_CLS} text-sky-400/90` },
+    md: { C: MdIcon, cls: `${ICON_CLS} text-slate-400/90` },
+    doc: { C: DocIcon, cls: `${ICON_CLS} text-blue-400/90` },
+    docx: { C: DocIcon, cls: `${ICON_CLS} text-blue-400/90` },
+    json: { C: JsonIcon, cls: ICON_CLS },
+    tsbuildinfo: { C: JsonIcon, cls: ICON_CLS },
+    ts: { C: TsIcon, cls: ICON_CLS },
+    tsx: { C: TsIcon, cls: ICON_CLS },
+    js: { C: JsIcon, cls: ICON_CLS },
+    jsx: { C: JsIcon, cls: ICON_CLS },
+    env: { C: EnvIcon, cls: ICON_CLS },
+    sh: { C: ShIcon, cls: ICON_CLS },
+    csv: { C: CsvIcon, cls: ICON_CLS },
+});
+
+const DEFAULT_FILE_ICON_ENTRY: FileIconEntry = { C: DefaultFileIcon, cls: ICON_CLS };
+const MUTED_FILE_ICON_ENTRY: FileIconEntry = { C: DefaultFileIcon, cls: `${ICON_CLS} text-muted-foreground/40` };
+
+function resolveFileIcon(ext: string): FileIconEntry {
+    if (!ext) return MUTED_FILE_ICON_ENTRY;
+    const hit = FILE_ICON_MAP[ext];
+    return hit ?? DEFAULT_FILE_ICON_ENTRY;
+}
 
 const FileTypeIcon = React.memo(function FileTypeIcon({ name, type, isOpen }: { name: string; type: NodeType; isOpen?: boolean }) {
-    if (type === "folder") return <FolderIcon isOpen={!!isOpen} className={ICON_CLS} />;
-    const ext = getExtension(name);
-    const Icon = (ext && FILE_ICON_MAP[ext]) || DefaultFileIcon;
-    // eslint-disable-next-line react-hooks/static-components
-    return <Icon className={ext ? ICON_CLS : `${ICON_CLS} text-muted-foreground/40`} />;
+    if (type === "folder") {
+        return <FolderIcon isOpen={!!isOpen} className={`${ICON_CLS} text-muted-foreground/75`} />;
+    }
+    const { C: Icon, cls } = resolveFileIcon(getExtension(name));
+    return <Icon className={cls} />;
 });
 
 // ── Context menu ──────────────────────────────────────────────────────────────

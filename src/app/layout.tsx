@@ -12,6 +12,7 @@ import { AppUpdateManager } from "@/components/app-update-manager";
 import { NetworkStatusProvider } from "@/components/network-status-provider";
 import { AppDebugLogger } from "@/components/app-debug-logger";
 import { AppSplash } from "@/components/app-splash";
+import { DesktopMenuBridge } from "@/components/desktop-menu-bridge";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { TrialProvider, TrialBanner, TrialGate } from "@/components/trial-banner";
 import { APP_NAME, APP_TAGLINE } from "@/lib/app-config";
@@ -44,12 +45,13 @@ export default function RootLayout({
       <head>
         {/* Hardcode the dark background before next-themes applies its class,
             preventing a flash of white on first paint. */}
-        <style dangerouslySetInnerHTML={{ __html: `body{background:var(--background);}` }} />
+        <style dangerouslySetInnerHTML={{ __html: `body{background-color:var(--background);}` }} />
       </head>
       <body
         className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased`}
       >
         <AppSplash />
+        <DesktopMenuBridge />
         <AppDebugLogger />
         <ThemeProvider
           attribute="class"

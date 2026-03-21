@@ -2,6 +2,7 @@ import type {
     ConnectionCriticality,
     ConnectionEnvironment,
     SavedConnection,
+    SshTunnelConfig,
 } from "./types";
 
 export interface ConnectionMetadataInput {
@@ -56,13 +57,27 @@ export function normalizeConnectionMetadata(
     };
 }
 
+function normalizeSshTunnel(st: SshTunnelConfig | null | undefined): SshTunnelConfig | null | undefined {
+    if (!st || !st.use_ssh_tunneling) return st ?? null;
+    return {
+        ...st,
+        tunnel_port: typeof st.tunnel_port === "number" && st.tunnel_port > 0 ? st.tunnel_port : 22,
+        keep_alive_seconds: typeof st.keep_alive_seconds === "number" && st.keep_alive_seconds >= 0 ? st.keep_alive_seconds : 0,
+    };
+}
+
 export function normalizeSavedConnection(connection: SavedConnection): SavedConnection {
     const normalized = normalizeConnectionMetadata(connection);
+    const ssh_tunnel =
+        connection.ssh_tunnel != null
+            ? (normalizeSshTunnel(connection.ssh_tunnel) ?? connection.ssh_tunnel)
+            : connection.ssh_tunnel;
     return {
         ...connection,
         environment: normalized.environment,
         owner: normalized.owner,
         criticality: normalized.criticality,
+        ...(ssh_tunnel !== undefined ? { ssh_tunnel } : {}),
     };
 }
 

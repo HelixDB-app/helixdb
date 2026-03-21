@@ -306,7 +306,7 @@ export function MapViewContent() {
     }
 
     return (
-        <div className="flex h-screen flex-col bg-background">
+        <div className="flex h-screen flex-col bg-transparent">
             <header className="flex items-center justify-between gap-4 px-4 py-2 border-b border-border/20 bg-card/30 shrink-0">
                 <div className="flex items-center gap-3 min-w-0">
                     <Button asChild variant="ghost" size="sm" className="h-8 gap-1.5 text-xs">

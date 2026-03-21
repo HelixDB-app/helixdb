@@ -276,7 +276,7 @@ fn lint_delimiter_errors(sql: &str, line_index: &LineIndex, diagnostics: &mut Ve
         }
 
         if let Some(tag) = &dollar_tag {
-            if sql[i..].starts_with(tag) {
+            if bytes[i..].starts_with(tag.as_bytes()) {
                 i += tag.len();
                 dollar_tag = None;
                 dollar_start = None;
@@ -992,7 +992,7 @@ fn split_statements_with_offsets(sql: &str) -> Vec<SqlStatement> {
         }
 
         if let Some(tag) = &dollar_tag {
-            if sql[i..].starts_with(tag) {
+            if bytes[i..].starts_with(tag.as_bytes()) {
                 i += tag.len();
                 dollar_tag = None;
                 continue;
@@ -1125,7 +1125,7 @@ fn mask_literals_and_comments(sql: &str) -> String {
         }
 
         if let Some(tag) = &dollar_tag {
-            if sql[i..].starts_with(tag) {
+            if bytes[i..].starts_with(tag.as_bytes()) {
                 for j in 0..tag.len() {
                     if i + j < out.len() {
                         out[i + j] = b' ';
