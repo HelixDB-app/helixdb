@@ -14,7 +14,8 @@ import { useCollaborationStore, getCollaborationPermissions } from "@/stores/col
 import { useShallow } from "zustand/react/shallow";
 import { formatCellValue } from "@/lib/types";
 import type { QueryResult } from "@/lib/types";
-import { dbGetColumns, dbExplainQuery, dbExecuteQuery, dbGetDocumentationContext } from "@/lib/tauri";
+import { dbExecuteQuery, dbGetColumns } from "@/lib/db-platform";
+import { dbExplainQuery, dbGetDocumentationContext } from "@/lib/tauri";
 import type { SandboxExecuteResult } from "@/lib/tauri";
 import { NotesPanel } from "@/components/notes-panel";
 import { QueryPlanViewer } from "@/components/query-plan-viewer";

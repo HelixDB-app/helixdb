@@ -1,0 +1,19 @@
+{
+  "name": "pgStudio — Performance-first Postgres Studio",
+  "short_name": "pgStudio",
+  "description": "A blazing-fast, modern database admin panel powered by Rust and Next.js",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#141414",
+  "theme_color": "#141414",
+  "icons": [
+    {
+      "src": "/logo.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

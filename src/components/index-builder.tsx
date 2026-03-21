@@ -10,7 +10,7 @@ import {
     dbGetIndexBuildProgress,
     dbGetTableQuerySamples,
 } from "@/lib/tauri";
-import { dbExecuteQuery, dbGetColumns, dbListTables } from "@/lib/tauri";
+import { dbExecuteQuery, dbListTables, dbGetColumns } from "@/lib/db-platform";
 import { getIndexSuggestions } from "@/lib/index-optimization-engine";
 import type { IndexSuggestion } from "@/lib/index-optimization-engine";
 import { GEMINI_MODELS, type GeminiModelId } from "@/lib/ai-chat-engine";

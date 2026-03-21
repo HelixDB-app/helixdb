@@ -1,9 +1,10 @@
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
 
+use crate::web_config::{CONTROL_PLANE_HTTP, WEB_APP_URL};
+
 const KEYRING_SERVICE: &str = "pgstudio";
 const KEYRING_USER: &str = "desktop_auth_token";
-const WEB_BASE_URL: &str = "https://pgstudio-web.vercel.app";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -20,11 +21,59 @@ pub struct UserProfile {
 
 // ─── Commands ─────────────────────────────────────────────────────────────────
 
+/// Exchange a one-time `code` from `pgstudio://auth/callback?code=…` for an access token.
+/// Requires `POST /api/auth/desktop-exchange` on the control plane (pgstudio-web).
+#[tauri::command]
+pub async fn auth_exchange_desktop_code(code: String) -> Result<String, String> {
+    let code = code.trim().to_string();
+    if code.is_empty() {
+        return Err("Empty authorization code".into());
+    }
+
+    let resp = CONTROL_PLANE_HTTP
+        .post(format!("{WEB_APP_URL}/api/auth/desktop-exchange"))
+        .header("Content-Type", "application/json")
+        .json(&serde_json::json!({ "code": code }))
+        .send()
+        .await
+        .map_err(|e| format!("Network error: {e}"))?;
+
+    let status = resp.status();
+    if status == reqwest::StatusCode::NOT_FOUND {
+        return Err(
+            "Desktop code exchange is not enabled on this server yet. Sign in again after the web app is updated, or use the legacy token flow."
+                .into(),
+        );
+    }
+
+    #[derive(Deserialize)]
+    struct ExchangeBody {
+        #[serde(rename = "accessToken")]
+        access_token: Option<String>,
+        error: Option<String>,
+    }
+
+    let body: ExchangeBody = resp
+        .json()
+        .await
+        .map_err(|e| format!("Invalid exchange response: {e}"))?;
+
+    if !status.is_success() {
+        return Err(body
+            .error
+            .unwrap_or_else(|| format!("Exchange failed ({status})")));
+    }
+
+    body.access_token
+        .filter(|t| !t.trim().is_empty())
+        .ok_or_else(|| "No accessToken in exchange response".into())
+}
+
 /// Open the system browser at the pgstudio-web login page.
 /// `state` is a random nonce that the frontend generates to prevent CSRF.
 #[tauri::command]
 pub async fn auth_open_login(_app: AppHandle, state: String) -> Result<(), String> {
-    let url = format!("{}/login?source=desktop&state={}", WEB_BASE_URL, state);
+    let url = format!("{WEB_APP_URL}/login?source=desktop&state={state}");
     opener::open_browser(&url).map_err(|e| format!("Failed to open browser: {e}"))?;
     Ok(())
 }
@@ -89,14 +138,9 @@ pub async fn auth_fetch_profile() -> Result<Option<UserProfile>, String> {
         }
     };
 
-    log::info!("[auth] auth_fetch_profile: calling {WEB_BASE_URL}/api/user/me");
-    let client = reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(10))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))?;
-
-    let resp = client
-        .get(format!("{WEB_BASE_URL}/api/user/me"))
+    log::info!("[auth] auth_fetch_profile: calling {WEB_APP_URL}/api/user/me");
+    let resp = CONTROL_PLANE_HTTP
+        .get(format!("{WEB_APP_URL}/api/user/me"))
         .header("Authorization", format!("Bearer {token}"))
         .send()
         .await
@@ -151,12 +195,11 @@ pub async fn auth_create_checkout(plan_id: String) -> Result<String, String> {
         None => return Err("Not authenticated".into()),
     };
 
-    let client = reqwest::Client::new();
-    let resp = client
-        .post(format!("{WEB_BASE_URL}/api/stripe/checkout"))
+    let resp = CONTROL_PLANE_HTTP
+        .post(format!("{WEB_APP_URL}/api/stripe/checkout"))
         .header("Authorization", format!("Bearer {token}"))
         .header("Content-Type", "application/json")
-        .body(format!(r#"{{"planId":"{}"}}"#, plan_id))
+        .json(&serde_json::json!({ "planId": plan_id }))
         .send()
         .await
         .map_err(|e| format!("Network error: {e}"))?;
@@ -197,9 +240,8 @@ pub struct PlanInfo {
 /// Fetch available plans from pgstudio-web.
 #[tauri::command]
 pub async fn auth_fetch_plans() -> Result<Vec<PlanInfo>, String> {
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(format!("{WEB_BASE_URL}/api/plans"))
+    let resp = CONTROL_PLANE_HTTP
+        .get(format!("{WEB_APP_URL}/api/plans"))
         .send()
         .await
         .map_err(|e| format!("Network error: {e}"))?;
@@ -254,9 +296,8 @@ pub async fn subscription_fetch_status() -> Result<Option<SubscriptionStatus>, S
         None => return Ok(None),
     };
 
-    let client = reqwest::Client::new();
-    let resp = client
-        .get(format!("{WEB_BASE_URL}/api/subscription/status"))
+    let resp = CONTROL_PLANE_HTTP
+        .get(format!("{WEB_APP_URL}/api/subscription/status"))
         .header("Authorization", format!("Bearer {token}"))
         .send()
         .await

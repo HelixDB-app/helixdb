@@ -3,7 +3,22 @@ import type { NextConfig } from "next";
 const isProd = process.env.NODE_ENV === "production";
 const devHost = process.env.TAURI_DEV_HOST ?? "localhost";
 
+// Dev-only: allow HMR / _next requests when the app loads the UI via a LAN or USB IP (Tauri iOS).
+// If this array is set, Next uses strict cross-origin checks for /_next — include every host you use.
+const allowedDevOrigins = !isProd
+  ? Array.from(
+      new Set(
+        [
+          "127.0.0.1",
+          "192.0.0.2",
+          devHost !== "localhost" && devHost !== "0.0.0.0" ? devHost : null,
+        ].filter((h): h is string => Boolean(h)),
+      ),
+    )
+  : undefined;
+
 const nextConfig: NextConfig = {
+  ...(allowedDevOrigins?.length ? { allowedDevOrigins } : {}),
   output: "export",
   distDir: "out",
   images: { unoptimized: true },

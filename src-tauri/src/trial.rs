@@ -1,8 +1,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::device_fingerprint::get_device_fingerprint;
-
-const WEB_BASE_URL: &str = "https://pgstudio-web.vercel.app";
+use crate::web_config::{CONTROL_PLANE_HTTP, WEB_APP_URL};
 
 // ─── Public Types ─────────────────────────────────────────────────────────────
 
@@ -49,29 +48,19 @@ struct StatusResponse {
 
 // ─── Core Logic ───────────────────────────────────────────────────────────────
 
-/// Build a reqwest client with a short timeout.
-fn build_client() -> Result<reqwest::Client, String> {
-    reqwest::Client::builder()
-        .timeout(std::time::Duration::from_secs(15))
-        .build()
-        .map_err(|e| format!("HTTP client error: {e}"))
-}
-
 /// Call POST /api/trial/init on the web backend.
 /// This is called on every cold launch; the backend is idempotent.
 async fn init_trial_remote(
     device_fingerprint: &str,
     associated_user_id: Option<&str>,
 ) -> Result<TrialCheckResult, String> {
-    let client = build_client()?;
-
     let mut body = serde_json::json!({ "deviceId": device_fingerprint });
     if let Some(uid) = associated_user_id {
         body["associatedUserId"] = serde_json::Value::String(uid.to_string());
     }
 
-    let resp = client
-        .post(format!("{WEB_BASE_URL}/api/trial/init"))
+    let resp = CONTROL_PLANE_HTTP
+        .post(format!("{WEB_APP_URL}/api/trial/init"))
         .header("Content-Type", "application/json")
         .json(&body)
         .send()
@@ -105,10 +94,8 @@ async fn init_trial_remote(
 
 /// Call GET /api/trial/status?deviceId=... (lighter, read-only endpoint).
 async fn get_trial_status_remote(device_fingerprint: &str) -> Result<TrialCheckResult, String> {
-    let client = build_client()?;
-
-    let resp = client
-        .get(format!("{WEB_BASE_URL}/api/trial/status"))
+    let resp = CONTROL_PLANE_HTTP
+        .get(format!("{WEB_APP_URL}/api/trial/status"))
         .query(&[("deviceId", device_fingerprint)])
         .send()
         .await

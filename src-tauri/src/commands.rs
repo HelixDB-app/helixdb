@@ -2083,15 +2083,25 @@ pub async fn app_log_path(app: AppHandle) -> Result<String, String> {
 /// Spawn a new independent application window. Each window gets its own webview
 /// context (isolated frontend state) while sharing the single Rust AppState
 /// (connection pool, metadata cache, watchers) — zero duplicated resources.
+///
+/// Mobile targets use a single full-screen webview; extra windows are unsupported.
 pub fn create_app_window<R: tauri::Runtime>(app: &AppHandle<R>) {
-    let label = format!("window_{}", uuid::Uuid::new_v4().simple());
-    if let Err(e) = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("/".into()))
-        .title("pgStudio")
-        .inner_size(1400.0, 900.0)
-        .min_inner_size(900.0, 600.0)
-        .build()
+    #[cfg(desktop)]
     {
-        log::error!("Failed to create new window: {e}");
+        let label = format!("window_{}", uuid::Uuid::new_v4().simple());
+        if let Err(e) = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("/".into()))
+            .title("pgStudio")
+            .inner_size(1400.0, 900.0)
+            .min_inner_size(900.0, 600.0)
+            .build()
+        {
+            log::error!("Failed to create new window: {e}");
+        }
+    }
+    #[cfg(not(desktop))]
+    {
+        log::debug!("create_app_window: ignored on mobile (single-window only)");
+        let _ = app;
     }
 }
 

@@ -10,7 +10,7 @@
  */
 
 import type { ColumnInfo, TableDetails } from "@/lib/types";
-import { dbGetColumns, dbGetTableDetails } from "@/lib/tauri";
+import { dbGetColumns, dbGetTableDetails } from "@/lib/db-platform";
 import {
     isNoInternetError,
     notifyNoInternetDetected,

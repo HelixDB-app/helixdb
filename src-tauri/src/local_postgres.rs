@@ -298,6 +298,7 @@ pub async fn restart_local_postgres() -> Result<LocalPostgresStatus, String> {
 }
 
 pub async fn install_local_postgres(app: &tauri::AppHandle) -> Result<LocalPostgresStatus, String> {
+    #[cfg(any(target_os = "macos", target_os = "linux"))]
     let emit = |percent: u32, message: &str, log: Option<String>| {
         let _ = app.emit(
             "local-postgres-install-progress",

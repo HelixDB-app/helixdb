@@ -9,12 +9,11 @@ import { useShortcutsStore, type ShortcutActionId } from "@/stores/shortcuts-sto
 import { useAuthStore } from "@/stores/auth-store";
 import { useTrialStore } from "@/stores/trial-store";
 import { useCollaborationStore } from "@/stores/collaboration-store";
-import { authFetchProfile, authGetToken } from "@/lib/tauri";
+import { runtimeAuthFetchProfile, runtimeAuthGetToken } from "@/lib/auth-runtime";
 import { eventMatchesCombo, formatShortcut, isEditableTarget } from "@/lib/shortcut-keys";
 import { APP_NAME } from "@/lib/app-config";
 import { useLayoutStore } from "@/stores/layout-store";
-import { invoke } from "@tauri-apps/api/core";
-import { listen } from "@tauri-apps/api/event";
+import { listenCollabJoin, openNewAppWindow } from "@/lib/desktop-shell";
 import dynamic from "next/dynamic";
 import { LandingConnections } from "@/components/landing-connections";
 import { WelcomeScreen } from "@/components/welcome-screen";
@@ -203,7 +202,7 @@ export default function Home() {
         if (showWelcome || !user) return;
         let cancelled = false;
         const timeoutId = setTimeout(() => {
-            getSurveyStatus({ getToken: authGetToken }).then(({ completed }) => {
+            getSurveyStatus({ getToken: runtimeAuthGetToken }).then(({ completed }) => {
                 if (!cancelled && !completed) setShowSurveyModal(true);
             });
         }, 500);
@@ -228,7 +227,7 @@ export default function Home() {
         async function restoreSession() {
             setAuthLoading(true);
             try {
-                const profile = await authFetchProfile();
+                const profile = await runtimeAuthFetchProfile();
                 if (!cancelled) {
                     if (profile) {
                         setUser(profile);
@@ -259,14 +258,10 @@ export default function Home() {
     useEffect(() => {
         let unlisten: (() => void) | null = null;
         void (async () => {
-            try {
-                unlisten = await listen<string>("pgstudio-collab-join", (event) => {
-                    handleCollabDeepLink(event.payload);
-                    setActiveView("query");
-                });
-            } catch {
-                // Ignore listener setup failures outside desktop runtime.
-            }
+            unlisten = await listenCollabJoin((url) => {
+                handleCollabDeepLink(url);
+                setActiveView("query");
+            });
         })();
         return () => {
             unlisten?.();
@@ -347,7 +342,7 @@ export default function Home() {
                         if (!isConnected) setShowConnectionDialog(true);
                         break;
                     case "new_window":
-                        invoke("open_new_window");
+                        void openNewAppWindow();
                         break;
                     default:
                         break;
@@ -384,13 +379,13 @@ export default function Home() {
                         open={showSurveyModal}
                         onClose={() => setShowSurveyModal(false)}
                         onSubmitted={() => setShowSurveyModal(false)}
-                        getToken={authGetToken}
+                        getToken={runtimeAuthGetToken}
                     />
                 )}
                 <BetaFeedbackDialog
                     open={showBetaFeedback}
                     onOpenChange={setShowBetaFeedback}
-                    getToken={authGetToken}
+                    getToken={runtimeAuthGetToken}
                 />
                 <ConnectionDialog
                     open={showConnectionDialog}
@@ -424,13 +419,13 @@ export default function Home() {
                     open={showSurveyModal}
                     onClose={() => setShowSurveyModal(false)}
                     onSubmitted={() => setShowSurveyModal(false)}
-                    getToken={authGetToken}
+                    getToken={runtimeAuthGetToken}
                 />
             )}
             <BetaFeedbackDialog
                 open={showBetaFeedback}
                 onOpenChange={setShowBetaFeedback}
-                getToken={authGetToken}
+                getToken={runtimeAuthGetToken}
             />
             {/* Top bar — compact flex: brand | views | actions; scroll/menus on narrow widths */}
             <header className="flex min-h-11 shrink-0 items-center gap-2 border-b border-border/35 bg-card/75 dark:bg-background/95 px-2 pt-[max(0px,env(safe-area-inset-top))] sm:px-3 backdrop-blur-md shadow-[0_1px_0_oklch(0_0_0_/0.03)] dark:shadow-none">

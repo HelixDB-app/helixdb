@@ -1,0 +1,721 @@
+openapi: 3.1.0
+info:
+  title: Helix Data Plane API
+  version: 1.0.0
+  description: |
+    Phase-1 HTTP API mirroring core Tauri DB commands (`db_connect`, `db_list_schemas`, etc.).
+    Protected routes accept `Authorization: Bearer` with either the shared `DATA_PLANE_API_KEY`,
+    an HS256 JWT signed with `DATA_PLANE_JWT_SECRET`, or an RS256 JWT validated via `DATA_PLANE_JWKS_URL`
+    (JWKS cached ~1 hour). See `auth_layer.rs` and `docs/DATA_PLANE_ARCHITECTURE.md`.
+servers:
+  - url: http://localhost:9847
+    description: Local default (`DATA_PLANE_BIND`)
+paths:
+  /health:
+    get:
+      summary: Liveness and Redis probe
+      operationId: health
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthResponse"
+  /v1/capabilities:
+    get:
+      summary: Feature flags for web vs desktop parity
+      operationId: capabilities
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CapabilitiesResponse"
+  /v1/connections:
+    post:
+      summary: Connect to PostgreSQL (creates server-side pool)
+      description: |
+        If the client sends a non-empty `connection_id` and a pool for that id already exists
+        (e.g. stale session after a browser refresh), the server drops the old pool first, then connects.
+      operationId: connect
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ConnectRequest"
+      responses:
+        "200":
+          description: Connected
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ConnectionResponse"
+        "400":
+          description: Invalid connection string or connection failed
+        "401":
+          description: Unauthorized
+  /v1/connections/{connectionId}:
+    parameters:
+      - $ref: "#/components/parameters/connectionId"
+    delete:
+      summary: Disconnect and drop pool
+      operationId: disconnect
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: Disconnected
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown connection
+    get:
+      summary: Ping connection (SELECT 1)
+      operationId: connectionPing
+      security:
+        - bearerAuth: []
+      responses:
+        "204":
+          description: OK
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown connection
+  /v1/connections/{connectionId}/metadata/refresh:
+    parameters:
+      - $ref: "#/components/parameters/connectionId"
+    post:
+      summary: Refresh metadata (returns fresh schema list; no server cache in MVP)
+      operationId: refreshMetadata
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Schema list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SchemaInfo"
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown connection
+  /v1/connections/{connectionId}/schemas:
+    parameters:
+      - $ref: "#/components/parameters/connectionId"
+    get:
+      summary: List schemas
+      operationId: listSchemas
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SchemaInfo"
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown connection
+  /v1/connections/{connectionId}/schemas/{schema}/tables:
+    parameters:
+      - $ref: "#/components/parameters/connectionId"
+      - $ref: "#/components/parameters/schema"
+    get:
+      summary: List tables in schema
+      operationId: listTables
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TableInfo"
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown connection
+  /v1/connections/{connectionId}/schemas/{schema}/tables/{table}/rows:
+    parameters:
+      - $ref: "#/components/parameters/connectionId"
+      - $ref: "#/components/parameters/schema"
+      - $ref: "#/components/parameters/table"
+    get:
+      summary: Paginated table data (`db_get_table_data`)
+      operationId: getTableRows
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: page
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            default: 1
+        - name: page_size
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 10000
+            default: 50
+        - name: sort_column
+          in: query
+          schema:
+            type: string
+        - name: sort_direction
+          in: query
+          schema:
+            type: string
+            enum: [ASC, DESC, asc, desc]
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown connection
+  /v1/connections/{connectionId}/query:
+    parameters:
+      - $ref: "#/components/parameters/connectionId"
+    post:
+      summary: Execute SQL (`db_execute_query`)
+      operationId: executeQuery
+      security:
+        - bearerAuth: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecuteQueryBody"
+      responses:
+        "200":
+          description: Result or error row (`is_error` flag)
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/QueryResult"
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown connection
+        "500":
+          description: Internal error
+  /v1/connections/{connectionId}/sessions:
+    parameters:
+      - $ref: "#/components/parameters/connectionId"
+    get:
+      summary: List backends from pg_stat_activity (`db_get_sessions`)
+      operationId: listSessions
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/PgSession"
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown connection
+  /v1/connections/{connectionId}/sessions/{pid}/terminate:
+    parameters:
+      - $ref: "#/components/parameters/connectionId"
+      - name: pid
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int32
+    post:
+      summary: pg_terminate_backend (`db_terminate_backend`)
+      operationId: terminateSession
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Whether the signal was sent
+          content:
+            application/json:
+              schema:
+                type: boolean
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown connection
+  /v1/connections/{connectionId}/sessions/{pid}/cancel:
+    parameters:
+      - $ref: "#/components/parameters/connectionId"
+      - name: pid
+        in: path
+        required: true
+        schema:
+          type: integer
+          format: int32
+    post:
+      summary: pg_cancel_backend (`db_cancel_backend`)
+      operationId: cancelSession
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: Whether cancel was sent
+          content:
+            application/json:
+              schema:
+                type: boolean
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown connection
+  /v1/connections/{connectionId}/schemas/{schema}/topology:
+    parameters:
+      - $ref: "#/components/parameters/connectionId"
+      - $ref: "#/components/parameters/schema"
+    get:
+      summary: ER diagram nodes and edges (`db_get_schema_topology`)
+      operationId: getSchemaTopology
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TopologyData"
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown connection
+        "500":
+          description: Query error or timeout
+  /v1/connections/{connectionId}/schemas/{schema}/tables/{table}/columns:
+    parameters:
+      - $ref: "#/components/parameters/connectionId"
+      - $ref: "#/components/parameters/schema"
+      - $ref: "#/components/parameters/table"
+    get:
+      summary: Column metadata (`db_get_columns`)
+      operationId: getTableColumns
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ColumnInfo"
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown connection
+  /v1/connections/{connectionId}/schemas/{schema}/tables/{table}/details:
+    parameters:
+      - $ref: "#/components/parameters/connectionId"
+      - $ref: "#/components/parameters/schema"
+      - $ref: "#/components/parameters/table"
+    get:
+      summary: Full table metadata (`db_get_table_details`)
+      operationId: getTableDetails
+      security:
+        - bearerAuth: []
+      responses:
+        "200":
+          description: OK
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TableDetails"
+        "401":
+          description: Unauthorized
+        "404":
+          description: Unknown connection
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      description: |
+        API key (`DATA_PLANE_API_KEY`), HS256 user JWT (`DATA_PLANE_JWT_SECRET` + optional iss/aud),
+        or RS256 JWT (via `DATA_PLANE_JWKS_URL`). If no verifier is configured and `DATA_PLANE_REQUIRE_AUTH`
+        is unset, `/v1` is open (local dev only).
+  parameters:
+    connectionId:
+      name: connectionId
+      in: path
+      required: true
+      schema:
+        type: string
+    schema:
+      name: schema
+      in: path
+      required: true
+      schema:
+        type: string
+    table:
+      name: table
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    HealthResponse:
+      type: object
+      required: [ok, redis]
+      properties:
+        ok:
+          type: boolean
+        redis:
+          type: string
+          description: ok | error | skipped
+    CapabilitiesResponse:
+      type: object
+      required: [version, ssh_tunnel, local_postgres]
+      properties:
+        version:
+          type: string
+        ssh_tunnel:
+          type: boolean
+        local_postgres:
+          type: boolean
+    ConnectRequest:
+      type: object
+      required: [connection_string]
+      properties:
+        connection_string:
+          type: string
+        connection_id:
+          type: string
+          nullable: true
+          description: Optional stable id (e.g. saved profile). Reuses id; replaces any existing server pool for that id.
+    ConnectionResponse:
+      type: object
+      required: [connection_id, database_name, server_version, pg_version_num]
+      properties:
+        connection_id:
+          type: string
+        database_name:
+          type: string
+        server_version:
+          type: string
+        pg_version_num:
+          type: integer
+          format: int64
+    SchemaInfo:
+      type: object
+      required: [name, table_count]
+      properties:
+        name:
+          type: string
+        table_count:
+          type: integer
+          format: int64
+    TableInfo:
+      type: object
+      required: [name, schema, row_count, table_type]
+      properties:
+        name:
+          type: string
+        schema:
+          type: string
+        row_count:
+          type: integer
+          format: int64
+        table_type:
+          type: string
+        table_comment:
+          type: string
+          nullable: true
+    ResultColumn:
+      type: object
+      required: [name, data_type]
+      properties:
+        name:
+          type: string
+        data_type:
+          type: string
+        enum_labels:
+          type: array
+          items:
+            type: string
+          nullable: true
+    CellValue:
+      type: object
+      description: Externally tagged union with `type` and optional `value`
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum:
+            - Null
+            - Bool
+            - Int16
+            - Int32
+            - Int64
+            - Float32
+            - Float64
+            - String
+            - Json
+            - DateTime
+            - Date
+            - Time
+            - Uuid
+            - Bytes
+        value: {}
+    QueryResult:
+      type: object
+      required:
+        - columns
+        - rows
+        - row_count
+        - execution_time_ms
+        - query
+        - is_error
+      properties:
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResultColumn"
+        rows:
+          type: array
+          items:
+            type: array
+            items:
+              $ref: "#/components/schemas/CellValue"
+        row_count:
+          type: integer
+        total_rows:
+          type: integer
+          format: int64
+          nullable: true
+        execution_time_ms:
+          type: number
+          format: double
+        page:
+          type: integer
+          nullable: true
+        page_size:
+          type: integer
+          nullable: true
+        query:
+          type: string
+        is_error:
+          type: boolean
+        error_message:
+          type: string
+          nullable: true
+    ExecuteQueryBody:
+      type: object
+      required: [sql]
+      properties:
+        sql:
+          type: string
+        environment:
+          type: string
+          nullable: true
+          description: dev | staging | prod (accepted for parity; audit in future)
+        guard_reason:
+          type: string
+          nullable: true
+    PgSession:
+      type: object
+      required: [pid, blocking_pids]
+      properties:
+        pid: { type: integer, format: int32 }
+        usename: { type: string, nullable: true }
+        application_name: { type: string, nullable: true }
+        datname: { type: string, nullable: true }
+        client_addr: { type: string, nullable: true }
+        client_port: { type: integer, format: int32, nullable: true }
+        backend_start: { type: string, nullable: true }
+        xact_start: { type: string, nullable: true }
+        query_start: { type: string, nullable: true }
+        state_change: { type: string, nullable: true }
+        wait_event_type: { type: string, nullable: true }
+        wait_event: { type: string, nullable: true }
+        state: { type: string, nullable: true }
+        query: { type: string, nullable: true }
+        backend_type: { type: string, nullable: true }
+        blocking_pids:
+          type: array
+          items: { type: integer, format: int32 }
+        query_duration_secs: { type: number, format: double, nullable: true }
+        xact_duration_secs: { type: number, format: double, nullable: true }
+        backend_duration_secs: { type: number, format: double, nullable: true }
+    TopologyColumn:
+      type: object
+      required: [name, data_type, is_primary_key, is_nullable]
+      properties:
+        name: { type: string }
+        data_type: { type: string }
+        is_primary_key: { type: boolean }
+        is_nullable: { type: boolean }
+    TopologyNode:
+      type: object
+      required: [schema, table_name, row_count, columns]
+      properties:
+        schema: { type: string }
+        table_name: { type: string }
+        row_count: { type: integer, format: int64 }
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/TopologyColumn"
+    TopologyEdge:
+      type: object
+      required:
+        - constraint_name
+        - from_schema
+        - from_table
+        - from_column
+        - to_schema
+        - to_table
+        - to_column
+      properties:
+        constraint_name: { type: string }
+        from_schema: { type: string }
+        from_table: { type: string }
+        from_column: { type: string }
+        to_schema: { type: string }
+        to_table: { type: string }
+        to_column: { type: string }
+    TopologyData:
+      type: object
+      required: [nodes, edges]
+      properties:
+        nodes:
+          type: array
+          items:
+            $ref: "#/components/schemas/TopologyNode"
+        edges:
+          type: array
+          items:
+            $ref: "#/components/schemas/TopologyEdge"
+    ColumnInfo:
+      type: object
+      required:
+        - name
+        - data_type
+        - is_nullable
+        - ordinal_position
+        - is_primary_key
+      properties:
+        name: { type: string }
+        data_type: { type: string }
+        is_nullable: { type: boolean }
+        ordinal_position: { type: integer, format: int32 }
+        column_default: { type: string, nullable: true }
+        is_primary_key: { type: boolean }
+        comment: { type: string, nullable: true }
+    TableConstraint:
+      type: object
+      required: [name, constraint_type, columns]
+      properties:
+        name: { type: string }
+        constraint_type: { type: string }
+        columns:
+          type: array
+          items: { type: string }
+        foreign_table: { type: string, nullable: true }
+        foreign_columns:
+          type: array
+          items: { type: string }
+          nullable: true
+        check_clause: { type: string, nullable: true }
+    TableIndex:
+      type: object
+      required:
+        - name
+        - is_unique
+        - is_primary
+        - index_type
+        - columns
+        - definition
+      properties:
+        name: { type: string }
+        is_unique: { type: boolean }
+        is_primary: { type: boolean }
+        index_type: { type: string }
+        columns:
+          type: array
+          items: { type: string }
+        definition: { type: string }
+        comment: { type: string, nullable: true }
+    TableTriggerInfo:
+      type: object
+      required: [name, timing, events, function_name, enabled]
+      properties:
+        name: { type: string }
+        timing: { type: string }
+        events:
+          type: array
+          items: { type: string }
+        function_name: { type: string }
+        enabled: { type: boolean }
+    TableDetails:
+      type: object
+      required:
+        - schema
+        - name
+        - table_type
+        - columns
+        - constraints
+        - indexes
+        - triggers
+        - row_count
+        - total_size
+        - table_size
+        - indexes_size
+      properties:
+        schema: { type: string }
+        name: { type: string }
+        table_type: { type: string }
+        columns:
+          type: array
+          items:
+            $ref: "#/components/schemas/ColumnInfo"
+        constraints:
+          type: array
+          items:
+            $ref: "#/components/schemas/TableConstraint"
+        indexes:
+          type: array
+          items:
+            $ref: "#/components/schemas/TableIndex"
+        triggers:
+          type: array
+          items:
+            $ref: "#/components/schemas/TableTriggerInfo"
+        row_count: { type: integer, format: int64 }
+        total_size: { type: string }
+        table_size: { type: string }
+        indexes_size: { type: string }
+        comment: { type: string, nullable: true }

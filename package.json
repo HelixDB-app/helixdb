@@ -3,7 +3,7 @@
   "version": "1.2.0",
   "private": true,
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev --hostname 0.0.0.0 --port 3000",
     "build": "next build",
     "start": "next start",
     "lint": "eslint",
@@ -12,8 +12,12 @@
     "build:mac": "sh -c 'case \"$(uname -m)\" in arm64) T=aarch64-apple-darwin;; x86_64) T=x86_64-apple-darwin;; *) T=;; esac; if [ -n \"$T\" ]; then pnpm tauri build --target \"$T\"; else pnpm tauri build; fi'",
     "release:mac": "pnpm build:mac",
     "ios:init": "cargo tauri ios init",
-    "ios:dev": "pnpm tauri ios dev",
-    "ios:build": "pnpm tauri ios build"
+    "ios:dev": "sh scripts/ios-dev.sh",
+    "ios:dev:lan": "pnpm tauri ios dev --host --force-ip-prompt",
+    "ios:dev:open": "sh scripts/ios-dev.sh --open",
+    "ios:dev:open:lan": "pnpm tauri ios dev --open --host --force-ip-prompt",
+    "ios:build": "pnpm tauri ios build",
+    "icons": "make icons"
   },
   "dependencies": {
     "@monaco-editor/react": "^4.7.0",

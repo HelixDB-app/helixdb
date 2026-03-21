@@ -11,7 +11,13 @@
 #   APPLE_API_KEY_ID      from App Store Connect → Integrations → Keys
 #   APPLE_API_ISSUER      Issuer ID from same page
 #   APPLE_API_KEY_PATH    /path/to/AuthKey_XXXXXXXX.p8
+# Optional (fixes altool ERROR 12 "Cannot determine the Apple ID from Bundle ID … MAC_OS"):
+#   APP_STORE_CONNECT_APP_ID   Numeric App ID from App Store Connect → your app → App Information → General
+#   APPLE_PROVIDER_PUBLIC_ID   From: xcrun altool --list-providers --api-key … --api-issuer … --p8-file-path …
+#   APPLE_ASC_PUBLIC_ID        Alternative provider id if your account requires --asc-public-id
 # Get identities: security find-identity -v -p codesigning (use fingerprint hex to avoid duplicate-cert ambiguity)
+#
+# Bundle ID in tauri.conf.json → identifier must match the macOS app in App Store Connect (e.g. com.pgstudio.helixdb).
 
 set -e
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
@@ -162,16 +168,60 @@ xcrun productbuild --sign "$INSTALL_ID" \
   "$PKG_PATH"
 
 echo "=== 5. Upload to TestFlight ==="
-# altool looks for the key by filename in repo/private_keys, ~/private_keys, etc. Copy there so it finds it.
-KEY_NAME=$(basename "$KEY_PATH")
+# Xcode 15+ altool expects JWT via --api-key / --api-issuer / --p8-file-path (not --apiKeyPath to a file).
+# It also searches ./private_keys for AuthKey_<KEY_ID>.p8 when only --api-key is set.
 ALTOOL_KEY_DIR="$REPO_ROOT/private_keys"
 mkdir -p "$ALTOOL_KEY_DIR"
-ALTOOL_KEY_PATH="$ALTOOL_KEY_DIR/$KEY_NAME"
-cp -f "$KEY_PATH" "$ALTOOL_KEY_PATH"
-xcrun altool --upload-app --type macos --file "$PKG_PATH" \
-  --apiKey "$KEY_ID" \
-  --apiIssuer "$ISSUER" \
-  --apiKeyPath "$ALTOOL_KEY_PATH"
+NORMALIZED_KEY="$ALTOOL_KEY_DIR/AuthKey_${KEY_ID}.p8"
+cp -f "$KEY_PATH" "$NORMALIZED_KEY"
+chmod 600 "$NORMALIZED_KEY"
+export API_PRIVATE_KEYS_DIR="$ALTOOL_KEY_DIR"
+
+ALT_EX=()
+[[ -n "${APPLE_PROVIDER_PUBLIC_ID:-}" ]] && ALT_EX+=(--provider-public-id "$APPLE_PROVIDER_PUBLIC_ID")
+[[ -n "${APPLE_ASC_PUBLIC_ID:-}" ]] && ALT_EX+=(--asc-public-id "$APPLE_ASC_PUBLIC_ID")
+[[ -n "${APPLE_ALTTOOL_TEAM_ID:-}" ]] && ALT_EX+=(--team-id "$APPLE_ALTTOOL_TEAM_ID")
+
+BUNDLE_ID=$(node -e 'const fs=require("fs"); const c=JSON.parse(fs.readFileSync(process.env.TAURI_CONF_PATH,"utf8")); console.log(c.identifier);')
+
+AUTH=(--api-key "$KEY_ID" --api-issuer "$ISSUER" --p8-file-path "$NORMALIZED_KEY")
+
+ALTLOG=$(mktemp)
+trap "rm -f '$ENTITLEMENTS' '$ALTLOG'" EXIT
+
+run_altool_upload() {
+  set +e
+  "$@" 2>&1 | tee "$ALTLOG"
+  local ec=${PIPESTATUS[0]}
+  set -e
+  if [[ $ec -ne 0 ]] || grep -q 'UPLOAD FAILED' "$ALTLOG" || grep -qi '^Upload failed' "$ALTLOG"; then
+    echo ""
+    echo "TestFlight upload failed (altool exit $ec). Fix validation errors above — this run is not successful."
+    exit 1
+  fi
+}
+
+if [[ -n "${APP_STORE_CONNECT_APP_ID:-}" ]]; then
+  echo "Using upload-package with explicit App Store Connect app id (avoids bundle-id → Apple ID lookup)."
+  run_altool_upload xcrun altool --upload-package "$PKG_PATH" -t macos \
+    --apple-id "$APP_STORE_CONNECT_APP_ID" \
+    --bundle-version "$BUILD_NOW" \
+    --bundle-short-version-string "$MARKETING" \
+    --bundle-id "$BUNDLE_ID" \
+    "${ALT_EX[@]}" \
+    "${AUTH[@]}" \
+    --show-progress
+else
+  echo "Using upload-app. If altool logs ERROR (12) about Bundle ID / Apple ID but exits 0, the upload still succeeded."
+  echo "To silence it, set APP_STORE_CONNECT_APP_ID in apple/.env (numeric id from App Store Connect → App Information)."
+  run_altool_upload xcrun altool --upload-app -f "$PKG_PATH" \
+    "${ALT_EX[@]}" \
+    "${AUTH[@]}" \
+    --show-progress
+fi
+
+rm -f "$ALTLOG"
+trap "rm -f '$ENTITLEMENTS'" EXIT
 
 echo ""
 echo "Done. Version $MARKETING (build $BUILD_NOW) uploaded."

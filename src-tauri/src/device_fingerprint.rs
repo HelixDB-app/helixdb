@@ -73,6 +73,40 @@ fn get_raw_hardware_id() -> Result<String, String> {
     Ok(trimmed)
 }
 
+/// iOS/Android: no OS-level hardware UUID is exposed like on desktop. Use a stable
+/// per-install identifier persisted in the app sandbox (cleared on uninstall).
+#[cfg(any(target_os = "ios", target_os = "android"))]
+fn get_raw_hardware_id() -> Result<String, String> {
+    let dir = mobile_support_dir()?;
+    std::fs::create_dir_all(&dir).map_err(|e| format!("create app support dir: {e}"))?;
+    let path = dir.join("install_device_raw_id_v1");
+    if path.exists() {
+        let s = std::fs::read_to_string(&path).map_err(|e| format!("read device id: {e}"))?;
+        let t = s.trim();
+        if !t.is_empty() {
+            return Ok(t.to_string());
+        }
+    }
+    let id = uuid::Uuid::new_v4().to_string();
+    std::fs::write(&path, &id).map_err(|e| format!("write device id: {e}"))?;
+    Ok(id)
+}
+
+#[cfg(target_os = "ios")]
+fn mobile_support_dir() -> Result<std::path::PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set (iOS)".to_string())?;
+    Ok(std::path::PathBuf::from(home)
+        .join("Library")
+        .join("Application Support")
+        .join("pgstudio"))
+}
+
+#[cfg(target_os = "android")]
+fn mobile_support_dir() -> Result<std::path::PathBuf, String> {
+    let home = std::env::var("HOME").map_err(|_| "HOME not set (Android)".to_string())?;
+    Ok(std::path::PathBuf::from(home).join("files").join("pgstudio"))
+}
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /// Returns a stable, hardware-bound, 64-character hex device fingerprint.

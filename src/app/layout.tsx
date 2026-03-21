@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, JetBrains_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
@@ -13,6 +13,8 @@ import { NetworkStatusProvider } from "@/components/network-status-provider";
 import { AppDebugLogger } from "@/components/app-debug-logger";
 import { AppSplash } from "@/components/app-splash";
 import { DesktopMenuBridge } from "@/components/desktop-menu-bridge";
+import { WebAccountHashBridge } from "@/components/web-account-hash-bridge";
+import { WebAuthReturnSync } from "@/components/web-auth-return-sync";
 import { ErrorBoundary } from "@/components/error-boundary";
 import { TrialProvider, TrialBanner, TrialGate } from "@/components/trial-banner";
 import { APP_NAME, APP_TAGLINE } from "@/lib/app-config";
@@ -32,7 +34,25 @@ export const metadata: Metadata = {
   title: `${APP_NAME} — ${APP_TAGLINE}`,
   description:
     "A blazing-fast, modern database admin panel powered by Rust and Next.js",
-  icons: { icon: "/logo.png" },
+  manifest: "/manifest.webmanifest",
+  icons: { icon: "/logo.png", apple: "/logo.png" },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "default",
+    title: APP_NAME,
+  },
+  formatDetection: { telephone: false },
+};
+
+/** Safari / iPad: correct scaling, status bar tint, and Add to Home Screen behavior. */
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  maximumScale: 5,
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#f0f2f4" },
+    { media: "(prefers-color-scheme: dark)", color: "#141414" },
+  ],
 };
 
 export default function RootLayout({
@@ -52,6 +72,8 @@ export default function RootLayout({
       >
         <AppSplash />
         <DesktopMenuBridge />
+        <WebAccountHashBridge />
+        <WebAuthReturnSync />
         <AppDebugLogger />
         <ThemeProvider
           attribute="class"

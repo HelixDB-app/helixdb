@@ -16,8 +16,8 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { useConnectionStore } from "@/stores/connection-store";
 import { useQueryStore } from "@/stores/query-store";
 import { useSearchStore } from "@/stores/search-store";
+import { dbGetColumns } from "@/lib/db-platform";
 import {
-    dbGetColumns,
     dbListEventTriggers,
     dbListFunctions,
     dbListTables,

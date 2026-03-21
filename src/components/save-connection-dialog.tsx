@@ -1,7 +1,7 @@
 "use client";
 
-import { useState, useEffect, useMemo } from "react";
-import { open as openFileDialog } from "@tauri-apps/plugin-dialog";
+import { useState, useEffect, useMemo, useRef } from "react";
+import { isTauri } from "@/lib/tauri-runtime";
 import type { SavedConnection, SshTunnelConfig } from "@/lib/types";
 import { useSavedConnectionsStore } from "@/stores/saved-connections-store";
 import {
@@ -59,6 +59,7 @@ export function SaveConnectionDialog({
     const [criticality, setCriticality] = useState<ConnectionCriticality>("medium");
     const [saving, setSaving] = useState(false);
     const [saveAndConnect, setSaveAndConnect] = useState(false);
+    const identityFileInputRef = useRef<HTMLInputElement>(null);
 
     const [useSshTunneling, setUseSshTunneling] = useState(false);
     const [tunnelHost, setTunnelHost] = useState("");
@@ -202,7 +203,12 @@ export function SaveConnectionDialog({
     };
 
     const handlePickIdentityFile = async () => {
+        if (!isTauri()) {
+            identityFileInputRef.current?.click();
+            return;
+        }
         try {
+            const { open: openFileDialog } = await import("@tauri-apps/plugin-dialog");
             const selected = await openFileDialog({ directory: false, multiple: false });
             if (selected) setIdentityFilePath(selected);
         } catch {
@@ -406,10 +412,34 @@ export function SaveConnectionDialog({
                                 </div>
                                 {sshAuth === "identity_file" && (
                                     <div className="flex gap-1">
+                                        <input
+                                            ref={identityFileInputRef}
+                                            type="file"
+                                            className="hidden"
+                                            accept=".pem,.key,text/plain,*/*"
+                                            onChange={(e) => {
+                                                const f = e.target.files?.[0];
+                                                if (!f) return;
+                                                const reader = new FileReader();
+                                                reader.onload = () => {
+                                                    const text =
+                                                        typeof reader.result === "string"
+                                                            ? reader.result
+                                                            : "";
+                                                    if (text.trim()) setIdentityFilePath(text.trim());
+                                                };
+                                                reader.readAsText(f);
+                                                e.target.value = "";
+                                            }}
+                                        />
                                         <Input
                                             value={identityFilePath}
                                             onChange={(e) => setIdentityFilePath(e.target.value)}
-                                            placeholder="Path to private key"
+                                            placeholder={
+                                                isTauri()
+                                                    ? "Path to private key"
+                                                    : "Paste key or use folder button to load a file"
+                                            }
                                             className="h-9 text-sm flex-1"
                                             disabled={saving}
                                         />

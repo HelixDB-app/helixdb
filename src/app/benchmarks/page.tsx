@@ -2,7 +2,7 @@
 
 import { useMemo, useState } from "react";
 import { useConnectionStore } from "@/stores/connection-store";
-import { dbListSchemas, dbListTables, dbExecuteQuery } from "@/lib/tauri";
+import { dbListSchemas, dbListTables, dbExecuteQuery } from "@/lib/db-platform";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";

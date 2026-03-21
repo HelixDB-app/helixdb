@@ -9,7 +9,7 @@ import {
     memo,
 } from "react";
 import { useConnectionStore } from "@/stores/connection-store";
-import { dbGetSchemaTopology } from "@/lib/tauri";
+import { dbGetSchemaTopology } from "@/lib/db-platform";
 import type { TopologyData, TopologyNode, TopologyEdge, TopologyColumn } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";

@@ -19,13 +19,8 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
-import {
-    dbGetTableDetails,
-    dbGetAccessProfile,
-    dbListSchemas,
-    dbListTables,
-    dbInsertTableRowsBulk,
-} from "@/lib/tauri";
+import { dbGetTableDetails, dbListSchemas, dbListTables } from "@/lib/db-platform";
+import { dbGetAccessProfile, dbInsertTableRowsBulk } from "@/lib/tauri";
 import type { TableDetails, DatabaseAccessProfile, SchemaInfo, TableInfo, ColumnInfo } from "@/lib/types";
 import { GEMINI_MODELS, type GeminiModelId } from "@/lib/ai-chat-engine";
 import { useSettingsStore } from "@/stores/settings-store";

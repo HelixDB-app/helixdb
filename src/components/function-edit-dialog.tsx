@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useConnectionStore } from "@/stores/connection-store";
-import { dbExecuteQuery, dbGetColumns } from "@/lib/tauri";
+import { dbExecuteQuery, dbGetColumns } from "@/lib/db-platform";
 import { MonacoSqlEditor } from "@/components/monaco-sql-editor";
 import type { SchemaContext } from "@/lib/ai-suggestions";
 import { formatHelixSql } from "@/lib/format-sql";

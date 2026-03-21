@@ -3,7 +3,12 @@
 import { useState, useCallback, useRef, useEffect } from "react";
 import { useAuthStore } from "@/stores/auth-store";
 import { useTrialStore } from "@/stores/trial-store";
-import { authOpenLogin, authStoreToken, authFetchProfile } from "@/lib/tauri";
+import {
+    authOpenLogin,
+    authStoreToken,
+    authFetchProfile,
+    authExchangeDesktopCode,
+} from "@/lib/tauri";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 
 const LOGIN_TIMEOUT_MS = 120_000;
@@ -23,7 +28,9 @@ export interface UseDesktopAuthLoginOptions {
 
 /**
  * Desktop OAuth: open browser with `source=desktop&state=…`, listen for `pgstudio-auth-callback`,
- * store JWT, load profile, optionally run a follow-up action.
+ * store JWT (or exchange `code` for a token), load profile, optionally run a follow-up action.
+ *
+ * When pgstudio-web migrates to authorization codes, callbacks use `?code=…&state=…` instead of `?token=…`.
  */
 export function useDesktopAuthLogin(options: UseDesktopAuthLoginOptions = {}) {
     const { onLoginSuccess } = options;
@@ -83,22 +90,44 @@ export function useDesktopAuthLogin(options: UseDesktopAuthLoginOptions = {}) {
 
                     const receivedState = url.searchParams.get("state");
                     const token = url.searchParams.get("token");
+                    const code = url.searchParams.get("code");
 
-                    if (!token) {
-                        setErrorMsg("No token received from the browser. Please try again.");
+                    if (!receivedState || receivedState !== state) {
+                        setErrorMsg(
+                            "Security check failed (state missing or mismatch). Please try again."
+                        );
                         setPhase("error");
                         setPendingState(null);
                         return;
                     }
 
-                    if (receivedState && receivedState !== state) {
-                        setErrorMsg("Security check failed (state mismatch). Please try again.");
+                    let accessToken: string | null = token;
+
+                    if (!accessToken && code?.trim()) {
+                        try {
+                            accessToken = await authExchangeDesktopCode(code.trim());
+                        } catch (e) {
+                            const msg =
+                                e instanceof Error
+                                    ? e.message
+                                    : "Could not exchange sign-in code. Please try again.";
+                            setErrorMsg(msg);
+                            setPhase("error");
+                            setPendingState(null);
+                            return;
+                        }
+                    }
+
+                    if (!accessToken?.trim()) {
+                        setErrorMsg(
+                            "No token or code received from the browser. Please try again."
+                        );
                         setPhase("error");
                         setPendingState(null);
                         return;
                     }
 
-                    await authStoreToken(token);
+                    await authStoreToken(accessToken.trim());
 
                     const profile = await authFetchProfile();
                     if (profile) {

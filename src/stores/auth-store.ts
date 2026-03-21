@@ -1,5 +1,8 @@
 import { create } from "zustand";
 
+import { setWebDataPlaneBearerToken } from "@/lib/web-data-plane-token";
+import { setWebAccountJwt } from "@/lib/web-account-jwt";
+
 export interface UserProfile {
     id: string;
     name: string;
@@ -31,5 +34,9 @@ export const useAuthStore = create<AuthState>((set) => ({
     setUser: (user) => set({ user, isAuthenticated: !!user }),
     setLoading: (isLoading) => set({ isLoading }),
     setPendingState: (pendingState) => set({ pendingState }),
-    logout: () => set({ user: null, isAuthenticated: false, pendingState: null }),
+    logout: () => {
+        setWebDataPlaneBearerToken(null);
+        setWebAccountJwt(null);
+        set({ user: null, isAuthenticated: false, pendingState: null });
+    },
 }));

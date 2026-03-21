@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>NSLocalNetworkUsageDescription</key>
+  <string>pgStudio needs access to devices on your local network to connect to PostgreSQL and other hosts on your Wi‑Fi, and—while you develop from Xcode—to load the app’s web interface from your Mac. Please tap Allow when prompted; you can change this anytime in Settings &gt; Privacy &amp; Security &gt; Local Network.</string>
+  <key>NSAppTransportSecurity</key>
+  <dict>
+    <key>NSAllowsLocalNetworking</key>
+    <true/>
+  </dict>
+  <key>NSBonjourServices</key>
+  <array>
+    <string>_http._tcp</string>
+  </array>
+</dict>
+</plist>

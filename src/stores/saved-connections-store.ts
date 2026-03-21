@@ -9,7 +9,7 @@ import {
     saveConnection as saveConnectionApi,
     deleteSavedConnection as deleteSavedConnectionApi,
     updateSavedConnectionDatabaseName as updateDatabaseNameApi,
-} from "@/lib/tauri";
+} from "@/lib/saved-connections-api";
 
 interface SavedConnectionsState {
     connections: SavedConnection[];

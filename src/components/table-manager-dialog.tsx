@@ -14,8 +14,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useConnectionStore } from "@/stores/connection-store";
+import { dbGetTableDetails, dbExecuteQuery } from "@/lib/db-platform";
 import {
-    dbGetTableDetails,
     dbRenameTable,
     dbRenameColumn,
     dbAlterColumn,
@@ -23,7 +23,6 @@ import {
     dbDropColumn,
     dbTruncateTable,
     dbDropTable,
-    dbExecuteQuery,
 } from "@/lib/tauri";
 import type { TableDetails, ColumnInfo } from "@/lib/types";
 import {

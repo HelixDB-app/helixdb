@@ -1,6 +1,6 @@
 import { create } from "zustand";
 import type { ConnectionEnvironment, QueryResult } from "@/lib/types";
-import { dbExecuteQuery, dbGetTableData } from "@/lib/tauri";
+import { dbExecuteQuery, dbGetTableData } from "@/lib/db-platform";
 import { track } from "@/lib/analytics";
 
 export interface QueryTab {

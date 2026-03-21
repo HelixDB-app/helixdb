@@ -1,0 +1,61 @@
+# Local stack: Redis (sessions/rate limits/jobs — future) + Helix data-plane API.
+# Customer PostgreSQL runs elsewhere; optional `postgres` service is for a future control plane only.
+#
+# Usage:
+#   docker compose up --build
+#   export NEXT_PUBLIC_DATA_PLANE_URL=http://127.0.0.1:9847
+#   export NEXT_PUBLIC_DATA_PLANE_API_KEY=dev-shared-secret   # dev only; production uses JWT from control plane
+#   export NEXT_PUBLIC_DATA_PLANE_ALLOW_PUBLIC_API_KEY=true   # only if you intentionally bypass prod lock on the key
+#
+# Env reference: docs/DATA_PLANE_ARCHITECTURE.md
+
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - helix_redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+
+  data-plane:
+    build:
+      context: ./data-plane
+      dockerfile: Dockerfile
+    ports:
+      - "9847:9847"
+    environment:
+      DATA_PLANE_BIND: 0.0.0.0:9847
+      REDIS_URL: redis://redis:6379
+      # Optional lab auth (unset to allow open API — not for production)
+      DATA_PLANE_API_KEY: ${DATA_PLANE_API_KEY:-}
+      # Optional: DATA_PLANE_JWT_SECRET, DATA_PLANE_JWT_ISSUER, DATA_PLANE_JWT_AUDIENCE, DATA_PLANE_JWKS_URL
+      # DATA_PLANE_REQUIRE_AUTH, DATA_PLANE_CORS_ORIGINS — see docs/DATA_PLANE_ARCHITECTURE.md
+      DATA_PLANE_POOL_MAX_SIZE: ${DATA_PLANE_POOL_MAX_SIZE:-8}
+      DATA_PLANE_STATEMENT_TIMEOUT_MS: ${DATA_PLANE_STATEMENT_TIMEOUT_MS:-60000}
+      RUST_LOG: ${RUST_LOG:-info}
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  # Optional: Postgres for encrypted connection profiles + audit (not wired in MVP binary).
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["control-plane"]
+    environment:
+      POSTGRES_USER: helix
+      POSTGRES_PASSWORD: helix
+      POSTGRES_DB: helix_control
+    ports:
+      - "5433:5432"
+    volumes:
+      - helix_control_pg:/var/lib/postgresql/data
+
+volumes:
+  helix_redis:
+  helix_control_pg:

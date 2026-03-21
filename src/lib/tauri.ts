@@ -1241,6 +1241,11 @@ export async function authOpenLogin(state: string): Promise<void> {
     return invoke<void>("auth_open_login", { state });
 }
 
+/** Exchange desktop OAuth `code` for an access token (control plane `POST /api/auth/desktop-exchange`). */
+export async function authExchangeDesktopCode(code: string): Promise<string> {
+    return invoke<string>("auth_exchange_desktop_code", { code });
+}
+
 /** Open the system browser at any URL (e.g. the web profile page). */
 export async function authOpenBrowser(url: string): Promise<void> {
     return invoke<void>("auth_open_url", { url });

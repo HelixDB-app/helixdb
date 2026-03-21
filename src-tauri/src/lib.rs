@@ -1,6 +1,7 @@
 mod account_security_storage;
 mod ai_suggestions_worker;
 mod auth;
+mod web_config;
 mod commands;
 mod connections_storage;
 mod db;
@@ -201,6 +202,7 @@ pub fn run() {
             commands::db_import_schema,
             // Auth commands
             auth::auth_open_login,
+            auth::auth_exchange_desktop_code,
             auth::auth_open_url,
             auth::auth_store_token,
             auth::auth_get_token,

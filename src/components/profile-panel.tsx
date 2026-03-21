@@ -10,6 +10,8 @@ import {
     authCreateCheckout,
     type PlanInfo,
 } from "@/lib/tauri";
+import { isTauriRuntime } from "@/lib/runtime";
+import { getWebAppBaseUrl } from "@/lib/web-app-url";
 import {
     Dialog,
     DialogContent,
@@ -181,7 +183,9 @@ export function ProfilePanel({ open, onClose }: ProfilePanelProps) {
         resetSub();
         onClose();
         try {
-            await authDeleteToken();
+            if (isTauriRuntime()) {
+                await authDeleteToken();
+            }
         } catch {
             // keychain deletion is best-effort; the in-memory state is already cleared
         } finally {
@@ -190,7 +194,7 @@ export function ProfilePanel({ open, onClose }: ProfilePanelProps) {
     }
 
     async function handleEditProfile() {
-        await authOpenBrowser(`${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app"}/profile`);
+        await authOpenBrowser(`${getWebAppBaseUrl()}/profile`);
     }
 
     const discordAccess = subscription?.discordAccess;

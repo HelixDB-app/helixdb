@@ -65,6 +65,10 @@ block2 = "0.6"
 objc2 = "0.6"
 objc2-foundation = "0.3"
 
+# Patched: objc2-system-configuration + SCDynamicStore are macOS-only (see third-party/whoami).
+[patch.crates-io]
+whoami = { path = "third-party/whoami" }
+
 [profile.release]
 lto = true
 codegen-units = 1

@@ -22,6 +22,8 @@ import {
     dbListSchemas,
     dbListTables,
     dbRefreshCache,
+} from "@/lib/db-platform";
+import {
     dbListDatabases,
     dbCreateDatabase,
     dbDropDatabase,

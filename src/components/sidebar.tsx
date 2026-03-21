@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useState, useRef, useEffect, useMemo, useCallback } from "react";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useShallow } from "zustand/react/shallow";
-import { getSavedConnections } from "@/lib/tauri";
+import { getSavedConnections } from "@/lib/saved-connections-api";
 import { useLayoutStore } from "@/stores/layout-store";
 import type { SavedConnection } from "@/lib/types";
 import { ConnectionEnvBadge } from "@/components/connection-env-badge";

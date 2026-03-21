@@ -2,7 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTheme } from "next-themes";
-import type { editor, IDisposable } from "monaco-editor";
+import type { editor, IDisposable, IRange } from "monaco-editor";
 import Editor, { DiffEditor } from "@monaco-editor/react";
 import { cn } from "@/lib/utils";
 import { aiSuggestionEngine } from "@/lib/ai-suggestions";
@@ -104,7 +104,7 @@ function clampNumber(value: number, min: number, max: number): number {
 
 function getCommandAnchor(
     editorInstance: editor.IStandaloneCodeEditor,
-    range: editor.IRange
+    range: IRange
 ): { top: number; left: number } {
     const domNode = editorInstance.getDomNode();
     if (!domNode) return { top: 20, left: 20 };
@@ -254,7 +254,7 @@ export function MonacoSqlEditor({
 
     const aiCommandAbortRef = useRef<AbortController | null>(null);
     const aiCommandInputRef = useRef<HTMLTextAreaElement | null>(null);
-    const aiCommandSelectionRef = useRef<editor.IRange | null>(null);
+    const aiCommandSelectionRef = useRef<IRange | null>(null);
     const aiCommandHasSelectionRef = useRef<boolean>(false);
     const aiCommandSelectionTextRef = useRef<string>("");
 
@@ -281,7 +281,7 @@ export function MonacoSqlEditor({
     const [aiDiffOpen, setAiDiffOpen] = useState(false);
     const [aiDiffOriginal, setAiDiffOriginal] = useState("");
     const [aiDiffModified, setAiDiffModified] = useState("");
-    const [aiDiffRange, setAiDiffRange] = useState<editor.IRange | null>(null);
+    const [aiDiffRange, setAiDiffRange] = useState<IRange | null>(null);
     const [aiDiffIsFullFile, setAiDiffIsFullFile] = useState(false);
     const [aiDiffMode, setAiDiffMode] = useState<"diff" | "edit">("diff");
     const [aiDiffModel, setAiDiffModel] = useState<string | null>(null);
@@ -1413,6 +1413,11 @@ export function MonacoSqlEditor({
                 const insertedText = e.changes.map((c) => c.text).join("");
                 if (insertedText.includes("\n")) {
                     scheduleEnterInlineSuggest(editorInstance);
+                    setTimeout(() => {
+                        if (inlineTriggerReasonRef.current === "newline") {
+                            inlineTriggerReasonRef.current = "typing";
+                        }
+                    }, 500);
                 }
                 const lastCompletion = lastInlineCompletionRef.current;
                 if (!lastCompletion) return;
@@ -1435,16 +1440,6 @@ export function MonacoSqlEditor({
                     lastInlineCompletionRef.current = "";
                 }
             });
-            const inlineTypeDisposable = editorInstance.onDidType((text) => {
-                if (text === "\n" || text === "\r\n") {
-                    scheduleEnterInlineSuggest(editorInstance);
-                    setTimeout(() => {
-                        if (inlineTriggerReasonRef.current === "newline") {
-                            inlineTriggerReasonRef.current = "typing";
-                        }
-                    }, 500);
-                }
-            });
             const inlineCursorDisposable = editorInstance.onDidChangeCursorPosition(() => {
                 hideInlineHintRef.current();
             });
@@ -1452,7 +1447,7 @@ export function MonacoSqlEditor({
                 hideInlineHintRef.current();
             });
 
-            disposablesRef.current.push(inlineContentDisposable, inlineTypeDisposable, inlineCursorDisposable);
+            disposablesRef.current.push(inlineContentDisposable, inlineCursorDisposable);
             if (inlineBlurDisposable) disposablesRef.current.push(inlineBlurDisposable);
 
             // Custom paste (Cmd+V / Ctrl+V): read clipboard, insert at cursor, sync to parent.

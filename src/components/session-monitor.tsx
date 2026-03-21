@@ -1,7 +1,11 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import {
+    dbGetSessions,
+    dbTerminateBackend,
+    dbCancelBackend,
+} from "@/lib/db-platform";
 import { useConnectionStore } from "@/stores/connection-store";
 import type { PgSession } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -158,7 +162,7 @@ export function SessionMonitor() {
         setLoading(true);
         setError(null);
         try {
-            const data = await invoke<PgSession[]>("db_get_sessions", { connectionId });
+            const data = await dbGetSessions(connectionId);
             setSessions(data);
             setLastRefresh(new Date());
         } catch (e) {
@@ -264,9 +268,9 @@ export function SessionMonitor() {
         setActionLoading(true);
         try {
             if (confirmAction.type === "terminate") {
-                await invoke<boolean>("db_terminate_backend", { connectionId, pid: confirmAction.session.pid });
+                await dbTerminateBackend(connectionId, confirmAction.session.pid);
             } else {
-                await invoke<boolean>("db_cancel_backend", { connectionId, pid: confirmAction.session.pid });
+                await dbCancelBackend(connectionId, confirmAction.session.pid);
             }
             setConfirmAction(null);
             await fetchSessions();

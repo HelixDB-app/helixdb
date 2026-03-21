@@ -31,7 +31,8 @@ import {
 import { CheckCircle2, Clock, Copy, Download, FileText, Braces, Columns, LayoutGrid, ChevronDown, Check, X, Pencil } from "lucide-react";
 import { toast } from "sonner";
 import { cn } from "@/lib/utils";
-import { dbGetColumns, dbUpdateTableRow } from "@/lib/tauri";
+import { dbGetColumns } from "@/lib/db-platform";
+import { dbUpdateTableRow } from "@/lib/tauri";
 import { formatDbError } from "@/lib/db-errors";
 import { getDateTimeMode } from "@/lib/date-time";
 import { DateTimeInput } from "@/components/date-time-input";

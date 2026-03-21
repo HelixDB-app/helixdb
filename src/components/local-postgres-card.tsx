@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from "react";
 import { listen } from "@tauri-apps/api/event";
+import { isTauri } from "@/lib/tauri-runtime";
 import type { InstallProgress, LocalPostgresStatus } from "@/lib/types";
 import {
     localPostgresCheck,
@@ -42,7 +43,28 @@ type CardPhase =
 
 // ── Component ──────────────────────────────────────────────────────────────
 
-export function LocalPostgresCard() {
+function LocalPostgresWebBanner() {
+    return (
+        <div className="rounded-xl border border-border/50 bg-card/80 p-4 shadow-sm">
+            <div className="flex items-start gap-3">
+                <Monitor className="h-5 w-5 text-muted-foreground shrink-0 mt-0.5" />
+                <div className="min-w-0 space-y-1">
+                    <p className="text-sm font-medium">Local PostgreSQL</p>
+                    <p className="text-xs text-muted-foreground leading-relaxed">
+                        Bundled local Postgres controls are available in the{" "}
+                        <span className="text-foreground font-medium">desktop app</span> only. In the
+                        browser, connect with your URI and run the{" "}
+                        <span className="text-foreground font-medium">Helix data plane</span> (
+                        <code className="text-[10px] bg-muted px-1 rounded">make data-plane</code> defaults to{" "}
+                        <code className="text-[10px] bg-muted px-1 rounded">127.0.0.1:9847</code>).
+                    </p>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function LocalPostgresCardDesktop() {
     const { connect, isConnecting } = useConnectionStore();
     const [phase, setPhase] = useState<CardPhase>({ kind: "checking" });
     const [showLog, setShowLog] = useState(false);
@@ -455,4 +477,11 @@ function StatusBadge({ phase }: { phase: CardPhase }) {
         );
     }
     return null;
+}
+
+export function LocalPostgresCard() {
+    if (!isTauri()) {
+        return <LocalPostgresWebBanner />;
+    }
+    return <LocalPostgresCardDesktop />;
 }

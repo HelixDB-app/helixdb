@@ -60,10 +60,58 @@ xcrun productbuild --sign "$INSTALLER_IDENTITY" \
   "$PKG_PATH"
 
 echo "Uploading to App Store Connect..."
-xcrun altool --upload-app --type macos --file "$PKG_PATH" \
-  --apiKey "$KEY_ID" \
-  --apiIssuer "$ISSUER" \
-  --apiKeyPath "$KEY_PATH"
+ALTOOL_KEY_DIR="$REPO_ROOT/private_keys"
+mkdir -p "$ALTOOL_KEY_DIR"
+NORMALIZED_KEY="$ALTOOL_KEY_DIR/AuthKey_${KEY_ID}.p8"
+cp -f "$KEY_PATH" "$NORMALIZED_KEY"
+chmod 600 "$NORMALIZED_KEY"
+export API_PRIVATE_KEYS_DIR="$ALTOOL_KEY_DIR"
+
+ALT_EX=()
+[[ -n "${APPLE_PROVIDER_PUBLIC_ID:-}" ]] && ALT_EX+=(--provider-public-id "$APPLE_PROVIDER_PUBLIC_ID")
+[[ -n "${APPLE_ASC_PUBLIC_ID:-}" ]] && ALT_EX+=(--asc-public-id "$APPLE_ASC_PUBLIC_ID")
+[[ -n "${APPLE_ALTTOOL_TEAM_ID:-}" ]] && ALT_EX+=(--team-id "$APPLE_ALTTOOL_TEAM_ID")
+
+export TAURI_CONF_PATH="$REPO_ROOT/src-tauri/tauri.conf.json"
+BUNDLE_ID=$(node -e 'const fs=require("fs"); const c=JSON.parse(fs.readFileSync(process.env.TAURI_CONF_PATH,"utf8")); console.log(c.identifier);')
+MARKETING=$(node -e 'const fs=require("fs"); const c=JSON.parse(fs.readFileSync(process.env.TAURI_CONF_PATH,"utf8")); console.log(c.version);')
+BUILD_NOW=$(node -e 'const fs=require("fs"); const c=JSON.parse(fs.readFileSync(process.env.TAURI_CONF_PATH,"utf8")); console.log((c.bundle&&c.bundle.macOS&&c.bundle.macOS.bundleVersion)||"1");')
+
+AUTH=(--api-key "$KEY_ID" --api-issuer "$ISSUER" --p8-file-path "$NORMALIZED_KEY")
+
+ALTLOG=$(mktemp)
+run_altool_upload() {
+  set +e
+  "$@" 2>&1 | tee "$ALTLOG"
+  local ec=${PIPESTATUS[0]}
+  set -e
+  local fail=0
+  [[ $ec -ne 0 ]] && fail=1
+  grep -q 'UPLOAD FAILED' "$ALTLOG" && fail=1
+  grep -qi '^Upload failed' "$ALTLOG" && fail=1
+  rm -f "$ALTLOG"
+  if [[ $fail -ne 0 ]]; then
+    echo ""
+    echo "TestFlight upload failed (altool exit $ec). See errors above."
+    exit 1
+  fi
+}
+
+if [[ -n "${APP_STORE_CONNECT_APP_ID:-}" ]]; then
+  run_altool_upload xcrun altool --upload-package "$PKG_PATH" -t macos \
+    --apple-id "$APP_STORE_CONNECT_APP_ID" \
+    --bundle-version "$BUILD_NOW" \
+    --bundle-short-version-string "$MARKETING" \
+    --bundle-id "$BUNDLE_ID" \
+    "${ALT_EX[@]}" \
+    "${AUTH[@]}" \
+    --show-progress
+else
+  run_altool_upload xcrun altool --upload-app -f "$PKG_PATH" \
+    "${ALT_EX[@]}" \
+    "${AUTH[@]}" \
+    --show-progress
+fi
 
 echo "Done. Build will appear in App Store Connect → your app → TestFlight (may take 5–15 min)."
 echo "Optional: rm $PKG_PATH"

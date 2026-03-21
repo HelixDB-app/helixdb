@@ -1,7 +1,8 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
-import { dbImportSchema, dbListSchemas } from "@/lib/tauri";
+import { dbListSchemas } from "@/lib/db-platform";
+import { dbImportSchema } from "@/lib/tauri";
 import type { DbImportResult } from "@/lib/tauri";
 import { useIdeFsStore } from "@/stores/ide-fs-store";
 import {

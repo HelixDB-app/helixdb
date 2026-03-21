@@ -1,10 +1,13 @@
 "use client";
 
+import { useCallback } from "react";
 import { useDesktopAuthLogin } from "@/hooks/use-desktop-auth-login";
 import { useAuthStore } from "@/stores/auth-store";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { LogIn, Loader2, X, RefreshCw, AlertCircle, Wifi } from "lucide-react";
+import { isTauriRuntime } from "@/lib/runtime";
+import { startWebAccountLogin } from "@/lib/web-auth-login";
 
 interface LoginPromptProps {
     /** Called after successful login */
@@ -14,15 +17,35 @@ interface LoginPromptProps {
     compact?: boolean;
 }
 
-export function LoginPrompt({ onLoginSuccess, onDismiss, compact = false }: LoginPromptProps) {
+export function LoginPrompt({ onDismiss, compact = false, onLoginSuccess }: LoginPromptProps) {
+    const isDesktop = isTauriRuntime();
     const { isLoading: authLoading } = useAuthStore();
-    const { phase, errorMsg, startLogin: handleLogin, cancel: handleCancel, isActive } =
+    const { phase, errorMsg, startLogin: handleDesktopLogin, cancel: handleCancel, isActive } =
         useDesktopAuthLogin({ onLoginSuccess });
+
+    const handleWebLogin = useCallback(() => {
+        startWebAccountLogin();
+    }, []);
 
     // ── Compact (header button) mode ─────────────────────────────────────────
     if (compact) {
         if (authLoading) {
             return <Skeleton className="h-7 w-16 rounded-md" />;
+        }
+
+        if (!isDesktop) {
+            return (
+                <Button
+                    size="sm"
+                    variant="outline"
+                    className="h-7 gap-1.5 px-2.5 text-xs max-sm:w-7 max-sm:px-0 max-sm:[&>svg]:shrink-0"
+                    onClick={handleWebLogin}
+                    aria-label="Sign in"
+                >
+                    <LogIn className="h-3.5 w-3.5" />
+                    <span className="max-sm:sr-only">Sign In</span>
+                </Button>
+            );
         }
 
         if (phase === "timedout") {
@@ -33,7 +56,7 @@ export function LoginPrompt({ onLoginSuccess, onDismiss, compact = false }: Logi
                         size="sm"
                         variant="outline"
                         className="gap-1.5 text-xs h-7"
-                        onClick={handleLogin}
+                        onClick={handleDesktopLogin}
                     >
                         <RefreshCw className="h-3 w-3" />
                         Retry
@@ -50,7 +73,7 @@ export function LoginPrompt({ onLoginSuccess, onDismiss, compact = false }: Logi
                         size="sm"
                         variant="outline"
                         className="gap-1.5 text-xs h-7"
-                        onClick={handleLogin}
+                        onClick={handleDesktopLogin}
                     >
                         <RefreshCw className="h-3 w-3" />
                         Retry
@@ -79,7 +102,7 @@ export function LoginPrompt({ onLoginSuccess, onDismiss, compact = false }: Logi
                 size="sm"
                 variant="outline"
                 className="h-7 gap-1.5 px-2.5 text-xs max-sm:w-7 max-sm:px-0 max-sm:[&>svg]:shrink-0"
-                onClick={handleLogin}
+                onClick={handleDesktopLogin}
                 aria-label="Sign in"
             >
                 <LogIn className="h-3.5 w-3.5" />
@@ -89,6 +112,35 @@ export function LoginPrompt({ onLoginSuccess, onDismiss, compact = false }: Logi
     }
 
     // ── Full (card) mode ─────────────────────────────────────────────────────
+    if (!isDesktop) {
+        return (
+            <div className="rounded-xl border border-border/50 bg-card px-5 py-5 shadow-sm">
+                <div className="flex items-start justify-between mb-3">
+                    <div>
+                        <h3 className="text-sm font-semibold leading-tight">Sign in to pgStudio</h3>
+                        <p className="mt-0.5 text-xs text-muted-foreground">
+                            Use your web account (Safari, iPad, or desktop browser). You&apos;ll return
+                            here after signing in.
+                        </p>
+                    </div>
+                    {onDismiss && (
+                        <button
+                            className="ml-2 mt-0.5 text-muted-foreground hover:text-foreground transition-colors"
+                            onClick={onDismiss}
+                            type="button"
+                        >
+                            <X className="h-3.5 w-3.5" />
+                        </button>
+                    )}
+                </div>
+                <Button size="sm" className="w-full gap-2" onClick={handleWebLogin}>
+                    <LogIn className="h-3.5 w-3.5" />
+                    Continue to sign in
+                </Button>
+            </div>
+        );
+    }
+
     return (
         <div className="rounded-xl border border-border/50 bg-card px-5 py-5 shadow-sm">
             <div className="flex items-start justify-between mb-3">
@@ -102,6 +154,7 @@ export function LoginPrompt({ onLoginSuccess, onDismiss, compact = false }: Logi
                     <button
                         className="ml-2 mt-0.5 text-muted-foreground hover:text-foreground transition-colors"
                         onClick={onDismiss}
+                        type="button"
                     >
                         <X className="h-3.5 w-3.5" />
                     </button>
@@ -142,7 +195,7 @@ export function LoginPrompt({ onLoginSuccess, onDismiss, compact = false }: Logi
                     </Button>
                 </div>
             ) : (
-                <Button size="sm" className="w-full gap-2" onClick={handleLogin}>
+                <Button size="sm" className="w-full gap-2" onClick={handleDesktopLogin}>
                     {phase === "timedout" || phase === "error" ? (
                         <RefreshCw className="h-3.5 w-3.5" />
                     ) : (

@@ -9,19 +9,17 @@ import { useConnectionStore } from "@/stores/connection-store";
 import type { LayoutTab } from "@/stores/layout-store";
 import { hasGeometryColumn, isGeometryColumn, extractLatLngFromGeoJSON } from "@/lib/geometry";
 import { useSettingsStore } from "@/stores/settings-store";
+import { dbGetTableData, dbExecuteQuery, dbGetColumns } from "@/lib/db-platform";
 import {
-    dbGetTableData,
     dbGetFunctionDefinition,
     dbGetTypeDefinition,
     dbAlterEnumValues,
-    dbGetColumns,
     dbUpdateTableRow,
     dbDeleteTableRows,
     dbSearchTableDataMulti,
     dbGetColumnStats,
     dbWatchTable,
     dbUnwatchTable,
-    dbExecuteQuery,
 } from "@/lib/tauri";
 import { formatCellValue, watchEventName } from "@/lib/types";
 import type { TableWatchEvent } from "@/lib/types";

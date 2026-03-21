@@ -49,6 +49,11 @@
 }
 
 :root {
+  /* iPad / iOS: use on fixed toolbars — padding: var(--safe-area-top) … */
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
   --radius: 0.625rem;
   --monaco-editor-border: rgba(0, 0, 0, 0.10);
   /* Light: cool-neutral canvas — avoids flat #fff while staying minimal */
@@ -1140,4 +1145,10 @@
 
 .schema-flow .react-flow__controls-button:hover {
   background: color-mix(in oklch, var(--muted) 60%, transparent);
+}
+
+/* Stable viewport height when the mobile browser UI shows or hides */
+html {
+  min-height: 100%;
+  min-height: 100dvh;
 }
