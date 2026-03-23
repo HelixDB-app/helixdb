@@ -19,17 +19,17 @@ import {
 import {
     dbConnect,
     dbDisconnect,
+    dbCreateDatabase,
+    dbDropDatabase,
+    dbListDatabases,
+    dbListEventTriggers,
+    dbListFunctions,
     dbListSchemas,
     dbListTables,
+    dbListTypes,
     dbRefreshCache,
 } from "@/lib/db-platform";
 import {
-    dbListDatabases,
-    dbCreateDatabase,
-    dbDropDatabase,
-    dbListEventTriggers,
-    dbListFunctions,
-    dbListTypes,
     dbListRecentTables,
     dbTrackRecentTableOpen,
     updateSavedConnectionDatabaseName,
@@ -116,6 +116,10 @@ const pendingEventTriggerLoads = new Map<string, Promise<void>>();
 
 function scopedKey(connectionId: string, schema: string): string {
     return `${connectionId}::${schema}`;
+}
+
+function asArray<T>(v: unknown): T[] {
+    return Array.isArray(v) ? v : [];
 }
 
 function clearPendingLoadsForConnection(connectionId: string) {
@@ -467,7 +471,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
         });
 
         const request = dbListFunctions(connectionId, schema)
-            .then((functions) => {
+            .then((raw) => {
+                const functions = asArray<FunctionInfo>(raw);
                 const s = get();
                 const per = s.byConnectionId[connectionId];
                 if (!per) return;
@@ -528,7 +533,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
         });
 
         const request = dbListTypes(connectionId, schema)
-            .then((types) => {
+            .then((raw) => {
+                const types = asArray<TypeInfo>(raw);
                 const s = get();
                 if (!s.byConnectionId[connectionId]) return;
                 set((st) => {
@@ -681,7 +687,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                 }
 
                 dbListDatabases(connId)
-                    .then((dbs) => {
+                    .then((raw) => {
+                        const dbs = asArray<string>(raw);
                         const s = get();
                         const per = s.byConnectionId[connId];
                         if (!per) return;
@@ -695,7 +702,22 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                             return out;
                         });
                     })
-                    .catch(() => {});
+                    .catch(() => {
+                        const s = get();
+                        const entry = s.connections.find((c) => c.connectionId === connId);
+                        const fallback = entry?.databaseName ? [entry.databaseName] : [];
+                        const per = s.byConnectionId[connId];
+                        if (!per) return;
+                        set((st) => {
+                            const next = { ...st.byConnectionId[connId], databases: fallback, isLoadingDatabases: false };
+                            const out: Partial<ConnectionState> = { byConnectionId: { ...st.byConnectionId, [connId]: next } };
+                            if (st.activeConnectionId === connId) {
+                                out.databases = fallback;
+                                out.isLoadingDatabases = false;
+                            }
+                            return out;
+                        });
+                    });
             } catch (error) {
                 notifyNoInternetDetected(error);
                 set({
@@ -752,7 +774,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
             });
 
             const request = dbListEventTriggers(cid)
-                .then((list) => {
+                .then((raw) => {
+                    const list = asArray<EventTriggerInfo>(raw);
                     const s = get();
                     if (!s.byConnectionId[cid]) return;
                     set((st) => {
@@ -886,7 +909,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                 return { byConnectionId: { ...s.byConnectionId, [cid]: next }, ...(s.activeConnectionId === cid ? { isLoadingDatabases: true } : {}) };
             });
             try {
-                const dbs = await dbListDatabases(cid);
+                const raw = await dbListDatabases(cid);
+                const dbs = asArray<string>(raw);
                 const s = get();
                 if (!s.byConnectionId[cid]) return;
                 set((st) => {
@@ -899,9 +923,23 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                     return out;
                 });
             } catch {
-                set((s) => {
-                    const next = { ...s.byConnectionId[cid], isLoadingDatabases: false };
-                    return { byConnectionId: { ...s.byConnectionId, [cid]: next }, ...(s.activeConnectionId === cid ? { isLoadingDatabases: false } : {}) };
+                const s = get();
+                const entry = s.connections.find((c) => c.connectionId === cid);
+                const fallback = entry?.databaseName ? [entry.databaseName] : [];
+                set((st) => {
+                    const per = st.byConnectionId[cid];
+                    if (!per) {
+                        return {
+                            ...(st.activeConnectionId === cid ? { isLoadingDatabases: false } : {}),
+                        };
+                    }
+                    const next = { ...per, databases: fallback, isLoadingDatabases: false };
+                    return {
+                        byConnectionId: { ...st.byConnectionId, [cid]: next },
+                        ...(st.activeConnectionId === cid
+                            ? { databases: fallback, isLoadingDatabases: false }
+                            : {}),
+                    };
                 });
             }
         },
@@ -910,7 +948,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
             const cid = connectionIdArg ?? get().activeConnectionId;
             if (!cid) throw new Error("Not connected");
             await dbCreateDatabase(cid, name);
-            const dbs = await dbListDatabases(cid);
+            const raw = await dbListDatabases(cid);
+            const dbs = asArray<string>(raw);
             const s = get();
             if (!s.byConnectionId[cid]) return;
             set((st) => {
@@ -923,7 +962,8 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
             const cid = connectionIdArg ?? get().activeConnectionId;
             if (!cid) throw new Error("Not connected");
             await dbDropDatabase(cid, name);
-            const dbs = await dbListDatabases(cid);
+            const raw = await dbListDatabases(cid);
+            const dbs = asArray<string>(raw);
             const s = get();
             if (!s.byConnectionId[cid]) return;
             set((st) => {

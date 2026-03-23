@@ -1,10 +1,11 @@
 import { NextRequest, NextResponse } from "next/server";
+import type { Document } from "mongodb";
 import { getCollection } from "@/lib/mongo";
 
 export const runtime = "nodejs";
 export const dynamic = "force-dynamic";
 
-type CrashReportDoc = {
+type CrashReportDoc = Document & {
     createdAt: Date;
     signature: string;
     appVersion: string;

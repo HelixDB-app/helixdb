@@ -518,6 +518,7 @@ export function Sidebar({
         selectPreview,
         previewSelection,
         refreshSchemas,
+        refreshDatabases,
         switchDatabase,
         dropDatabase,
         isLoadingDatabases,
@@ -557,6 +558,7 @@ export function Sidebar({
             selectPreview: state.selectPreview,
             previewSelection: state.previewSelection,
             refreshSchemas: state.refreshSchemas,
+            refreshDatabases: state.refreshDatabases,
             switchDatabase: state.switchDatabase,
             dropDatabase: state.dropDatabase,
             isLoadingDatabases: state.isLoadingDatabases,
@@ -643,9 +645,10 @@ export function Sidebar({
     const filteredFunctions = useMemo(() => {
         const out: Record<string, typeof schemaFunctions[string]> = {};
         for (const [schema, functions] of Object.entries(schemaFunctions)) {
+            const list = Array.isArray(functions) ? functions : [];
             out[schema] = hasSearch
-                ? functions.filter((fn) => fn.name.toLowerCase().includes(searchLower))
-                : functions;
+                ? list.filter((fn) => fn.name.toLowerCase().includes(searchLower))
+                : list;
         }
         return out;
     }, [schemaFunctions, hasSearch, searchLower]);
@@ -653,9 +656,10 @@ export function Sidebar({
     const filteredTypes = useMemo(() => {
         const out: Record<string, typeof schemaTypes[string]> = {};
         for (const [schema, types] of Object.entries(schemaTypes)) {
+            const list = Array.isArray(types) ? types : [];
             out[schema] = hasSearch
-                ? types.filter((typeItem) => typeItem.name.toLowerCase().includes(searchLower))
-                : types;
+                ? list.filter((typeItem) => typeItem.name.toLowerCase().includes(searchLower))
+                : list;
         }
         return out;
     }, [schemaTypes, hasSearch, searchLower]);
@@ -663,8 +667,14 @@ export function Sidebar({
     const loadedTableSchemas = useMemo(() => new Set(tables.map((table) => table.schema)), [tables]);
 
     const totalObjects = useMemo(() => {
-        const loadedFunctions = Object.values(schemaFunctions).reduce((acc, list) => acc + list.length, 0);
-        const loadedTypes = Object.values(schemaTypes).reduce((acc, list) => acc + list.length, 0);
+        const loadedFunctions = Object.values(schemaFunctions).reduce(
+            (acc, list) => acc + (Array.isArray(list) ? list.length : 0),
+            0
+        );
+        const loadedTypes = Object.values(schemaTypes).reduce(
+            (acc, list) => acc + (Array.isArray(list) ? list.length : 0),
+            0
+        );
         return tables.length + loadedFunctions + loadedTypes;
     }, [tables.length, schemaFunctions, schemaTypes]);
 
@@ -736,7 +746,8 @@ export function Sidebar({
         setSchemaSectionOpen({});
         setSectionRenderLimit({});
         void refreshSchemas();
-    }, [refreshSchemas]);
+        void refreshDatabases();
+    }, [refreshSchemas, refreshDatabases]);
 
     const handleSwitchDatabase = useCallback((db: string) => {
         if (!connectionId) return;
@@ -953,12 +964,12 @@ export function Sidebar({
                                             <div className="flex items-center gap-1.5 pl-4 py-1.5 text-[10px] text-sidebar-foreground/40">
                                                 <Loader2 className="h-3 w-3 animate-spin" />Loading…
                                             </div>
-                                        ) : databases.length === 0 ? (
+                                        ) : filteredDatabases.length === 0 ? (
                                             <div className="pl-4 py-1.5 text-[10px] text-sidebar-foreground/40 italic">
-                                                No databases
+                                                {dbSearch.trim() ? "No matches" : "No databases"}
                                             </div>
                                         ) : (
-                                            databases.map((db) => {
+                                            filteredDatabases.map((db) => {
                                                 const isCurrent = db === databaseName;
                                                 return (
                                                     <ContextMenu key={db}>

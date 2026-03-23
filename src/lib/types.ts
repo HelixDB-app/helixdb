@@ -457,6 +457,20 @@ export interface TypeInfo {
     kind: string;
 }
 
+/** Column definition for CREATE TABLE (UI + data plane JSON). */
+export interface CreateColumnDef {
+    name: string;
+    /** Base PostgreSQL type, e.g. "varchar", "integer", "numeric" */
+    data_type: string;
+    /** Optional length/precision, e.g. "255" or "10,2" */
+    length?: string | null;
+    is_nullable: boolean;
+    default_value?: string | null;
+    is_primary_key: boolean;
+    is_unique: boolean;
+    check_constraint?: string | null;
+}
+
 /** Type definition detail for preview (from db_get_type_definition) */
 export interface TypeDefinitionDetail {
     schema: string;

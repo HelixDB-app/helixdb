@@ -9,14 +9,19 @@ import { useConnectionStore } from "@/stores/connection-store";
 import type { LayoutTab } from "@/stores/layout-store";
 import { hasGeometryColumn, isGeometryColumn, extractLatLngFromGeoJSON } from "@/lib/geometry";
 import { useSettingsStore } from "@/stores/settings-store";
-import { dbGetTableData, dbExecuteQuery, dbGetColumns } from "@/lib/db-platform";
 import {
+    dbGetTableData,
+    dbExecuteQuery,
+    dbGetColumns,
     dbGetFunctionDefinition,
     dbGetTypeDefinition,
     dbAlterEnumValues,
+    dbSearchTableDataMulti,
+} from "@/lib/db-platform";
+import { isTauri } from "@/lib/tauri-runtime";
+import {
     dbUpdateTableRow,
     dbDeleteTableRows,
-    dbSearchTableDataMulti,
     dbGetColumnStats,
     dbWatchTable,
     dbUnwatchTable,
@@ -533,6 +538,10 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
             if (!connectionId || !selectedSchema || !selectedTable) return;
             setColStatsColumn(colName);
             setColStats(null);
+            if (!isTauri()) {
+                setColStatsLoading(false);
+                return;
+            }
             setColStatsLoading(true);
             try {
                 const stats = await dbGetColumnStats(
@@ -600,6 +609,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
     // Tracks animation state per row-key: "new" | "updated" | "deleted" | undefined
     const [watchAnimState, setWatchAnimState] = useState<Map<string, "new" | "updated" | "deleted">>(new Map());
     const watchUnlistenRef = useRef<(() => void) | null>(null);
+    const fetchDataRef = useRef<() => Promise<void>>(async () => {});
 
     const [customSqlActive, setCustomSqlActive] = useState(false);
     const [lastCustomSql, setLastCustomSql] = useState("");
@@ -701,6 +711,10 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
             setIsLoading(false);
         }
     }, [connectionId, selectedSchema, selectedTable, page, pageSize, sortColumn, sortDirection, scrollMode, activeConditions, customSqlActive, lastCustomSql]);
+
+    useEffect(() => {
+        fetchDataRef.current = fetchData;
+    }, [fetchData]);
 
     // ── Incremental fetch for infinite scroll ─────────────────────────────────
     const fetchMore = useCallback(async () => {
@@ -1044,10 +1058,12 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
         watchUnlistenRef.current = null;
         setWatchAnimState(new Map());
         setWatchMode(false);
-        try {
-            await dbUnwatchTable(connectionId, selectedSchema, selectedTable);
-        } catch {
-            /* ignore */
+        if (isTauri()) {
+            try {
+                await dbUnwatchTable(connectionId, selectedSchema, selectedTable);
+            } catch {
+                /* ignore */
+            }
         }
     }, [watchMode, connectionId, selectedSchema, selectedTable]);
 
@@ -1060,12 +1076,27 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
             setWatchAnimState(new Map());
             watchUnlistenRef.current?.();
             watchUnlistenRef.current = null;
-            try { await dbUnwatchTable(connectionId, selectedSchema, selectedTable); } catch { /* ignore */ }
+            if (isTauri()) {
+                try { await dbUnwatchTable(connectionId, selectedSchema, selectedTable); } catch { /* ignore */ }
+            }
             toast.info("Watch stopped", { duration: 1500 });
         } else {
             // Start watch
             setWatchConnecting(true);
             try {
+                if (!isTauri()) {
+                    const id = window.setInterval(() => {
+                        void fetchDataRef.current();
+                    }, 2500);
+                    watchUnlistenRef.current = () => {
+                        window.clearInterval(id);
+                    };
+                    setWatchMode(true);
+                    toast.success("Live refresh (web)", {
+                        description: "Reloading data every 2.5s. Desktop uses instant DB notifications.",
+                        duration: 2600,
+                    });
+                } else {
                 await dbWatchTable(connectionId, selectedSchema, selectedTable);
                 const eventName = watchEventName(connectionId, selectedSchema, selectedTable);
                 const unlisten = await listen<TableWatchEvent>(eventName, (ev) => {
@@ -1116,6 +1147,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                 watchUnlistenRef.current = unlisten;
                 setWatchMode(true);
                 toast.success("Live Watch active", { description: "Listening for INSERT · UPDATE · DELETE", duration: 2000 });
+                }
             } catch (err) {
                 toast.error(`Watch failed: ${String(err)}`);
             } finally {
@@ -1132,7 +1164,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
             watchUnlistenRef.current = null;
             setWatchMode(false);
             setWatchAnimState(new Map());
-            if (connectionId && selectedSchema && selectedTable) {
+            if (connectionId && selectedSchema && selectedTable && isTauri()) {
                 dbUnwatchTable(connectionId, selectedSchema, selectedTable).catch(() => {});
             }
         }

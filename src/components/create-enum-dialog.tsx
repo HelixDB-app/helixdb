@@ -19,7 +19,7 @@ import {
     SelectValue,
 } from "@/components/ui/select";
 import { useConnectionStore } from "@/stores/connection-store";
-import { dbCreateEnum } from "@/lib/tauri";
+import { dbCreateEnum } from "@/lib/db-platform";
 import { Plus, Trash2, Loader2, Type } from "lucide-react";
 import { toast } from "sonner";
 

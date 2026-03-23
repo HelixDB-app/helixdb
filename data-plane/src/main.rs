@@ -1,4 +1,5 @@
 mod auth_layer;
+mod catalog_meta;
 mod conn;
 mod extended;
 mod query_exec;
@@ -7,20 +8,23 @@ mod types;
 
 use auth_layer::AuthState;
 use axum::body::Body;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::{HeaderValue, Request, StatusCode};
 use axum::middleware::{from_fn, Next};
-use axum::routing::{delete, get, post};
+use axum::routing::{delete, get, patch, post};
 use axum::{Json, Router};
 use conn::ConnectionManager;
+use serde::{Deserialize, Serialize};
 use std::env;
 use std::sync::Arc;
 use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use tracing_subscriber::EnvFilter;
 use types::{
-    CapabilitiesResponse, ColumnInfo, ConnectRequest, ConnectionResponse, ExecuteQueryBody,
-    HealthResponse, PgSession, QueryResult, SchemaInfo, TableDetails, TableInfo, TopologyData,
+    CapabilitiesResponse, ColumnInfo, ConnectRequest, ConnectionResponse, CreateColumnDef,
+    EventTriggerInfo, ExecuteQueryBody, FunctionInfo, HealthResponse, PgSession, QueryResult,
+    SchemaInfo, TableDetails, TableInfo, TableSearchBody, TopologyData, TypeDefinitionDetail,
+    TypeInfo,
 };
 
 #[derive(Clone)]
@@ -141,12 +145,52 @@ async fn main() {
             post(refresh_metadata),
         )
         .route(
+            "/v1/connections/:connection_id/databases",
+            get(list_connection_databases).post(create_database_http_handler),
+        )
+        .route(
+            "/v1/connections/:connection_id/databases/:db_name",
+            delete(drop_database_http_handler),
+        )
+        .route(
+            "/v1/connections/:connection_id/event-triggers",
+            get(list_connection_event_triggers),
+        )
+        .route(
             "/v1/connections/:connection_id/schemas",
             get(list_schemas),
         )
         .route(
+            "/v1/connections/:connection_id/schemas/:schema/functions/:function_name/definition",
+            get(get_function_definition_handler),
+        )
+        .route(
+            "/v1/connections/:connection_id/schemas/:schema/functions",
+            get(list_schema_functions),
+        )
+        .route(
+            "/v1/connections/:connection_id/schemas/:schema/types/:type_name/definition",
+            get(get_type_definition_handler),
+        )
+        .route(
+            "/v1/connections/:connection_id/schemas/:schema/types/enum",
+            post(create_enum_handler),
+        )
+        .route(
+            "/v1/connections/:connection_id/schemas/:schema/types/:type_name/enum-values",
+            patch(patch_enum_values_handler),
+        )
+        .route(
+            "/v1/connections/:connection_id/schemas/:schema/types",
+            get(list_schema_types),
+        )
+        .route(
             "/v1/connections/:connection_id/schemas/:schema/tables",
-            get(list_tables),
+            get(list_tables).post(create_table_http_handler),
+        )
+        .route(
+            "/v1/connections/:connection_id/schemas/:schema/tables/:table/search",
+            post(table_search_handler),
         )
         .route(
             "/v1/connections/:connection_id/schemas/:schema/tables/:table/rows",
@@ -321,6 +365,83 @@ async fn refresh_metadata(
     Ok(Json(schemas))
 }
 
+async fn list_connection_databases(
+    State(state): State<AppState>,
+    Path(connection_id): Path<String>,
+) -> Result<Json<Vec<String>>, (StatusCode, String)> {
+    let pool = state
+        .connections
+        .get_pool(&connection_id)
+        .map_err(|_| (StatusCode::NOT_FOUND, "unknown connection".to_string()))?;
+    let names = catalog_meta::list_databases(&pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(names))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateDatabaseHttpBody {
+    name: String,
+}
+
+async fn create_database_http_handler(
+    State(state): State<AppState>,
+    Path(connection_id): Path<String>,
+    Json(body): Json<CreateDatabaseHttpBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let pool = state
+        .connections
+        .get_pool(&connection_id)
+        .map_err(|_| (StatusCode::NOT_FOUND, "unknown connection".to_string()))?;
+    catalog_meta::create_database(&pool, body.name.trim())
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn drop_database_http_handler(
+    State(state): State<AppState>,
+    Path((connection_id, db_name)): Path<(String, String)>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let pool = state
+        .connections
+        .get_pool(&connection_id)
+        .map_err(|_| (StatusCode::NOT_FOUND, "unknown connection".to_string()))?;
+    catalog_meta::drop_database(&pool, &db_name)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+async fn list_schema_functions(
+    State(state): State<AppState>,
+    Path((connection_id, schema)): Path<(String, String)>,
+) -> Result<Json<Vec<FunctionInfo>>, (StatusCode, String)> {
+    let pool = state
+        .connections
+        .get_pool(&connection_id)
+        .map_err(|_| (StatusCode::NOT_FOUND, "unknown connection".to_string()))?;
+    let pg_version = state.connections.get_pg_version(&connection_id);
+    let list = catalog_meta::list_functions(&pool, &schema, pg_version)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(list))
+}
+
+async fn list_schema_types(
+    State(state): State<AppState>,
+    Path((connection_id, schema)): Path<(String, String)>,
+) -> Result<Json<Vec<TypeInfo>>, (StatusCode, String)> {
+    let pool = state
+        .connections
+        .get_pool(&connection_id)
+        .map_err(|_| (StatusCode::NOT_FOUND, "unknown connection".to_string()))?;
+    let list = catalog_meta::list_types(&pool, &schema)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(list))
+}
+
 async fn list_schemas(
     State(state): State<AppState>,
     Path(connection_id): Path<String>,
@@ -349,12 +470,73 @@ async fn list_tables(
     Ok(Json(tables))
 }
 
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct CreateTableHttpBody {
+    table: String,
+    columns: Vec<CreateColumnDef>,
+    if_not_exists: bool,
+}
+
+#[derive(Debug, Serialize)]
+struct CreateTableSqlResponse {
+    sql: String,
+}
+
+async fn create_table_http_handler(
+    State(state): State<AppState>,
+    Path((connection_id, schema)): Path<(String, String)>,
+    Json(body): Json<CreateTableHttpBody>,
+) -> Result<Json<CreateTableSqlResponse>, (StatusCode, String)> {
+    let pool = state
+        .connections
+        .get_pool(&connection_id)
+        .map_err(|_| (StatusCode::NOT_FOUND, "unknown connection".to_string()))?;
+    let sql = catalog_meta::create_table(
+        &pool,
+        &schema,
+        body.table.trim(),
+        &body.columns,
+        body.if_not_exists,
+    )
+    .await
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(CreateTableSqlResponse { sql }))
+}
+
 #[derive(serde::Deserialize)]
 struct RowsQuery {
     page: Option<u32>,
     page_size: Option<u32>,
     sort_column: Option<String>,
     sort_direction: Option<String>,
+}
+
+async fn table_search_handler(
+    State(state): State<AppState>,
+    Path((connection_id, schema, table)): Path<(String, String, String)>,
+    Json(body): Json<TableSearchBody>,
+) -> Result<Json<QueryResult>, (StatusCode, String)> {
+    let pool = state
+        .connections
+        .get_pool(&connection_id)
+        .map_err(|_| (StatusCode::NOT_FOUND, "unknown connection".to_string()))?;
+    let limit = body.limit.unwrap_or(100);
+    let page = body.page.unwrap_or(1);
+    let sort_dir = body.sort_direction.as_deref().unwrap_or("ASC");
+    let result = table_ops::search_table_data_multi(
+        &pool,
+        &schema,
+        &table,
+        &body.conditions,
+        limit,
+        page,
+        body.sort_column.as_deref(),
+        sort_dir,
+    )
+    .await
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(Json(result))
 }
 
 async fn get_rows(
@@ -483,6 +665,103 @@ async fn get_table_details_handler(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(details))
+}
+
+async fn list_connection_event_triggers(
+    State(state): State<AppState>,
+    Path(connection_id): Path<String>,
+) -> Result<Json<Vec<EventTriggerInfo>>, (StatusCode, String)> {
+    let pool = state
+        .connections
+        .get_pool(&connection_id)
+        .map_err(|_| (StatusCode::NOT_FOUND, "unknown connection".to_string()))?;
+    let list = catalog_meta::list_event_triggers(&pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(list))
+}
+
+#[derive(Debug, Deserialize)]
+struct FunctionDefinitionQuery {
+    #[serde(default)]
+    arguments: String,
+}
+
+async fn get_function_definition_handler(
+    State(state): State<AppState>,
+    Path((connection_id, schema, function_name)): Path<(String, String, String)>,
+    Query(q): Query<FunctionDefinitionQuery>,
+) -> Result<Json<Option<String>>, (StatusCode, String)> {
+    let pool = state
+        .connections
+        .get_pool(&connection_id)
+        .map_err(|_| (StatusCode::NOT_FOUND, "unknown connection".to_string()))?;
+    let def = catalog_meta::get_function_definition(&pool, &schema, &function_name, &q.arguments)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(def))
+}
+
+async fn get_type_definition_handler(
+    State(state): State<AppState>,
+    Path((connection_id, schema, type_name)): Path<(String, String, String)>,
+) -> Result<Json<Option<TypeDefinitionDetail>>, (StatusCode, String)> {
+    let pool = state
+        .connections
+        .get_pool(&connection_id)
+        .map_err(|_| (StatusCode::NOT_FOUND, "unknown connection".to_string()))?;
+    let detail = catalog_meta::get_type_definition(&pool, &schema, &type_name)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(detail))
+}
+
+#[derive(Debug, Deserialize)]
+struct CreateEnumBody {
+    name: String,
+    values: Vec<String>,
+}
+
+async fn create_enum_handler(
+    State(state): State<AppState>,
+    Path((connection_id, schema)): Path<(String, String)>,
+    Json(body): Json<CreateEnumBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let pool = state
+        .connections
+        .get_pool(&connection_id)
+        .map_err(|_| (StatusCode::NOT_FOUND, "unknown connection".to_string()))?;
+    catalog_meta::create_enum(&pool, &schema, &body.name, &body.values)
+        .await
+        .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Debug, Deserialize)]
+struct AlterEnumBody {
+    renames: Vec<(String, String)>,
+    additions: Vec<(String, Option<String>)>,
+}
+
+async fn patch_enum_values_handler(
+    State(state): State<AppState>,
+    Path((connection_id, schema, type_name)): Path<(String, String, String)>,
+    Json(body): Json<AlterEnumBody>,
+) -> Result<StatusCode, (StatusCode, String)> {
+    let pool = state
+        .connections
+        .get_pool(&connection_id)
+        .map_err(|_| (StatusCode::NOT_FOUND, "unknown connection".to_string()))?;
+    catalog_meta::alter_enum_values(
+        &pool,
+        &schema,
+        &type_name,
+        &body.renames,
+        &body.additions,
+    )
+    .await
+    .map_err(|e| (StatusCode::BAD_REQUEST, e))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[cfg(test)]

@@ -43,6 +43,18 @@ type CardPhase =
 
 // ── Component ──────────────────────────────────────────────────────────────
 
+/** Same markup on server and first client paint — avoids hydration mismatch (isTauri() is false during SSR). */
+function LocalPostgresCardHydrationFallback() {
+    return (
+        <div className="rounded-xl border border-border/30 bg-card/30 p-4 transition-all">
+            <div className="flex items-center gap-2 text-xs text-muted-foreground/60">
+                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden />
+                <span>Preparing local PostgreSQL…</span>
+            </div>
+        </div>
+    );
+}
+
 function LocalPostgresWebBanner() {
     return (
         <div className="rounded-xl border border-border/50 bg-card/80 p-4 shadow-sm">
@@ -480,6 +492,12 @@ function StatusBadge({ phase }: { phase: CardPhase }) {
 }
 
 export function LocalPostgresCard() {
+    const [mounted, setMounted] = useState(false);
+    useEffect(() => setMounted(true), []);
+
+    if (!mounted) {
+        return <LocalPostgresCardHydrationFallback />;
+    }
     if (!isTauri()) {
         return <LocalPostgresWebBanner />;
     }

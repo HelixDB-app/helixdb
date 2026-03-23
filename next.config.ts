@@ -19,6 +19,8 @@ const allowedDevOrigins = !isProd
 
 const nextConfig: NextConfig = {
   ...(allowedDevOrigins?.length ? { allowedDevOrigins } : {}),
+  // Native / optional deps in the driver; do not bundle into the server graph.
+  serverExternalPackages: ["mongodb"],
   output: "export",
   distDir: "out",
   images: { unoptimized: true },

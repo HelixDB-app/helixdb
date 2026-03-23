@@ -4,12 +4,14 @@
  * forward + rollback SQL migration scripts.
  */
 
-import { dbListSchemas, dbListTables, dbGetTableDetails } from "./db-platform";
 import {
+    dbListSchemas,
+    dbListTables,
+    dbGetTableDetails,
     dbListFunctions,
     dbListTypes,
     dbGetTypeDefinition,
-} from "./tauri";
+} from "./db-platform";
 import type {
     SchemaInfo,
     TableInfo,

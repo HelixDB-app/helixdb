@@ -13,7 +13,8 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { dbCreateTable, type CreateColumnDef } from "@/lib/tauri";
+import { dbCreateTable } from "@/lib/db-platform";
+import type { CreateColumnDef } from "@/lib/types";
 import { useConnectionStore } from "@/stores/connection-store";
 import {
     Plus,

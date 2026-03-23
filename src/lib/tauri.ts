@@ -2,8 +2,9 @@ import { invoke } from "@tauri-apps/api/core";
 import type {
     ConnectionResponse,
     ConnectionEnvironment,
-    SshTunnelConfig,
+    CreateColumnDef,
     CreateDatabaseRoleRequest,
+    SshTunnelConfig,
     CreateDatabaseUserRequest,
     SchemaInfo,
     TableInfo,
@@ -46,6 +47,9 @@ import type {
     PgStatStatementsFilter,
     PgStatStatementsPage,
 } from "./types";
+
+export type { CreateColumnDef };
+
 import type { ExportRequest, ExportResult } from "./export-types";
 import type { SchemaProject } from "./schema-designer-types";
 
@@ -760,19 +764,6 @@ export async function dbDropColumn(
     column: string
 ): Promise<void> {
     return invoke<void>("db_drop_column", { connectionId, schema, table, column });
-}
-
-/** Column definition for CREATE TABLE */
-export interface CreateColumnDef {
-    name: string;
-    data_type: string;
-    /** Optional length/precision, e.g. "255" or "10,2" */
-    length?: string | null;
-    is_nullable: boolean;
-    default_value?: string | null;
-    is_primary_key: boolean;
-    is_unique: boolean;
-    check_constraint?: string | null;
 }
 
 /**

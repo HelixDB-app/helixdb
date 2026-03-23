@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
-import { Database, MoreHorizontal, Plus, Trash2 } from 'lucide-react'
+import { ArrowLeft, Database, MoreHorizontal, Plus, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardHeader } from '@/components/ui/card'
 import { Input } from '@/components/ui/input'
@@ -114,6 +114,13 @@ export default function SchemaProjectsPage() {
       <header className="border-b border-border bg-muted/40 px-6 py-4">
         <div className="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
           <div className="space-y-1">
+
+{/* add a back button */}
+<Link href="/">
+<Button variant="ghost" size="icon" className="h-8 w-8" onClick={() => router.back()}>
+  <ArrowLeft className="h-4 w-4" />
+</Button>
+</Link>
             <div className="flex items-center gap-2">
               <Database className="h-5 w-5 text-primary" />
               <h1 className="text-lg font-semibold text-foreground">

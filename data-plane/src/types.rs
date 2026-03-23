@@ -2,6 +2,20 @@
 
 use serde::{Deserialize, Serialize};
 
+/// Column definition for CREATE TABLE (JSON camelCase from the Helix UI).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateColumnDef {
+    pub name: String,
+    pub data_type: String,
+    pub length: Option<String>,
+    pub is_nullable: bool,
+    pub default_value: Option<String>,
+    pub is_primary_key: bool,
+    pub is_unique: bool,
+    pub check_constraint: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "type", content = "value")]
 pub enum CellValue {
@@ -80,6 +94,30 @@ pub struct ExecuteQueryBody {
     pub environment: Option<String>,
     #[serde(default)]
     pub guard_reason: Option<String>,
+}
+
+/// Multi-condition filter (aligned with Helix `FilterCondition` / Tauri search).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FilterCondition {
+    pub column: String,
+    pub operator: String,
+    pub value: Option<String>,
+    pub logical_op: String,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TableSearchBody {
+    pub conditions: Vec<FilterCondition>,
+    #[serde(default)]
+    pub limit: Option<u32>,
+    #[serde(default)]
+    pub page: Option<u32>,
+    #[serde(default)]
+    pub sort_column: Option<String>,
+    #[serde(default)]
+    pub sort_direction: Option<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -196,6 +234,53 @@ pub struct TableTriggerInfo {
     pub events: Vec<String>,
     pub function_name: String,
     pub enabled: bool,
+}
+
+/// Function or procedure in a schema (aligned with `helixDB/src/lib/types.ts` `FunctionInfo`).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FunctionInfo {
+    pub name: String,
+    pub arguments: String,
+    pub return_type: String,
+    pub kind: String,
+    pub is_trigger_function: bool,
+    pub language: String,
+    pub security_definer: bool,
+    pub is_strict: bool,
+}
+
+/// User-defined type in a schema (aligned with `TypeInfo` in the Helix TS types).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypeInfo {
+    pub name: String,
+    pub kind: String,
+}
+
+/// Rich type metadata for preview (aligned with `TypeDefinitionDetail` in Helix TS).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TypeDefinitionDetail {
+    pub schema: String,
+    pub name: String,
+    pub kind: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub enum_labels: Option<Vec<String>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub composite_attrs: Option<Vec<(String, String)>>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain_base_type: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain_check: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub range_subtype: Option<String>,
+}
+
+/// Cluster/database-level event trigger (PG 9.3+).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EventTriggerInfo {
+    pub name: String,
+    pub event: String,
+    pub enabled: String,
+    pub function_name: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

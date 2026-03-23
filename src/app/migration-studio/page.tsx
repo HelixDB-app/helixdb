@@ -20,15 +20,17 @@ import {
 } from "@/lib/migration-diff";
 import type { DiffSeverity, DiffOp, TableDiff, FunctionDiff, EnumDiff } from "@/lib/migration-diff";
 import {
+    dbConnect,
+    dbCreateDatabase,
+    dbListDatabases,
     dbListSchemas,
     dbListTables,
-    dbListDatabases,
-    dbConnect,
+    dbExecuteQuery,
+} from "@/lib/db-platform";
+import {
     dbSandboxBegin,
     dbSandboxExecute,
     dbSandboxRollback,
-    dbExecuteQuery,
-    dbCreateDatabase,
     dbExportSql,
 } from "@/lib/tauri";
 import { playNotificationSound } from "@/lib/notification-sound";

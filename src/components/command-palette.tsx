@@ -11,19 +11,18 @@ import {
     CommandList,
     CommandSeparator,
 } from "@/components/ui/command";
-import { Dialog, DialogContent } from "@/components/ui/dialog";
+import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useQueryStore } from "@/stores/query-store";
 import { useSearchStore } from "@/stores/search-store";
-import { dbGetColumns } from "@/lib/db-platform";
 import {
+    dbGetColumns,
     dbListEventTriggers,
     dbListFunctions,
-    dbListTables,
     dbListTypes,
-    dbSearchTableData,
-} from "@/lib/tauri";
+} from "@/lib/db-platform";
+import { dbListTables, dbSearchTableData } from "@/lib/tauri";
 import type {
     ColumnInfo,
     EventTriggerInfo,
@@ -1122,6 +1121,7 @@ export function CommandPalette({
     return (
         <Dialog open={open} onOpenChange={onOpenChange}>
             <DialogContent className="overflow-hidden p-0 shadow-2xl border-border/30 max-w-[920px] w-[96vw] bg-gradient-to-b from-card via-card/95 to-muted/30 backdrop-blur-xl">
+                <DialogTitle className="sr-only">Command palette</DialogTitle>
                 <Command
                     shouldFilter={false}
                     className="rounded-lg border-0 [&_[data-slot=command-input-wrapper]]:border-b-0 [&_[data-slot=command-input-wrapper]]:flex-1 [&_[data-slot=command-input-wrapper]]:min-w-0"

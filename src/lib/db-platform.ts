@@ -10,6 +10,10 @@ import type {
     ColumnInfo,
     ConnectionResponse,
     ConnectionEnvironment,
+    CreateColumnDef,
+    EventTriggerInfo,
+    FilterCondition,
+    FunctionInfo,
     PgSession,
     QueryResult,
     SchemaInfo,
@@ -17,6 +21,8 @@ import type {
     TableDetails,
     TableInfo,
     TopologyData,
+    TypeDefinitionDetail,
+    TypeInfo,
     AlterTablePreview,
 } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
@@ -45,6 +51,16 @@ export interface DbPlatform {
         sortColumn?: string,
         sortDirection?: string
     ): Promise<QueryResult>;
+    dbSearchTableDataMulti(
+        connectionId: string,
+        schema: string,
+        table: string,
+        conditions: FilterCondition[],
+        limit: number,
+        page: number,
+        sortColumn?: string,
+        sortDirection?: string
+    ): Promise<QueryResult>;
     dbExecuteQuery(
         connectionId: string,
         sql: string,
@@ -69,6 +85,43 @@ export interface DbPlatform {
         schema: string,
         table: string
     ): Promise<TableDetails>;
+    dbListDatabases(connectionId: string): Promise<string[]>;
+    dbListFunctions(connectionId: string, schema: string): Promise<FunctionInfo[]>;
+    dbListTypes(connectionId: string, schema: string): Promise<TypeInfo[]>;
+    dbListEventTriggers(connectionId: string): Promise<EventTriggerInfo[]>;
+    dbGetFunctionDefinition(
+        connectionId: string,
+        schema: string,
+        name: string,
+        args: string
+    ): Promise<string | null>;
+    dbGetTypeDefinition(
+        connectionId: string,
+        schema: string,
+        name: string
+    ): Promise<TypeDefinitionDetail | null>;
+    dbCreateEnum(
+        connectionId: string,
+        schema: string,
+        name: string,
+        values: string[]
+    ): Promise<void>;
+    dbAlterEnumValues(
+        connectionId: string,
+        schema: string,
+        name: string,
+        renames: [string, string][],
+        additions: [string, string | null][]
+    ): Promise<void>;
+    dbCreateTable(
+        connectionId: string,
+        schema: string,
+        table: string,
+        columns: CreateColumnDef[],
+        ifNotExists: boolean
+    ): Promise<string>;
+    dbCreateDatabase(connectionId: string, name: string): Promise<void>;
+    dbDropDatabase(connectionId: string, name: string): Promise<void>;
 }
 
 class TauriDbPlatform implements DbPlatform {
@@ -110,6 +163,27 @@ class TauriDbPlatform implements DbPlatform {
             sortDirection
         );
     }
+    dbSearchTableDataMulti(
+        connectionId: string,
+        schema: string,
+        table: string,
+        conditions: FilterCondition[],
+        limit: number,
+        page: number,
+        sortColumn?: string,
+        sortDirection?: string
+    ) {
+        return tauri.dbSearchTableDataMulti(
+            connectionId,
+            schema,
+            table,
+            conditions,
+            limit,
+            page,
+            sortColumn,
+            sortDirection
+        );
+    }
     dbExecuteQuery(connectionId: string, sql: string, options?: DbExecuteQueryOptions) {
         return tauri.dbExecuteQuery(connectionId, sql, {
             environment: options?.environment ?? null,
@@ -136,6 +210,61 @@ class TauriDbPlatform implements DbPlatform {
     }
     dbGetTableDetails(connectionId: string, schema: string, table: string) {
         return tauri.dbGetTableDetails(connectionId, schema, table);
+    }
+    dbListDatabases(connectionId: string) {
+        return tauri.dbListDatabases(connectionId);
+    }
+    dbListFunctions(connectionId: string, schema: string) {
+        return tauri.dbListFunctions(connectionId, schema);
+    }
+    dbListTypes(connectionId: string, schema: string) {
+        return tauri.dbListTypes(connectionId, schema);
+    }
+    dbListEventTriggers(connectionId: string) {
+        return tauri.dbListEventTriggers(connectionId);
+    }
+    dbGetFunctionDefinition(
+        connectionId: string,
+        schema: string,
+        name: string,
+        args: string
+    ) {
+        return tauri.dbGetFunctionDefinition(connectionId, schema, name, args);
+    }
+    dbGetTypeDefinition(connectionId: string, schema: string, name: string) {
+        return tauri.dbGetTypeDefinition(connectionId, schema, name);
+    }
+    dbCreateEnum(
+        connectionId: string,
+        schema: string,
+        name: string,
+        values: string[]
+    ) {
+        return tauri.dbCreateEnum(connectionId, schema, name, values);
+    }
+    dbAlterEnumValues(
+        connectionId: string,
+        schema: string,
+        name: string,
+        renames: [string, string][],
+        additions: [string, string | null][]
+    ) {
+        return tauri.dbAlterEnumValues(connectionId, schema, name, renames, additions);
+    }
+    dbCreateTable(
+        connectionId: string,
+        schema: string,
+        table: string,
+        columns: CreateColumnDef[],
+        ifNotExists: boolean
+    ) {
+        return tauri.dbCreateTable(connectionId, schema, table, columns, ifNotExists);
+    }
+    dbCreateDatabase(connectionId: string, name: string) {
+        return tauri.dbCreateDatabase(connectionId, name);
+    }
+    dbDropDatabase(connectionId: string, name: string) {
+        return tauri.dbDropDatabase(connectionId, name);
     }
 }
 
@@ -199,6 +328,42 @@ class HttpDbPlatform implements DbPlatform {
             return undefined as T;
         }
         return JSON.parse(text) as T;
+    }
+
+    /** Parse JSON array responses; empty body or non-array becomes []. */
+    private async jsonList<T>(res: Response): Promise<T[]> {
+        const text = await res.text();
+        if (!res.ok) {
+            throw new Error(text || res.statusText || `HTTP ${res.status}`);
+        }
+        if (!text.trim()) {
+            return [];
+        }
+        const data: unknown = JSON.parse(text);
+        return Array.isArray(data) ? (data as T[]) : [];
+    }
+
+    /** JSON `null` or object/string → `null` when absent. */
+    private async jsonNullable<T>(res: Response): Promise<T | null> {
+        const text = await res.text();
+        if (!res.ok) {
+            throw new Error(text || res.statusText || `HTTP ${res.status}`);
+        }
+        if (!text.trim()) {
+            return null;
+        }
+        const data: unknown = JSON.parse(text);
+        if (data === null || data === undefined) {
+            return null;
+        }
+        return data as T;
+    }
+
+    private async expectNoContent(res: Response): Promise<void> {
+        const text = await res.text();
+        if (!res.ok) {
+            throw new Error(text || res.statusText || `HTTP ${res.status}`);
+        }
     }
 
     async dbConnect(
@@ -277,6 +442,38 @@ class HttpDbPlatform implements DbPlatform {
         const res = await fetch(
             `${this.base}/v1/connections/${encodeURIComponent(connectionId)}/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(table)}/rows?${q}`,
             { headers: this.headers() }
+        );
+        return this.json<QueryResult>(res);
+    }
+
+    async dbSearchTableDataMulti(
+        connectionId: string,
+        schema: string,
+        table: string,
+        conditions: FilterCondition[],
+        limit: number,
+        page: number,
+        sortColumn?: string,
+        sortDirection?: string
+    ): Promise<QueryResult> {
+        const res = await fetch(
+            `${this.base}/v1/connections/${encodeURIComponent(connectionId)}/schemas/${encodeURIComponent(schema)}/tables/${encodeURIComponent(table)}/search`,
+            {
+                method: "POST",
+                headers: this.headers(true),
+                body: JSON.stringify({
+                    conditions: conditions.map((c) => ({
+                        column: c.column,
+                        operator: c.operator,
+                        value: c.value,
+                        logicalOp: c.logical_op,
+                    })),
+                    limit,
+                    page,
+                    sortColumn: sortColumn ?? null,
+                    sortDirection: sortDirection ?? "ASC",
+                }),
+            }
         );
         return this.json<QueryResult>(res);
     }
@@ -370,6 +567,146 @@ class HttpDbPlatform implements DbPlatform {
         );
         return this.json<TableDetails>(res);
     }
+
+    async dbListDatabases(connectionId: string): Promise<string[]> {
+        const res = await fetch(
+            `${this.base}/v1/connections/${encodeURIComponent(connectionId)}/databases`,
+            { headers: this.headers() }
+        );
+        return this.jsonList<string>(res);
+    }
+
+    async dbListFunctions(connectionId: string, schema: string): Promise<FunctionInfo[]> {
+        const res = await fetch(
+            `${this.base}/v1/connections/${encodeURIComponent(connectionId)}/schemas/${encodeURIComponent(schema)}/functions`,
+            { headers: this.headers() }
+        );
+        return this.jsonList<FunctionInfo>(res);
+    }
+
+    async dbListTypes(connectionId: string, schema: string): Promise<TypeInfo[]> {
+        const res = await fetch(
+            `${this.base}/v1/connections/${encodeURIComponent(connectionId)}/schemas/${encodeURIComponent(schema)}/types`,
+            { headers: this.headers() }
+        );
+        return this.jsonList<TypeInfo>(res);
+    }
+
+    async dbListEventTriggers(connectionId: string): Promise<EventTriggerInfo[]> {
+        const res = await fetch(
+            `${this.base}/v1/connections/${encodeURIComponent(connectionId)}/event-triggers`,
+            { headers: this.headers() }
+        );
+        return this.jsonList<EventTriggerInfo>(res);
+    }
+
+    async dbGetFunctionDefinition(
+        connectionId: string,
+        schema: string,
+        name: string,
+        args: string
+    ): Promise<string | null> {
+        const q = new URLSearchParams();
+        q.set("arguments", args);
+        const res = await fetch(
+            `${this.base}/v1/connections/${encodeURIComponent(connectionId)}/schemas/${encodeURIComponent(schema)}/functions/${encodeURIComponent(name)}/definition?${q}`,
+            { headers: this.headers() }
+        );
+        return this.jsonNullable<string>(res);
+    }
+
+    async dbGetTypeDefinition(
+        connectionId: string,
+        schema: string,
+        name: string
+    ): Promise<TypeDefinitionDetail | null> {
+        const res = await fetch(
+            `${this.base}/v1/connections/${encodeURIComponent(connectionId)}/schemas/${encodeURIComponent(schema)}/types/${encodeURIComponent(name)}/definition`,
+            { headers: this.headers() }
+        );
+        return this.jsonNullable<TypeDefinitionDetail>(res);
+    }
+
+    async dbCreateEnum(
+        connectionId: string,
+        schema: string,
+        name: string,
+        values: string[]
+    ): Promise<void> {
+        const res = await fetch(
+            `${this.base}/v1/connections/${encodeURIComponent(connectionId)}/schemas/${encodeURIComponent(schema)}/types/enum`,
+            {
+                method: "POST",
+                headers: this.headers(true),
+                body: JSON.stringify({ name, values }),
+            }
+        );
+        await this.expectNoContent(res);
+    }
+
+    async dbAlterEnumValues(
+        connectionId: string,
+        schema: string,
+        name: string,
+        renames: [string, string][],
+        additions: [string, string | null][]
+    ): Promise<void> {
+        const res = await fetch(
+            `${this.base}/v1/connections/${encodeURIComponent(connectionId)}/schemas/${encodeURIComponent(schema)}/types/${encodeURIComponent(name)}/enum-values`,
+            {
+                method: "PATCH",
+                headers: this.headers(true),
+                body: JSON.stringify({
+                    renames,
+                    additions: additions.map(([v, after]) => [v, after ?? null]),
+                }),
+            }
+        );
+        await this.expectNoContent(res);
+    }
+
+    async dbCreateTable(
+        connectionId: string,
+        schema: string,
+        table: string,
+        columns: CreateColumnDef[],
+        ifNotExists: boolean
+    ): Promise<string> {
+        const res = await fetch(
+            `${this.base}/v1/connections/${encodeURIComponent(connectionId)}/schemas/${encodeURIComponent(schema)}/tables`,
+            {
+                method: "POST",
+                headers: this.headers(true),
+                body: JSON.stringify({
+                    table,
+                    columns,
+                    ifNotExists,
+                }),
+            }
+        );
+        const body = await this.json<{ sql: string }>(res);
+        return body.sql;
+    }
+
+    async dbCreateDatabase(connectionId: string, name: string): Promise<void> {
+        const res = await fetch(
+            `${this.base}/v1/connections/${encodeURIComponent(connectionId)}/databases`,
+            {
+                method: "POST",
+                headers: this.headers(true),
+                body: JSON.stringify({ name }),
+            }
+        );
+        await this.expectNoContent(res);
+    }
+
+    async dbDropDatabase(connectionId: string, name: string): Promise<void> {
+        const res = await fetch(
+            `${this.base}/v1/connections/${encodeURIComponent(connectionId)}/databases/${encodeURIComponent(name)}`,
+            { method: "DELETE", headers: this.headers() }
+        );
+        await this.expectNoContent(res);
+    }
 }
 
 let cached: DbPlatform | null = null;
@@ -457,6 +794,28 @@ export function dbGetTableData(
     );
 }
 
+export function dbSearchTableDataMulti(
+    connectionId: string,
+    schema: string,
+    table: string,
+    conditions: FilterCondition[],
+    limit: number,
+    page: number,
+    sortColumn?: string,
+    sortDirection?: string
+) {
+    return p().dbSearchTableDataMulti(
+        connectionId,
+        schema,
+        table,
+        conditions,
+        limit,
+        page,
+        sortColumn,
+        sortDirection
+    );
+}
+
 export function dbExecuteQuery(
     connectionId: string,
     sql: string,
@@ -496,3 +855,71 @@ export function dbGetColumns(connectionId: string, schema: string, table: string
 export function dbGetTableDetails(connectionId: string, schema: string, table: string) {
     return p().dbGetTableDetails(connectionId, schema, table);
 }
+
+export function dbListDatabases(connectionId: string) {
+    return p().dbListDatabases(connectionId);
+}
+
+export function dbListFunctions(connectionId: string, schema: string) {
+    return p().dbListFunctions(connectionId, schema);
+}
+
+export function dbListTypes(connectionId: string, schema: string) {
+    return p().dbListTypes(connectionId, schema);
+}
+
+export function dbListEventTriggers(connectionId: string) {
+    return p().dbListEventTriggers(connectionId);
+}
+
+export function dbGetFunctionDefinition(
+    connectionId: string,
+    schema: string,
+    name: string,
+    args: string
+) {
+    return p().dbGetFunctionDefinition(connectionId, schema, name, args);
+}
+
+export function dbGetTypeDefinition(connectionId: string, schema: string, name: string) {
+    return p().dbGetTypeDefinition(connectionId, schema, name);
+}
+
+export function dbCreateEnum(
+    connectionId: string,
+    schema: string,
+    name: string,
+    values: string[]
+) {
+    return p().dbCreateEnum(connectionId, schema, name, values);
+}
+
+export function dbAlterEnumValues(
+    connectionId: string,
+    schema: string,
+    name: string,
+    renames: [string, string][],
+    additions: [string, string | null][]
+) {
+    return p().dbAlterEnumValues(connectionId, schema, name, renames, additions);
+}
+
+export function dbCreateTable(
+    connectionId: string,
+    schema: string,
+    table: string,
+    columns: CreateColumnDef[],
+    ifNotExists: boolean
+) {
+    return p().dbCreateTable(connectionId, schema, table, columns, ifNotExists);
+}
+
+export function dbCreateDatabase(connectionId: string, name: string) {
+    return p().dbCreateDatabase(connectionId, name);
+}
+
+export function dbDropDatabase(connectionId: string, name: string) {
+    return p().dbDropDatabase(connectionId, name);
+}
+
+export type { CreateColumnDef } from "@/lib/types";

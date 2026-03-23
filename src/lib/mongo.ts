@@ -1,20 +1,12 @@
-type MongoModule = typeof import("mongodb");
+import { MongoClient } from "mongodb";
+import type { Collection, Db, Document } from "mongodb";
 
-// Cached connection across hot reloads
-let cachedClient: any = null;
-let cachedDb: any = null;
-let mongoModulePromise: Promise<MongoModule> | null = null;
+let cachedClient: InstanceType<typeof MongoClient> | null = null;
+let cachedDb: Db | null = null;
 
 const DEFAULT_DB = process.env.MONGODB_DB_NAME || "pgstudio";
 
-async function loadMongo(): Promise<MongoModule> {
-    if (!mongoModulePromise) {
-        mongoModulePromise = import("mongodb").catch(() => import("next/dist/compiled/mongodb"));
-    }
-    return mongoModulePromise;
-}
-
-export async function getMongoDb(): Promise<any> {
+export async function getMongoDb(): Promise<Db> {
     if (cachedDb && cachedClient) return cachedDb;
 
     const uri = process.env.MONGODB_URI;
@@ -22,7 +14,6 @@ export async function getMongoDb(): Promise<any> {
         throw new Error("MONGODB_URI is not set. Crash reporting requires MongoDB.");
     }
 
-    const { MongoClient } = await loadMongo();
     const client = new MongoClient(uri, {
         maxPoolSize: 5,
         minPoolSize: 0,
@@ -33,10 +24,10 @@ export async function getMongoDb(): Promise<any> {
     await client.connect();
     cachedClient = client;
     cachedDb = client.db(DEFAULT_DB);
-    return cachedDb!;
+    return cachedDb;
 }
 
-export async function getCollection<T>(name: string): Promise<any> {
+export async function getCollection<T extends Document>(name: string): Promise<Collection<T>> {
     const db = await getMongoDb();
-    return db.collection(name) as any;
+    return db.collection<T>(name);
 }

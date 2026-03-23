@@ -1,5 +1,5 @@
 use crate::query_exec::row_to_cells;
-use crate::types::{QueryResult, ResultColumn, SchemaInfo, TableInfo};
+use crate::types::{FilterCondition, QueryResult, ResultColumn, SchemaInfo, TableInfo};
 use deadpool_postgres::Pool;
 use std::sync::Arc;
 use std::time::Instant;
@@ -193,6 +193,152 @@ pub async fn get_table_data(
         page: Some(page),
         page_size: Some(page_size),
         query,
+        is_error: false,
+        error_message: None,
+    })
+}
+
+fn escape_sql_literal(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+/// Multi-condition WHERE search with pagination (parity with Tauri `search_table_data_multi`; uses `SELECT *`).
+pub async fn search_table_data_multi(
+    pool: &Arc<Pool>,
+    schema: &str,
+    table: &str,
+    conditions: &[FilterCondition],
+    limit: u32,
+    page: u32,
+    sort_column: Option<&str>,
+    sort_direction: &str,
+) -> Result<QueryResult, String> {
+    let start = Instant::now();
+    let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+
+    let safe_schema = sanitize_identifier(schema);
+    let safe_table = sanitize_identifier(table);
+
+    const VALID_OPS: &[&str] = &[
+        "=",
+        "!=",
+        "<>",
+        ">",
+        "<",
+        ">=",
+        "<=",
+        "LIKE",
+        "NOT LIKE",
+        "ILIKE",
+        "NOT ILIKE",
+        "IS NULL",
+        "IS NOT NULL",
+    ];
+    const NULL_OPS: &[&str] = &["IS NULL", "IS NOT NULL"];
+    const VALID_LOGICAL: &[&str] = &["AND", "OR"];
+
+    let mut predicates: Vec<String> = Vec::new();
+    for (i, cond) in conditions.iter().enumerate() {
+        if cond.column.is_empty() || cond.operator.is_empty() {
+            continue;
+        }
+        let safe_col = sanitize_identifier(&cond.column);
+        let op_upper = cond.operator.to_uppercase();
+        let op_str = op_upper.trim();
+
+        if !VALID_OPS.contains(&op_str) {
+            return Err(format!("Invalid operator: '{}'", cond.operator));
+        }
+
+        let predicate = if NULL_OPS.contains(&op_str) {
+            format!("\"{}\" {}", safe_col, op_str)
+        } else {
+            let val = cond.value.as_deref().unwrap_or("");
+            let escaped = escape_sql_literal(val);
+            format!("\"{}\" {} '{}'", safe_col, op_str, escaped)
+        };
+
+        if i == 0 || predicates.is_empty() {
+            predicates.push(predicate);
+        } else {
+            let logical = cond.logical_op.to_uppercase();
+            let logical_safe = if VALID_LOGICAL.contains(&logical.as_str()) {
+                logical
+            } else {
+                "AND".to_string()
+            };
+            predicates.push(format!("{} {}", logical_safe, predicate));
+        }
+    }
+
+    let where_clause = if predicates.is_empty() {
+        String::new()
+    } else {
+        format!("WHERE {}", predicates.join(" "))
+    };
+
+    let order_clause = match sort_column {
+        Some(col) if !col.is_empty() => {
+            let safe_sort_col = sanitize_identifier(col);
+            let safe_dir = if sort_direction.to_uppercase() == "DESC" {
+                "DESC"
+            } else {
+                "ASC"
+            };
+            format!("ORDER BY \"{}\" {} NULLS LAST", safe_sort_col, safe_dir)
+        }
+        _ => String::new(),
+    };
+
+    let count_sql = format!(
+        "SELECT COUNT(*) FROM \"{}\".\"{}\" {}",
+        safe_schema, safe_table, where_clause
+    );
+    let count_row = client
+        .query_one(&count_sql, &[])
+        .await
+        .map_err(|e| format!("Count query error: {}", e))?;
+    let total: i64 = count_row.get(0);
+
+    let offset = (page.saturating_sub(1)) as i64 * limit as i64;
+    let data_sql = format!(
+        "SELECT * FROM \"{}\".\"{}\" {} {} LIMIT {} OFFSET {}",
+        safe_schema, safe_table, where_clause, order_clause, limit, offset
+    );
+
+    let rows = client
+        .query(&data_sql, &[])
+        .await
+        .map_err(|e| format!("Query error: {}", e))?;
+
+    let (columns, data): (Vec<ResultColumn>, Vec<_>) = if !rows.is_empty() {
+        let cols: Vec<ResultColumn> = rows[0]
+            .columns()
+            .iter()
+            .map(|col| ResultColumn {
+                name: col.name().to_string(),
+                data_type: crate::query_exec::pg_type_to_string(col.type_()),
+                enum_labels: None,
+            })
+            .collect();
+        let data = rows.iter().map(|row| row_to_cells(row)).collect();
+        (cols, data)
+    } else {
+        (Vec::new(), Vec::new())
+    };
+
+    let row_count = data.len();
+    let elapsed = start.elapsed().as_secs_f64() * 1000.0;
+
+    Ok(QueryResult {
+        columns,
+        rows: data,
+        row_count,
+        total_rows: Some(total),
+        execution_time_ms: elapsed,
+        page: Some(page),
+        page_size: Some(limit),
+        query: data_sql,
         is_error: false,
         error_message: None,
     })

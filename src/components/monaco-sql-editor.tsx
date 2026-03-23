@@ -1651,21 +1651,27 @@ export function MonacoSqlEditor({
                     const model = editorInstance.getModel();
                     if (!model || disabledRef.current) return;
                     const text = await readClipboardText();
-                    if (text !== "") {
-                        const selection = editorInstance.getSelection();
-                        if (selection) {
-                            editorInstance.executeEdits("helix-paste", [{
-                                range: selection,
-                                text,
-                                forceMoveMarkers: true as const,
-                            }]);
-                            onChangeRef.current(model.getValue());
-                            return;
-                        }
+                    if (text === "") {
+                        // Clipboard API failed or empty. Do not call editor.action.clipboardPasteAction —
+                        // standalone Monaco has no productService; it throws. Context menu / native paste
+                        // on the editor surface still fires paste + onDidPaste / DOM listener below.
+                        return;
                     }
-                    // Fallback: trigger built-in paste then sync
-                    editorInstance.trigger("keyboard", "editor.action.clipboardPasteAction", null);
-                    queueMicrotask(() => onChangeRef.current(model.getValue()));
+                    let range: IRange | null = editorInstance.getSelection();
+                    if (!range) {
+                        const pos = editorInstance.getPosition();
+                        if (!pos) return;
+                        range = new monacoInstance.Range(
+                            pos.lineNumber,
+                            pos.column,
+                            pos.lineNumber,
+                            pos.column
+                        );
+                    }
+                    editorInstance.executeEdits("helix-paste", [
+                        { range, text, forceMoveMarkers: true as const },
+                    ]);
+                    onChangeRef.current(model.getValue());
                 },
             });
 

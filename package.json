@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "dev": "next dev --hostname 0.0.0.0 --port 3000",
-    "build": "next build",
+    "build": "sh scripts/next-static-export.sh",
     "start": "next start",
     "lint": "eslint",
     "test:unit": "node --test src/lib/sql-risk-guard.test.ts",
