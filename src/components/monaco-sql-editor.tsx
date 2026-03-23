@@ -11,7 +11,7 @@ import type { SchemaContext } from "@/lib/ai-suggestions";
 import { useSettingsStore } from "@/stores/settings-store";
 import type { SqlReviewIssue } from "@/lib/sql-review";
 import type { CollaborationSelection } from "@/lib/collaboration/types";
-import { Loader2, Sparkles, Zap, X, Send, ChevronDown } from "lucide-react";
+import { GitBranch, Loader2, Sparkles, Zap, X, Send, ChevronDown } from "lucide-react";
 import { explainSql, explainSelection } from "@/lib/sql-explain-ai";
 import type { SqlExplanation } from "@/lib/sql-explain-ai";
 import { InlineExplainWidget } from "@/components/inline-explain-widget";
@@ -120,6 +120,126 @@ function getCommandAnchor(
     return { top, left };
 }
 
+function findStatementRanges(sql: string): Array<{ start: number; end: number }> {
+    const ranges: Array<{ start: number; end: number }> = [];
+    let start = 0;
+    let i = 0;
+    let inSingle = false;
+    let inDouble = false;
+    let inLine = false;
+    let inBlock = false;
+    let dollarTag: string | null = null;
+
+    while (i < sql.length) {
+        const ch = sql[i];
+        const next = sql[i + 1];
+
+        if (inLine) {
+            if (ch === "\n") inLine = false;
+            i += 1;
+            continue;
+        }
+        if (inBlock) {
+            if (ch === "*" && next === "/") {
+                inBlock = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if (dollarTag) {
+            if (sql.startsWith(dollarTag, i)) {
+                i += dollarTag.length;
+                dollarTag = null;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+        if (inSingle) {
+            if (ch === "'" && next === "'") {
+                i += 2;
+                continue;
+            }
+            if (ch === "'") inSingle = false;
+            i += 1;
+            continue;
+        }
+        if (inDouble) {
+            if (ch === "\"") inDouble = false;
+            i += 1;
+            continue;
+        }
+
+        if (ch === "-" && next === "-") {
+            inLine = true;
+            i += 2;
+            continue;
+        }
+        if (ch === "/" && next === "*") {
+            inBlock = true;
+            i += 2;
+            continue;
+        }
+        if (ch === "'") {
+            inSingle = true;
+            i += 1;
+            continue;
+        }
+        if (ch === "\"") {
+            inDouble = true;
+            i += 1;
+            continue;
+        }
+        if (ch === "$") {
+            const match = sql.slice(i).match(/^\$[A-Za-z0-9_]*\$/);
+            if (match) {
+                dollarTag = match[0];
+                i += dollarTag.length;
+                continue;
+            }
+        }
+        if (ch === ";") {
+            ranges.push({ start, end: i });
+            start = i + 1;
+            i += 1;
+            continue;
+        }
+        i += 1;
+    }
+
+    if (start < sql.length) {
+        ranges.push({ start, end: sql.length });
+    }
+    return ranges;
+}
+
+function getStatementAtOffset(sql: string, offset: number): { text: string; start: number; end: number } | null {
+    const ranges = findStatementRanges(sql);
+    const candidate =
+        ranges.find((range) => offset >= range.start && offset <= range.end) ??
+        [...ranges].reverse().find((range) => sql.slice(range.start, range.end).trim().length > 0);
+
+    if (!candidate) return null;
+
+    let start = candidate.start;
+    let end = candidate.end;
+    while (start < end && /\s/.test(sql[start])) start += 1;
+    while (end > start && /\s/.test(sql[end - 1])) end -= 1;
+
+    const text = sql.slice(start, end).trim();
+    return text ? { text, start, end } : null;
+}
+
+function isAlterTableStatement(statement: string): boolean {
+    const cleaned = statement
+        .replace(/--[^\n]*/g, "")
+        .replace(/\/\*[\s\S]*?\*\//g, "")
+        .trim();
+    return /^\s*alter\s+table\b/i.test(cleaned);
+}
+
 export interface MonacoSqlEditorProps {
     value: string;
     onChange: (value: string) => void;
@@ -161,6 +281,8 @@ export interface MonacoSqlEditorProps {
     }) => void;
     /** Called once on mount with a function that can trigger any Monaco editor action by ID. */
     onRegisterActionTrigger?: (trigger: (actionId: string) => void) => void;
+    /** Opens the ALTER TABLE impact preview for the current statement near the cursor. */
+    onOpenAlterTablePreview?: (statementSql: string) => void;
 }
 
 interface MutableCollaboratorWidget extends editor.IContentWidget {
@@ -171,6 +293,40 @@ interface MutableCollaboratorWidget extends editor.IContentWidget {
 type MonacoPosition = {
     lineNumber: number;
     column: number;
+};
+
+type MonacoInlineLanguagesApi = typeof import("monaco-editor")["languages"] & {
+    registerInlineCompletionsProvider?: (
+        languageSelector: string,
+        provider: {
+            provideInlineCompletions: (
+                model: editor.ITextModel,
+                position: { lineNumber: number; column: number },
+                context: { triggerKind?: number } | undefined,
+                token: { isCancellationRequested: boolean; onCancellationRequested: (cb: () => void) => void }
+            ) => Promise<{
+                items: Array<{
+                    insertText: string;
+                    range: {
+                        startLineNumber: number;
+                        startColumn: number;
+                        endLineNumber: number;
+                        endColumn: number;
+                    };
+                    hint?: unknown;
+                }>;
+                enableForwardStability?: boolean;
+            }>;
+            freeInlineCompletions?: () => void;
+            disposeInlineCompletions?: () => void;
+        }
+    ) => IDisposable | null | undefined;
+    InlineCompletionTriggerKind?: {
+        Explicit?: number;
+    };
+    InlineCompletionHintStyle?: {
+        Label?: unknown;
+    };
 };
 
 export function MonacoSqlEditor({
@@ -192,6 +348,7 @@ export function MonacoSqlEditor({
     onCursorActivity,
     onAddContextShortcut,
     onRegisterActionTrigger,
+    onOpenAlterTablePreview,
 }: MonacoSqlEditorProps) {
     const { resolvedTheme } = useTheme();
     const {
@@ -220,6 +377,7 @@ export function MonacoSqlEditor({
     const onNextActionRef = useRef<typeof onNextAction>(onNextAction);
     const onCursorActivityRef = useRef<typeof onCursorActivity>(onCursorActivity);
     const onRegisterActionTriggerRef = useRef<typeof onRegisterActionTrigger>(onRegisterActionTrigger);
+    const onOpenAlterTablePreviewRef = useRef<typeof onOpenAlterTablePreview>(onOpenAlterTablePreview);
     const onChangeRef = useRef(onChange);
     const onExecuteRef = useRef(onExecute);
     const onReviewRef = useRef(onReview);
@@ -286,6 +444,7 @@ export function MonacoSqlEditor({
     const [aiDiffMode, setAiDiffMode] = useState<"diff" | "edit">("diff");
     const [aiDiffModel, setAiDiffModel] = useState<string | null>(null);
     const [aiRequestInFlight, setAiRequestInFlight] = useState(false);
+    const [alterPreviewCandidate, setAlterPreviewCandidate] = useState<string | null>(null);
     const lastAiErrorToastRef = useRef<number>(0);
 
     // ── Inline Explain Widget state ──────────────────────────────────────────
@@ -579,6 +738,33 @@ export function MonacoSqlEditor({
         setAiDiffRange(null);
     }, [aiDiffIsFullFile, aiDiffModified, aiDiffRange]);
 
+    const updateAlterPreviewCandidate = useCallback((sqlOverride?: string) => {
+        const editorInstance = editorRef.current;
+        const model = editorInstance?.getModel();
+        const candidateSource = sqlOverride ?? model?.getValue() ?? value;
+
+        if (!onOpenAlterTablePreviewRef.current || disabledRef.current || !candidateSource.trim()) {
+            setAlterPreviewCandidate((prev) => (prev === null ? prev : null));
+            return;
+        }
+
+        let candidate: string | null = null;
+        const position = editorInstance?.getPosition();
+        if (model && position) {
+            const offset = model.getOffsetAt(position);
+            const statement = getStatementAtOffset(candidateSource, offset);
+            if (statement && isAlterTableStatement(statement.text)) {
+                candidate = statement.text;
+            }
+        }
+
+        if (!candidate && isAlterTableStatement(candidateSource)) {
+            candidate = candidateSource.trim();
+        }
+
+        setAlterPreviewCandidate((prev) => (prev === candidate ? prev : candidate));
+    }, [value]);
+
     // Keep refs current
     useEffect(() => { triggerExplainRef.current = triggerExplain; }, [triggerExplain]);
     useEffect(() => { onExecuteRef.current = onExecute; }, [onExecute]);
@@ -599,7 +785,11 @@ export function MonacoSqlEditor({
     useEffect(() => { onNextActionRef.current = onNextAction; }, [onNextAction]);
     useEffect(() => { onCursorActivityRef.current = onCursorActivity; }, [onCursorActivity]);
     useEffect(() => { onRegisterActionTriggerRef.current = onRegisterActionTrigger; }, [onRegisterActionTrigger]);
+    useEffect(() => { onOpenAlterTablePreviewRef.current = onOpenAlterTablePreview; }, [onOpenAlterTablePreview]);
     useEffect(() => { onChangeRef.current = onChange; }, [onChange]);
+    useEffect(() => {
+        updateAlterPreviewCandidate(value);
+    }, [disabled, onOpenAlterTablePreview, updateAlterPreviewCandidate, value]);
     useEffect(() => {
         aiConfigRef.current = {
             aiAutocompleteEnabled,
@@ -1113,8 +1303,8 @@ export function MonacoSqlEditor({
             });
 
             // ── Inline ghost-text completions (Cursor-style) ────────────────────
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const inlineProvider = (monacoInstance.languages as any).registerInlineCompletionsProvider?.("sql", {
+            const inlineLanguages = monacoInstance.languages as MonacoInlineLanguagesApi;
+            const inlineProvider = inlineLanguages.registerInlineCompletionsProvider?.("sql", {
                 provideInlineCompletions: async (
                     model: editor.ITextModel,
                     position: { lineNumber: number; column: number },
@@ -1128,7 +1318,7 @@ export function MonacoSqlEditor({
 
                     const isExplicit =
                         context?.triggerKind ===
-                        (monacoInstance.languages as any).InlineCompletionTriggerKind?.Explicit;
+                        inlineLanguages.InlineCompletionTriggerKind?.Explicit;
                     const triggerReason = inlineTriggerReasonRef.current;
                     inlineTriggerReasonRef.current = "typing";
                     const preferSingleLine = triggerReason === "newline" ? true : !isExplicit;
@@ -1185,7 +1375,7 @@ export function MonacoSqlEditor({
                         });
 
                         showInlineHintRef.current();
-                        const hintStyle = (monacoInstance.languages as any).InlineCompletionHintStyle?.Label;
+                        const hintStyle = inlineLanguages.InlineCompletionHintStyle?.Label;
                         const hint = hintStyle
                             ? {
                                 range: {
@@ -1439,6 +1629,7 @@ export function MonacoSqlEditor({
                     pushRecentInlineRejectionRef.current(lastCompletion);
                     lastInlineCompletionRef.current = "";
                 }
+                updateAlterPreviewCandidate(editorInstance.getValue());
             });
             const inlineCursorDisposable = editorInstance.onDidChangeCursorPosition(() => {
                 hideInlineHintRef.current();
@@ -1525,12 +1716,15 @@ export function MonacoSqlEditor({
 
             const positionDisposable = editorInstance.onDidChangeCursorPosition(() => {
                 emitCursorActivity();
+                updateAlterPreviewCandidate();
             });
             const selectionDisposable = editorInstance.onDidChangeCursorSelection(() => {
                 emitCursorActivity();
+                updateAlterPreviewCandidate();
             });
             disposablesRef.current.push(positionDisposable, selectionDisposable);
             emitCursorActivity();
+            updateAlterPreviewCandidate(editorInstance.getValue());
 
             editorInstance.focus();
 
@@ -1539,7 +1733,7 @@ export function MonacoSqlEditor({
                 editorInstance.trigger("external", actionId, null);
             });
         },
-        [scheduleEnterInlineSuggest, openAiCommand] // Using refs for all callbacks (except Enter scheduling) to avoid stale closures
+        [scheduleEnterInlineSuggest, openAiCommand, onAddContextShortcut, updateAlterPreviewCandidate] // Using refs for all callbacks (except Enter scheduling) to avoid stale closures
     );
 
     return (
@@ -1575,6 +1769,23 @@ export function MonacoSqlEditor({
                         <span className="text-[13px] font-mono text-muted-foreground/50">
                             Type or paste SQL here… (⌘↵ to run)
                         </span>
+                    </div>
+                )}
+                {alterPreviewCandidate && !disabled && onOpenAlterTablePreview && (
+                    <div className="pointer-events-none absolute left-3 top-3 z-20">
+                        <Button
+                            type="button"
+                            size="sm"
+                            variant="outline"
+                            className={cn(
+                                "pointer-events-auto h-8 gap-1.5 rounded-full border-emerald-500/35 bg-background/78 px-3 text-[11px] font-medium text-emerald-100 shadow-lg shadow-emerald-950/20 backdrop-blur-md",
+                                "hover:bg-emerald-500/12 hover:text-emerald-50"
+                            )}
+                            onClick={() => onOpenAlterTablePreview(alterPreviewCandidate)}
+                        >
+                            <GitBranch className="h-3.5 w-3.5" />
+                            Preview impact
+                        </Button>
                     </div>
                 )}
                 <Editor

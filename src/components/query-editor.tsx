@@ -13,8 +13,8 @@ import { useSchemaDocGenStore } from "@/stores/schema-doc-gen-store";
 import { useCollaborationStore, getCollaborationPermissions } from "@/stores/collaboration-store";
 import { useShallow } from "zustand/react/shallow";
 import { formatCellValue } from "@/lib/types";
-import type { QueryResult } from "@/lib/types";
-import { dbExecuteQuery, dbGetColumns } from "@/lib/db-platform";
+import type { AlterTablePreview, QueryResult } from "@/lib/types";
+import { dbExecuteQuery, dbGetColumns, dbPreviewAlterTable } from "@/lib/db-platform";
 import { dbExplainQuery, dbGetDocumentationContext } from "@/lib/tauri";
 import type { SandboxExecuteResult } from "@/lib/tauri";
 import { NotesPanel } from "@/components/notes-panel";
@@ -45,6 +45,7 @@ import {
 import { QueryErrorPanel } from "@/components/query-error-panel";
 import { QueryTabBar } from "@/components/query-tab-bar";
 import { QueryToolbar } from "@/components/query-toolbar";
+import { AlterTablePreviewDialog } from "@/components/alter-table-preview-dialog";
 import {
     QuerySidebar,
     QueryActivityBar,
@@ -110,6 +111,7 @@ import {
     X,
 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { isTauri } from "@/lib/tauri-runtime";
 import { toast } from "sonner";
 import dynamic from "next/dynamic";
 
@@ -598,6 +600,10 @@ export function QueryEditor() {
     const [saveNoteOpen, setSaveNoteOpen] = useState(false);
     const [saveNoteTitle, setSaveNoteTitle] = useState("");
     const [saveNoteLoading, setSaveNoteLoading] = useState(false);
+    const [alterPreviewOpen, setAlterPreviewOpen] = useState(false);
+    const [alterPreviewLoading, setAlterPreviewLoading] = useState(false);
+    const [alterPreviewError, setAlterPreviewError] = useState<string | null>(null);
+    const [alterPreviewData, setAlterPreviewData] = useState<AlterTablePreview | null>(null);
     const [editorFullScreen, setEditorFullScreen] = useState(false);
     const [runSqlFileOpen, setRunSqlFileOpen] = useState(false);
     const runSqlFileInputRef = useRef<HTMLInputElement>(null);
@@ -607,6 +613,13 @@ export function QueryEditor() {
     const openRightPanel = useCallback((view: RightPanelView) => {
         setRightPanelView(view);
     }, []);
+    useEffect(() => {
+        if (connectionId) return;
+        setAlterPreviewOpen(false);
+        setAlterPreviewLoading(false);
+        setAlterPreviewError(null);
+        setAlterPreviewData(null);
+    }, [connectionId]);
 
     // Editor split groups (VS Code-style groups within the query editor area)
     const editorGroupCounterRef = useRef(1);
@@ -697,6 +710,7 @@ export function QueryEditor() {
         [connections, activeConnectionId]
     );
     const activeEnvironment = normalizeConnectionEnvironment(activeConnectionEntry?.environment);
+    const desktopAlterPreviewEnabled = isTauri() && !!connectionId;
 
     const tablesByPriority = useMemo(() => {
         if (!selectedSchema) return tables;
@@ -1434,6 +1448,51 @@ export function QueryEditor() {
         [activeTabId, activeTab?.sql, isDocTab, schemaContext, updateSql]
     );
 
+    const handleOpenAlterPreview = useCallback(
+        async (statementSql: string) => {
+            if (!connectionId) {
+                toast.error("Connect to a database before opening schema impact preview.");
+                return;
+            }
+            if (activeTabId && isDocTab(activeTabId)) {
+                toast.info("ALTER TABLE preview is only available for SQL tabs.");
+                return;
+            }
+            setAlterPreviewOpen(true);
+            setAlterPreviewLoading(true);
+            setAlterPreviewError(null);
+            setAlterPreviewData(null);
+            try {
+                const preview = await dbPreviewAlterTable(
+                    connectionId,
+                    statementSql,
+                    selectedSchema ?? null
+                );
+                setAlterPreviewData(preview);
+            } catch (error) {
+                const message =
+                    error instanceof Error
+                        ? error.message
+                        : "Could not build ALTER TABLE preview.";
+                setAlterPreviewError(message);
+                toast.error(message, { duration: 3500 });
+            } finally {
+                setAlterPreviewLoading(false);
+            }
+        },
+        [activeTabId, connectionId, isDocTab, selectedSchema]
+    );
+
+    const handleLoadAlterAlternative = useCallback(
+        (sql: string) => {
+            if (!activeTabId || isDocTab(activeTabId)) return;
+            updateSql(activeTabId, sql);
+            setAlterPreviewOpen(false);
+            toast.success("Alternative SQL loaded into the editor.", { duration: 1800 });
+        },
+        [activeTabId, isDocTab, updateSql]
+    );
+
     // ── Load history ───────────────────────────────────────────────────────
     useEffect(() => { loadHistoryFromStorage(); }, [loadHistoryFromStorage]);
     useEffect(() => { if (tabs.length === 0) addTab(); }, [tabs.length, addTab]);
@@ -1946,6 +2005,9 @@ export function QueryEditor() {
                         onFormatSql={handleFormatSql}
                         onFetchColumns={handleFetchColumns}
                         onNextAction={handleNextAction}
+                        onOpenAlterTablePreview={
+                            desktopAlterPreviewEnabled ? handleOpenAlterPreview : undefined
+                        }
                     reviewIssues={options.reviewIssues}
                     schemaContext={schemaContext}
                     collaborators={getCollaboratorsForTab(tab.id)}
@@ -1960,12 +2022,14 @@ export function QueryEditor() {
         },
         [
             docAiAssistStats,
+            desktopAlterPreviewEnabled,
             getDocAiAssistContext,
             getCollaboratorsForTab,
             handleCursorActivity,
             handleExecute,
             handleFetchColumns,
             handleFormatSql,
+            handleOpenAlterPreview,
             handleManualReview,
             handleNextAction,
             handleSqlChange,
@@ -2085,6 +2149,15 @@ export function QueryEditor() {
                     </div>
                 </DialogContent>
             </Dialog>
+
+            <AlterTablePreviewDialog
+                open={alterPreviewOpen}
+                onOpenChange={setAlterPreviewOpen}
+                preview={alterPreviewData}
+                isLoading={alterPreviewLoading}
+                error={alterPreviewError}
+                onLoadAlternative={handleLoadAlterAlternative}
+            />
 
             {/* Production guard dialog */}
             <Dialog open={Boolean(prodGuardPending)} onOpenChange={(open) => { if (!open) closeProdGuardDialog(); }}>

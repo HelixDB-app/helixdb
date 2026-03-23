@@ -2,6 +2,7 @@
 
 import { Component, type ReactNode } from "react";
 import { logException } from "@/lib/firebase";
+import { capturePosthogException } from "@/lib/posthog-client";
 
 interface Props {
   children: ReactNode;
@@ -30,7 +31,12 @@ export class ErrorBoundary extends Component<Props, State> {
     const description =
       [error.message, errorInfo.componentStack].filter(Boolean).join("\n") ||
       String(error);
-    logException(description, false);
+    void logException(description, false);
+    capturePosthogException(error, {
+      fatal: false,
+      error_source: "react_error_boundary",
+      react_component_stack: errorInfo.componentStack ?? "",
+    });
   }
 
   render(): ReactNode {

@@ -91,6 +91,7 @@ pub fn run() {
             commands::db_track_recent_table_open,
             commands::db_list_recent_tables,
             commands::db_get_schema_topology,
+            commands::db_preview_alter_table,
             commands::db_get_columns,
             commands::db_get_documentation_context,
             commands::db_apply_documentation_comments,

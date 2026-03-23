@@ -788,6 +788,97 @@ export interface TopologyData {
     edges: TopologyEdge[];
 }
 
+/** Column metadata for ALTER TABLE impact previews. */
+export interface AlterTablePreviewColumn {
+    name: string;
+    data_type: string;
+    is_primary_key: boolean;
+    is_nullable: boolean;
+    status: "unchanged" | "added" | "removed" | "modified" | "renamed" | string;
+    detail: string | null;
+}
+
+/** Table card used in the ALTER TABLE preview graph. */
+export interface AlterTablePreviewNode {
+    id: string;
+    schema: string;
+    table_name: string;
+    row_count: number;
+    role: "current" | "proposed" | "dependency" | "dependent" | "related" | string;
+    note: string | null;
+    columns: AlterTablePreviewColumn[];
+}
+
+/** Relationship edge used in the ALTER TABLE preview graph. */
+export interface AlterTablePreviewEdge {
+    id: string;
+    constraint_name: string;
+    from_node_id: string;
+    from_column: string;
+    to_node_id: string;
+    to_column: string;
+    phase: "current" | "proposed" | string;
+    impact: "unchanged" | "added" | "removed" | "changed" | string;
+}
+
+/** Parsed ALTER TABLE change description. */
+export interface AlterTableChange {
+    kind: string;
+    title: string;
+    detail: string;
+    column: string | null;
+    next_column: string | null;
+    destructive: boolean;
+    impacts_data: boolean;
+}
+
+/** Risk finding generated for an ALTER TABLE preview. */
+export interface AlterTableRisk {
+    severity: "info" | "warn" | "block" | string;
+    title: string;
+    detail: string;
+    mitigation: string | null;
+}
+
+/** Suggested safer alternative for an ALTER TABLE operation. */
+export interface AlterTableAlternative {
+    title: string;
+    summary: string;
+    sql: string;
+    reason: string;
+}
+
+/** Summary metrics for an ALTER TABLE preview. */
+export interface AlterTableImpactSummary {
+    table_type: string;
+    row_count: number;
+    total_size: string;
+    table_size: string;
+    indexes_size: string;
+    index_count: number;
+    trigger_count: number;
+    incoming_relations: number;
+    outgoing_relations: number;
+    operation_count: number;
+    risk_level: "low" | "medium" | "high" | "critical" | string;
+    risk_score: number;
+}
+
+/** Full payload for the interactive ALTER TABLE preview. */
+export interface AlterTablePreview {
+    focus_schema: string;
+    focus_table: string;
+    focus_schema_after: string;
+    focus_table_after: string;
+    summary: AlterTableImpactSummary;
+    nodes: AlterTablePreviewNode[];
+    edges: AlterTablePreviewEdge[];
+    changes: AlterTableChange[];
+    risks: AlterTableRisk[];
+    alternatives: AlterTableAlternative[];
+    warnings: string[];
+}
+
 // ── Query Notes ────────────────────────────────────────────────────────────
 
 /** A saved SQL query note persisted via the Rust core engine */

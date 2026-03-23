@@ -1,3 +1,5 @@
+import { captureAiModelInvocation } from "@/lib/posthog-client";
+
 /**
  * GeminiLogger — Non-blocking, fire-and-forget Gemini API usage logger.
  *
@@ -19,7 +21,16 @@ export type ApiFeatureType =
     | "query-explain"
     | "schema-doc"
     | "git"
+    | "ai_command"
+    | "sql_completion"
     | "other";
+
+/** Provider routing for analytics (PostHog + optional server logs). */
+export type AiModelProviderKind =
+    | "google_gemini"
+    | "cloudflare_workers"
+    | "custom_http_worker"
+    | "cloudflare_completion";
 
 export interface GeminiLogEntry {
     model: string;
@@ -33,6 +44,10 @@ export interface GeminiLogEntry {
     candidateTokens?: number;
     errorMessage?: string;
     errorCode?: number;
+    /** Defaults to google_gemini when omitted (legacy callers). */
+    provider?: AiModelProviderKind;
+    stream?: boolean;
+    cached?: boolean;
 }
 
 const BATCH_SIZE = 10;
@@ -41,6 +56,20 @@ const FLUSH_INTERVAL_MS = 30_000; // 30 s
 const WEB_BASE_URL =
     (typeof process !== "undefined" && process.env?.NEXT_PUBLIC_WEB_APP_URL) ??
     `${process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app"}`;
+
+function emitPosthogAiInvocation(entry: GeminiLogEntry): void {
+    captureAiModelInvocation({
+        provider: entry.provider ?? "google_gemini",
+        model_id: entry.model,
+        feature: entry.featureType,
+        endpoint: entry.endpoint,
+        latency_ms: entry.responseTime,
+        status: entry.status,
+        stream: entry.stream,
+        cached: entry.cached,
+        error_message: entry.errorMessage,
+    });
+}
 
 class GeminiLoggerSingleton {
     private buffer: GeminiLogEntry[] = [];
@@ -59,6 +88,14 @@ class GeminiLoggerSingleton {
     log(entry: GeminiLogEntry): void {
         this.buffer.push(entry);
         this.scheduleFlush();
+
+        if (typeof window !== "undefined") {
+            try {
+                emitPosthogAiInvocation(entry);
+            } catch {
+                // PostHog must never break logging
+            }
+        }
 
         if (this.buffer.length >= BATCH_SIZE) {
             this.flush();
@@ -152,7 +189,8 @@ export const geminiLogger = new GeminiLoggerSingleton();
 /** Wrap a Gemini call with automatic timing + logging. */
 export async function withGeminiLogging<T>(
     callFn: () => Promise<T>,
-    meta: Pick<GeminiLogEntry, "model" | "featureType" | "endpoint">
+    meta: Pick<GeminiLogEntry, "model" | "featureType" | "endpoint"> &
+        Partial<Pick<GeminiLogEntry, "provider" | "stream" | "cached">>
 ): Promise<T> {
     const start = Date.now();
     const requestTimestamp = new Date().toISOString();

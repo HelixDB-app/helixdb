@@ -28,6 +28,7 @@ import { BetaFeedbackDialog } from "@/components/beta-feedback-dialog";
 import { getSurveyStatus } from "@/lib/survey";
 import { useBetaFeedbackScheduler } from "@/hooks/use-beta-feedback-scheduler";
 import type { SettingsSection } from "@/components/settings-dialog";
+import { CrashAnalyticsPanel } from "@/components/crash-analytics-panel";
 
 function parseMenuSettingsSection(raw: string | null): SettingsSection | null {
     if (!raw) return null;
@@ -841,6 +842,8 @@ export default function Home() {
                     </ResizablePanelGroup>
                 ) : null}
             </main>
+
+            <CrashAnalyticsPanel />
 
             <StatusBar />
 

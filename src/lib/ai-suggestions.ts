@@ -1,4 +1,6 @@
 import { APP_NAME } from "@/lib/app-config";
+import { geminiLogger } from "@/lib/gemini-logger";
+import type { AiModelProviderKind } from "@/lib/gemini-logger";
 import { notifyNoInternetDetected } from "@/lib/network-errors";
 import { isTauriRuntime } from "@/lib/runtime";
 import { aiSuggestionsWorkerPost } from "@/lib/tauri";
@@ -53,6 +55,12 @@ function sqlAiCompleteUrl(): string {
 
 type AiProvider = { url: string; model: string };
 type CompletionProvider = { url: string };
+
+function suggestionWorkerProviderKind(
+    provider: AiProvider
+): Extract<AiModelProviderKind, "cloudflare_workers" | "custom_http_worker"> {
+    return provider.model.startsWith("@cf/") ? "cloudflare_workers" : "custom_http_worker";
+}
 
 type CallResult = {
     text: string;
@@ -1240,6 +1248,54 @@ async function callProvider(
         streamOptions?: StreamOptions;
     }
 ): Promise<CallResult> {
+    const start = Date.now();
+    const requestTimestamp = new Date().toISOString();
+    const providerKind = suggestionWorkerProviderKind(provider);
+    const streamRequested = !!opts.stream && !isTauriRuntime();
+    try {
+        const result = await invokeSuggestionWorkerApi(provider, messages, opts);
+        geminiLogger.log({
+            model: provider.model,
+            featureType: "suggestions",
+            endpoint: result.usedStream ? "worker_chat_stream" : "worker_chat",
+            requestTimestamp,
+            responseTime: Date.now() - start,
+            status: "success",
+            provider: providerKind,
+            stream: result.usedStream,
+            cached: false,
+        });
+        return result;
+    } catch (error: unknown) {
+        const isAbort = error instanceof DOMException && error.name === "AbortError";
+        geminiLogger.log({
+            model: provider.model,
+            featureType: "suggestions",
+            endpoint: streamRequested ? "worker_chat_stream" : "worker_chat",
+            requestTimestamp,
+            responseTime: Date.now() - start,
+            status: isAbort ? "aborted" : "error",
+            errorMessage: error instanceof Error ? error.message : String(error),
+            provider: providerKind,
+            stream: streamRequested,
+        });
+        throw error;
+    }
+}
+
+async function invokeSuggestionWorkerApi(
+    provider: AiProvider,
+    messages: { role: string; content: string }[],
+    opts: {
+        temperature?: number;
+        max_tokens?: number;
+        signal?: AbortSignal;
+        sessionId: string;
+        mode?: "predict" | "chat";
+        stream?: boolean;
+        streamOptions?: StreamOptions;
+    }
+): Promise<CallResult> {
     const canStream = !!opts.stream && !isTauriRuntime();
     const payload = {
         conversationId: opts.sessionId,
@@ -1375,6 +1431,49 @@ async function callCompletionProvider(
 ): Promise<CompletionCallResult> {
     if (!provider.url) return { completion: "", cached: false };
     if (!canCallCompletionProvider(provider.url)) return { completion: "", cached: false };
+
+    const start = Date.now();
+    const requestTimestamp = new Date().toISOString();
+    try {
+        const result = await invokeCompletionWorkerApi(provider, payload, signal);
+        geminiLogger.log({
+            model: "sql_completion",
+            featureType: "sql_completion",
+            endpoint: "worker_completion",
+            requestTimestamp,
+            responseTime: Date.now() - start,
+            status: "success",
+            provider: "cloudflare_completion",
+            stream: false,
+            cached: result.cached,
+        });
+        return result;
+    } catch (error: unknown) {
+        const isAbort = error instanceof DOMException && error.name === "AbortError";
+        geminiLogger.log({
+            model: "sql_completion",
+            featureType: "sql_completion",
+            endpoint: "worker_completion",
+            requestTimestamp,
+            responseTime: Date.now() - start,
+            status: isAbort ? "aborted" : "error",
+            errorMessage: error instanceof Error ? error.message : String(error),
+            provider: "cloudflare_completion",
+            stream: false,
+        });
+        throw error;
+    }
+}
+
+async function invokeCompletionWorkerApi(
+    provider: CompletionProvider,
+    payload: {
+        sql: string;
+        schema?: Record<string, string[]>;
+        skipCache?: boolean;
+    },
+    signal?: AbortSignal
+): Promise<CompletionCallResult> {
     markCompletionProviderCall(provider.url);
 
     if (isTauriRuntime()) {

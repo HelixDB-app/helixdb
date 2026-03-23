@@ -8,6 +8,7 @@ import type {
     SchemaInfo,
     TableInfo,
     TopologyData,
+    AlterTablePreview,
     ColumnInfo,
     QueryResult,
     RecentTableOpen,
@@ -115,6 +116,19 @@ export async function dbGetSchemaTopology(
     return invoke<TopologyData>("db_get_schema_topology", {
         connectionId,
         schema,
+    });
+}
+
+/** Build an interactive ALTER TABLE preview with dependency graph + risk analysis. */
+export async function dbPreviewAlterTable(
+    connectionId: string,
+    sql: string,
+    fallbackSchema?: string | null
+): Promise<AlterTablePreview> {
+    return invoke<AlterTablePreview>("db_preview_alter_table", {
+        connectionId,
+        sql,
+        fallbackSchema: fallbackSchema ?? null,
     });
 }
 

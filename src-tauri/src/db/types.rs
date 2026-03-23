@@ -656,6 +656,111 @@ pub struct TopologyData {
     pub edges: Vec<TopologyEdge>,
 }
 
+/// Column metadata for ALTER TABLE impact previews.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlterTablePreviewColumn {
+    pub name: String,
+    pub data_type: String,
+    pub is_primary_key: bool,
+    pub is_nullable: bool,
+    /// unchanged | added | removed | modified | renamed
+    pub status: String,
+    pub detail: Option<String>,
+}
+
+/// One table card rendered in the ALTER TABLE impact preview graph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlterTablePreviewNode {
+    pub id: String,
+    pub schema: String,
+    pub table_name: String,
+    pub row_count: i64,
+    /// current | proposed | dependency | dependent | related
+    pub role: String,
+    pub note: Option<String>,
+    pub columns: Vec<AlterTablePreviewColumn>,
+}
+
+/// One relationship edge rendered in the ALTER TABLE impact preview graph.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlterTablePreviewEdge {
+    pub id: String,
+    pub constraint_name: String,
+    pub from_node_id: String,
+    pub from_column: String,
+    pub to_node_id: String,
+    pub to_column: String,
+    /// current | proposed
+    pub phase: String,
+    /// unchanged | added | removed | changed
+    pub impact: String,
+}
+
+/// Human-readable change extracted from an ALTER TABLE statement.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlterTableChange {
+    pub kind: String,
+    pub title: String,
+    pub detail: String,
+    pub column: Option<String>,
+    pub next_column: Option<String>,
+    pub destructive: bool,
+    pub impacts_data: bool,
+}
+
+/// Risk finding produced by the ALTER TABLE assessment engine.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlterTableRisk {
+    /// info | warn | block
+    pub severity: String,
+    pub title: String,
+    pub detail: String,
+    pub mitigation: Option<String>,
+}
+
+/// Safer or more operationally-friendly migration alternative.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlterTableAlternative {
+    pub title: String,
+    pub summary: String,
+    pub sql: String,
+    pub reason: String,
+}
+
+/// Summary metrics for an ALTER TABLE preview.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlterTableImpactSummary {
+    pub table_type: String,
+    pub row_count: i64,
+    pub total_size: String,
+    pub table_size: String,
+    pub indexes_size: String,
+    pub index_count: usize,
+    pub trigger_count: usize,
+    pub incoming_relations: usize,
+    pub outgoing_relations: usize,
+    pub operation_count: usize,
+    /// low | medium | high | critical
+    pub risk_level: String,
+    pub risk_score: u8,
+}
+
+/// Full payload for the interactive ALTER TABLE preview experience.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AlterTablePreview {
+    pub focus_schema: String,
+    pub focus_table: String,
+    pub focus_schema_after: String,
+    pub focus_table_after: String,
+    pub summary: AlterTableImpactSummary,
+    pub nodes: Vec<AlterTablePreviewNode>,
+    pub edges: Vec<AlterTablePreviewEdge>,
+    pub changes: Vec<AlterTableChange>,
+    pub risks: Vec<AlterTableRisk>,
+    pub alternatives: Vec<AlterTableAlternative>,
+    pub warnings: Vec<String>,
+}
+
 // ─── SQL Export ─────────────────────────────────────────────────────────────────
 
 /// What to include in the SQL export.

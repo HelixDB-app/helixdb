@@ -283,6 +283,18 @@ pub async fn db_get_schema_topology(
     queries::get_schema_topology(&pool, &schema).await
 }
 
+/// Build an ALTER TABLE preview with a dependency graph, risk assessment, and alternatives.
+#[tauri::command]
+pub async fn db_preview_alter_table(
+    state: State<'_, AppState>,
+    connection_id: String,
+    sql: String,
+    fallback_schema: Option<String>,
+) -> Result<AlterTablePreview, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::preview_alter_table(&pool, &sql, fallback_schema.as_deref()).await
+}
+
 /// Get columns for a table (with caching)
 #[tauri::command]
 pub async fn db_get_columns(

@@ -1,5 +1,6 @@
 import { callGeminiSync, type GeminiModelId, GEMINI_MODELS } from "@/lib/ai-chat-engine";
 import { AIError } from "@/lib/ai-chat-engine";
+import { geminiLogger, withGeminiLogging } from "@/lib/gemini-logger";
 import { notifyNoInternetDetected } from "@/lib/network-errors";
 import { isTauriRuntime } from "@/lib/runtime";
 import { aiSuggestionsWorkerPost } from "@/lib/tauri";
@@ -167,9 +168,41 @@ async function runCloudflareCommand(
         skipCache: true,
     };
 
-    const data = await postJson(workerUrl, body, signal);
-    const raw = typeof data === "string" ? data : extractWorkerResponseText(data);
-    return extractAiResponse(raw);
+    const requestTimestamp = new Date().toISOString();
+    const start = Date.now();
+    try {
+        const data = await postJson(workerUrl, body, signal);
+        const raw = typeof data === "string" ? data : extractWorkerResponseText(data);
+        const workerProvider =
+            model.startsWith("@cf/") ? "cloudflare_workers" : "custom_http_worker";
+        geminiLogger.log({
+            model,
+            featureType: "ai_command",
+            endpoint: "worker_chat",
+            requestTimestamp,
+            responseTime: Date.now() - start,
+            status: "success",
+            provider: workerProvider,
+            stream: false,
+        });
+        return extractAiResponse(raw);
+    } catch (error: unknown) {
+        const isAbort = error instanceof DOMException && error.name === "AbortError";
+        const workerProvider =
+            model.startsWith("@cf/") ? "cloudflare_workers" : "custom_http_worker";
+        geminiLogger.log({
+            model,
+            featureType: "ai_command",
+            endpoint: "worker_chat",
+            requestTimestamp,
+            responseTime: Date.now() - start,
+            status: isAbort ? "aborted" : "error",
+            errorMessage: error instanceof Error ? error.message : String(error),
+            provider: workerProvider,
+            stream: false,
+        });
+        throw error;
+    }
 }
 
 async function runGeminiCommand(
@@ -188,13 +221,22 @@ async function runGeminiCommand(
     const systemPrompt = buildSystemPrompt(Boolean(selectionText), language);
     const userPrompt = buildUserPrompt(instruction, fullText, selectionText);
 
-    const raw = await callGeminiSync(
-        model,
-        apiKey,
-        [{ role: "user", parts: [{ text: userPrompt }] }],
-        systemPrompt,
-        signal,
-        { maxOutputTokens: 4096 }
+    const raw = await withGeminiLogging(
+        () =>
+            callGeminiSync(
+                model,
+                apiKey,
+                [{ role: "user", parts: [{ text: userPrompt }] }],
+                systemPrompt,
+                signal,
+                { maxOutputTokens: 4096 }
+            ),
+        {
+            model,
+            featureType: "ai_command",
+            endpoint: "generateContent",
+            provider: "google_gemini",
+        }
     );
     return extractAiResponse(raw);
 }

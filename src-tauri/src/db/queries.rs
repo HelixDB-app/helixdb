@@ -1,5 +1,7 @@
 use deadpool_postgres::Pool;
 use log::{debug, warn};
+use once_cell::sync::Lazy;
+use regex::Regex;
 use rust_decimal::Decimal;
 use std::collections::{HashMap, HashSet};
 use std::error::Error as StdError;
@@ -5936,6 +5938,2215 @@ pub async fn get_schema_topology(pool: &Arc<Pool>, schema: &str) -> Result<Topol
             Err("Topology query timed out after 15 seconds. The database may be slow or unreachable.".to_string())
         }
     }
+}
+
+// ALTER TABLE preview
+// ──────────────────────────────────────────────────────────────────────────────
+
+const ALTER_IDENT_RE: &str = r#"(?:\"(?:[^\"]|\"\")*\"|[A-Za-z_][A-Za-z0-9_$]*)"#;
+
+static ALTER_TABLE_HEADER_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        &format!(
+            r#"(?is)^\s*alter\s+table(?:\s+if\s+exists)?(?:\s+only)?\s+({ident}(?:\s*\.\s*{ident})?)\s+(.*?)\s*;?\s*$"#,
+            ident = ALTER_IDENT_RE
+        ),
+    )
+    .unwrap()
+});
+
+static ALTER_ADD_COLUMN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        &format!(
+            r#"(?is)^add\s+column(?:\s+if\s+not\s+exists)?\s+({ident})\s+(.+)$"#,
+            ident = ALTER_IDENT_RE
+        ),
+    )
+    .unwrap()
+});
+
+static ALTER_DROP_COLUMN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        &format!(
+            r#"(?is)^drop\s+column(?:\s+if\s+exists)?\s+({ident})(?:\s+cascade)?$"#,
+            ident = ALTER_IDENT_RE
+        ),
+    )
+    .unwrap()
+});
+
+static ALTER_RENAME_COLUMN_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        &format!(
+            r#"(?is)^rename\s+column\s+({ident})\s+to\s+({ident})$"#,
+            ident = ALTER_IDENT_RE
+        ),
+    )
+    .unwrap()
+});
+
+static ALTER_COLUMN_TYPE_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        &format!(
+            r#"(?is)^alter\s+column\s+({ident})\s+(?:set\s+data\s+type|type)\s+(.+)$"#,
+            ident = ALTER_IDENT_RE
+        ),
+    )
+    .unwrap()
+});
+
+static ALTER_SET_NOT_NULL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        &format!(
+            r#"(?is)^alter\s+column\s+({ident})\s+set\s+not\s+null$"#,
+            ident = ALTER_IDENT_RE
+        ),
+    )
+    .unwrap()
+});
+
+static ALTER_DROP_NOT_NULL_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        &format!(
+            r#"(?is)^alter\s+column\s+({ident})\s+drop\s+not\s+null$"#,
+            ident = ALTER_IDENT_RE
+        ),
+    )
+    .unwrap()
+});
+
+static ALTER_SET_DEFAULT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        &format!(
+            r#"(?is)^alter\s+column\s+({ident})\s+set\s+default\s+(.+)$"#,
+            ident = ALTER_IDENT_RE
+        ),
+    )
+    .unwrap()
+});
+
+static ALTER_DROP_DEFAULT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        &format!(
+            r#"(?is)^alter\s+column\s+({ident})\s+drop\s+default$"#,
+            ident = ALTER_IDENT_RE
+        ),
+    )
+    .unwrap()
+});
+
+static ALTER_ADD_CONSTRAINT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        &format!(
+            r#"(?is)^add\s+constraint\s+({ident})\s+(.+)$"#,
+            ident = ALTER_IDENT_RE
+        ),
+    )
+    .unwrap()
+});
+
+static ALTER_ADD_FOREIGN_KEY_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r#"(?is)^add\s+foreign\s+key\s*\((.*?)\)\s+references\s+(.+)$"#).unwrap()
+});
+
+static ALTER_ADD_PRIMARY_KEY_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?is)^add\s+primary\s+key\s*\((.*?)\)(.*)$"#).unwrap());
+
+static ALTER_ADD_UNIQUE_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?is)^add\s+unique\s*\((.*?)\)(.*)$"#).unwrap());
+
+static ALTER_DROP_CONSTRAINT_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        &format!(
+            r#"(?is)^drop\s+constraint(?:\s+if\s+exists)?\s+({ident})(?:\s+cascade)?$"#,
+            ident = ALTER_IDENT_RE
+        ),
+    )
+    .unwrap()
+});
+
+static ALTER_RENAME_TABLE_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?is)^rename\s+to\s+(.+)$"#).unwrap());
+
+static ALTER_SET_SCHEMA_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?is)^set\s+schema\s+(.+)$"#).unwrap());
+
+static FOREIGN_KEY_PAYLOAD_RE: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(
+        &format!(
+            r#"(?is)^foreign\s+key\s*\((.*?)\)\s+references\s+({ident}(?:\s*\.\s*{ident})?)\s*\((.*?)\)(.*)$"#,
+            ident = ALTER_IDENT_RE
+        ),
+    )
+    .unwrap()
+});
+
+static PRIMARY_KEY_PAYLOAD_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?is)^primary\s+key\s*\((.*?)\)(.*)$"#).unwrap());
+
+static UNIQUE_PAYLOAD_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r#"(?is)^unique\s*\((.*?)\)(.*)$"#).unwrap());
+
+#[derive(Debug, Clone)]
+struct ParsedAlterTableStatement {
+    schema: String,
+    table: String,
+    operations: Vec<ParsedAlterOperation>,
+}
+
+#[derive(Debug, Clone)]
+enum ParsedAlterOperation {
+    AddColumn {
+        name: String,
+        data_type: String,
+        not_null: bool,
+        default_expr: Option<String>,
+    },
+    DropColumn {
+        name: String,
+    },
+    RenameColumn {
+        from: String,
+        to: String,
+    },
+    AlterColumnType {
+        name: String,
+        data_type: String,
+    },
+    SetNotNull {
+        name: String,
+    },
+    DropNotNull {
+        name: String,
+    },
+    SetDefault {
+        name: String,
+        default_expr: String,
+    },
+    DropDefault {
+        name: String,
+    },
+    AddConstraint {
+        name: Option<String>,
+        constraint_kind: String,
+        columns: Vec<String>,
+        ref_schema: Option<String>,
+        ref_table: Option<String>,
+        ref_columns: Vec<String>,
+        not_valid: bool,
+        detail: String,
+    },
+    DropConstraint {
+        name: String,
+    },
+    RenameTable {
+        to: String,
+    },
+    SetSchema {
+        schema: String,
+    },
+    Raw {
+        detail: String,
+    },
+}
+
+#[derive(Debug, Clone)]
+struct WorkingPreviewColumn {
+    name: String,
+    data_type: String,
+    is_primary_key: bool,
+    is_nullable: bool,
+}
+
+#[derive(Debug, Clone)]
+struct WorkingEdge {
+    constraint_name: String,
+    from_schema: String,
+    from_table: String,
+    from_column: String,
+    to_schema: String,
+    to_table: String,
+    to_column: String,
+}
+
+fn normalize_ident_key(value: &str) -> String {
+    value.to_lowercase()
+}
+
+fn parse_identifier_path(raw: &str) -> Result<Vec<String>, String> {
+    let chars: Vec<char> = raw.trim().chars().collect();
+    let mut out = Vec::new();
+    let mut i = 0usize;
+
+    while i < chars.len() {
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        if i >= chars.len() {
+            break;
+        }
+
+        if chars[i] == '"' {
+            i += 1;
+            let mut token = String::new();
+            while i < chars.len() {
+                if chars[i] == '"' {
+                    if i + 1 < chars.len() && chars[i + 1] == '"' {
+                        token.push('"');
+                        i += 2;
+                        continue;
+                    }
+                    i += 1;
+                    break;
+                }
+                token.push(chars[i]);
+                i += 1;
+            }
+            out.push(token);
+        } else {
+            let mut token = String::new();
+            while i < chars.len() {
+                let ch = chars[i];
+                if ch.is_ascii_alphanumeric() || ch == '_' || ch == '$' {
+                    token.push(ch);
+                    i += 1;
+                    continue;
+                }
+                break;
+            }
+            if token.is_empty() {
+                return Err(format!("Could not parse identifier in `{}`.", raw.trim()));
+            }
+            out.push(token.to_lowercase());
+        }
+
+        while i < chars.len() && chars[i].is_whitespace() {
+            i += 1;
+        }
+        if i >= chars.len() {
+            break;
+        }
+        if chars[i] != '.' {
+            return Err(format!("Unexpected token in identifier `{}`.", raw.trim()));
+        }
+        i += 1;
+    }
+
+    if out.is_empty() {
+        return Err("No table identifier was found in ALTER TABLE statement.".to_string());
+    }
+    Ok(out)
+}
+
+fn read_dollar_tag(rest: &str) -> Option<&str> {
+    let bytes = rest.as_bytes();
+    if bytes.first().copied() != Some(b'$') {
+        return None;
+    }
+    if bytes.len() >= 2 && bytes[1] == b'$' {
+        return Some("$$");
+    }
+    let mut idx = 1usize;
+    if idx >= bytes.len() || !(bytes[idx].is_ascii_alphabetic() || bytes[idx] == b'_') {
+        return None;
+    }
+    idx += 1;
+    while idx < bytes.len() && (bytes[idx].is_ascii_alphanumeric() || bytes[idx] == b'_') {
+        idx += 1;
+    }
+    if idx < bytes.len() && bytes[idx] == b'$' {
+        return rest.get(..=idx);
+    }
+    None
+}
+
+fn split_top_level_commas(text: &str) -> Vec<String> {
+    let mut parts = Vec::new();
+    let mut start = 0usize;
+    let mut i = 0usize;
+    let mut depth = 0i32;
+    let mut in_single = false;
+    let mut in_double = false;
+    let mut in_line_comment = false;
+    let mut in_block_comment = false;
+    let mut dollar_tag: Option<String> = None;
+    let bytes = text.as_bytes();
+
+    while i < bytes.len() {
+        let ch = bytes[i];
+        let next = bytes.get(i + 1).copied();
+
+        if in_line_comment {
+            if ch == b'\n' {
+                in_line_comment = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_block_comment {
+            if ch == b'*' && next == Some(b'/') {
+                in_block_comment = false;
+                i += 2;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if let Some(tag) = &dollar_tag {
+            if bytes[i..].starts_with(tag.as_bytes()) {
+                i += tag.len();
+                dollar_tag = None;
+                continue;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_single {
+            if ch == b'\'' && next == Some(b'\'') {
+                i += 2;
+                continue;
+            }
+            if ch == b'\'' {
+                in_single = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if in_double {
+            if ch == b'"' && next == Some(b'"') {
+                i += 2;
+                continue;
+            }
+            if ch == b'"' {
+                in_double = false;
+            }
+            i += 1;
+            continue;
+        }
+
+        if ch == b'-' && next == Some(b'-') {
+            in_line_comment = true;
+            i += 2;
+            continue;
+        }
+        if ch == b'/' && next == Some(b'*') {
+            in_block_comment = true;
+            i += 2;
+            continue;
+        }
+        if ch == b'\'' {
+            in_single = true;
+            i += 1;
+            continue;
+        }
+        if ch == b'"' {
+            in_double = true;
+            i += 1;
+            continue;
+        }
+        if ch == b'$' {
+            if let Some(rest) = text.get(i..) {
+                if let Some(tag) = read_dollar_tag(rest) {
+                    dollar_tag = Some(tag.to_string());
+                    i += tag.len();
+                    continue;
+                }
+            }
+        }
+
+        if ch == b'(' {
+            depth += 1;
+            i += 1;
+            continue;
+        }
+        if ch == b')' {
+            depth = (depth - 1).max(0);
+            i += 1;
+            continue;
+        }
+
+        if ch == b',' && depth == 0 {
+            let part = text[start..i].trim();
+            if !part.is_empty() {
+                parts.push(part.to_string());
+            }
+            start = i + 1;
+        }
+        i += 1;
+    }
+
+    let tail = text[start..].trim();
+    if !tail.is_empty() {
+        parts.push(tail.to_string());
+    }
+    parts
+}
+
+fn parse_identifier_list(raw: &str) -> Vec<String> {
+    split_top_level_commas(raw)
+        .into_iter()
+        .filter_map(|part| parse_identifier_path(&part).ok().and_then(|parts| parts.last().cloned()))
+        .collect()
+}
+
+fn extract_column_definition_parts(definition: &str) -> (String, bool, Option<String>) {
+    let trimmed = definition.trim();
+    let lower = trimmed.to_lowercase();
+    let mut cut_points = Vec::new();
+    for marker in [
+        " default ",
+        " not null",
+        " null",
+        " constraint ",
+        " primary key",
+        " references ",
+        " check ",
+        " unique",
+    ] {
+        if let Some(idx) = lower.find(marker) {
+            cut_points.push(idx);
+        }
+    }
+
+    let data_type = cut_points
+        .into_iter()
+        .min()
+        .map(|idx| trimmed[..idx].trim().to_string())
+        .filter(|value| !value.is_empty())
+        .unwrap_or_else(|| trimmed.to_string());
+
+    let default_expr = lower
+        .find(" default ")
+        .map(|idx| trimmed[idx + " default ".len()..].trim().to_string())
+        .filter(|value| !value.is_empty());
+
+    (data_type, lower.contains("not null"), default_expr)
+}
+
+fn parse_add_constraint_payload(name: Option<String>, payload: &str) -> ParsedAlterOperation {
+    let detail = payload.trim().to_string();
+    if let Some(caps) = FOREIGN_KEY_PAYLOAD_RE.captures(payload) {
+        let ref_path = caps.get(2).map(|m| m.as_str()).unwrap_or_default();
+        let ref_parts = parse_identifier_path(ref_path).unwrap_or_default();
+        let (ref_schema, ref_table) = match ref_parts.as_slice() {
+            [table] => (None, Some(table.clone())),
+            [schema, table] => (Some(schema.clone()), Some(table.clone())),
+            _ => (None, None),
+        };
+        return ParsedAlterOperation::AddConstraint {
+            name,
+            constraint_kind: "foreign_key".to_string(),
+            columns: parse_identifier_list(caps.get(1).map(|m| m.as_str()).unwrap_or_default()),
+            ref_schema,
+            ref_table,
+            ref_columns: parse_identifier_list(caps.get(3).map(|m| m.as_str()).unwrap_or_default()),
+            not_valid: caps
+                .get(4)
+                .map(|m| m.as_str().to_lowercase().contains("not valid"))
+                .unwrap_or(false),
+            detail,
+        };
+    }
+
+    if let Some(caps) = PRIMARY_KEY_PAYLOAD_RE.captures(payload) {
+        return ParsedAlterOperation::AddConstraint {
+            name,
+            constraint_kind: "primary_key".to_string(),
+            columns: parse_identifier_list(caps.get(1).map(|m| m.as_str()).unwrap_or_default()),
+            ref_schema: None,
+            ref_table: None,
+            ref_columns: Vec::new(),
+            not_valid: false,
+            detail,
+        };
+    }
+
+    if let Some(caps) = UNIQUE_PAYLOAD_RE.captures(payload) {
+        return ParsedAlterOperation::AddConstraint {
+            name,
+            constraint_kind: "unique".to_string(),
+            columns: parse_identifier_list(caps.get(1).map(|m| m.as_str()).unwrap_or_default()),
+            ref_schema: None,
+            ref_table: None,
+            ref_columns: Vec::new(),
+            not_valid: false,
+            detail,
+        };
+    }
+
+    let lower = payload.trim().to_lowercase();
+    let constraint_kind = if lower.starts_with("check ") || lower.starts_with("check(") {
+        "check"
+    } else {
+        "other"
+    };
+
+    ParsedAlterOperation::AddConstraint {
+        name,
+        constraint_kind: constraint_kind.to_string(),
+        columns: Vec::new(),
+        ref_schema: None,
+        ref_table: None,
+        ref_columns: Vec::new(),
+        not_valid: false,
+        detail,
+    }
+}
+
+fn parse_alter_operation(raw: &str) -> Result<ParsedAlterOperation, String> {
+    let text = raw.trim().trim_end_matches(';').trim();
+    if let Some(caps) = ALTER_RENAME_COLUMN_RE.captures(text) {
+        return Ok(ParsedAlterOperation::RenameColumn {
+            from: parse_identifier_path(caps.get(1).unwrap().as_str())?
+                .last()
+                .cloned()
+                .unwrap_or_default(),
+            to: parse_identifier_path(caps.get(2).unwrap().as_str())?
+                .last()
+                .cloned()
+                .unwrap_or_default(),
+        });
+    }
+
+    if let Some(caps) = ALTER_COLUMN_TYPE_RE.captures(text) {
+        return Ok(ParsedAlterOperation::AlterColumnType {
+            name: parse_identifier_path(caps.get(1).unwrap().as_str())?
+                .last()
+                .cloned()
+                .unwrap_or_default(),
+            data_type: caps.get(2).unwrap().as_str().trim().to_string(),
+        });
+    }
+
+    if let Some(caps) = ALTER_SET_NOT_NULL_RE.captures(text) {
+        return Ok(ParsedAlterOperation::SetNotNull {
+            name: parse_identifier_path(caps.get(1).unwrap().as_str())?
+                .last()
+                .cloned()
+                .unwrap_or_default(),
+        });
+    }
+
+    if let Some(caps) = ALTER_DROP_NOT_NULL_RE.captures(text) {
+        return Ok(ParsedAlterOperation::DropNotNull {
+            name: parse_identifier_path(caps.get(1).unwrap().as_str())?
+                .last()
+                .cloned()
+                .unwrap_or_default(),
+        });
+    }
+
+    if let Some(caps) = ALTER_SET_DEFAULT_RE.captures(text) {
+        return Ok(ParsedAlterOperation::SetDefault {
+            name: parse_identifier_path(caps.get(1).unwrap().as_str())?
+                .last()
+                .cloned()
+                .unwrap_or_default(),
+            default_expr: caps.get(2).unwrap().as_str().trim().to_string(),
+        });
+    }
+
+    if let Some(caps) = ALTER_DROP_DEFAULT_RE.captures(text) {
+        return Ok(ParsedAlterOperation::DropDefault {
+            name: parse_identifier_path(caps.get(1).unwrap().as_str())?
+                .last()
+                .cloned()
+                .unwrap_or_default(),
+        });
+    }
+
+    if let Some(caps) = ALTER_ADD_COLUMN_RE.captures(text) {
+        let (data_type, not_null, default_expr) =
+            extract_column_definition_parts(caps.get(2).unwrap().as_str());
+        return Ok(ParsedAlterOperation::AddColumn {
+            name: parse_identifier_path(caps.get(1).unwrap().as_str())?
+                .last()
+                .cloned()
+                .unwrap_or_default(),
+            data_type,
+            not_null,
+            default_expr,
+        });
+    }
+
+    if let Some(caps) = ALTER_DROP_COLUMN_RE.captures(text) {
+        return Ok(ParsedAlterOperation::DropColumn {
+            name: parse_identifier_path(caps.get(1).unwrap().as_str())?
+                .last()
+                .cloned()
+                .unwrap_or_default(),
+        });
+    }
+
+    if let Some(caps) = ALTER_ADD_CONSTRAINT_RE.captures(text) {
+        let name = parse_identifier_path(caps.get(1).unwrap().as_str())?
+            .last()
+            .cloned();
+        return Ok(parse_add_constraint_payload(
+            name,
+            caps.get(2).unwrap().as_str(),
+        ));
+    }
+
+    if let Some(caps) = ALTER_ADD_FOREIGN_KEY_RE.captures(text) {
+        return Ok(parse_add_constraint_payload(None, &format!("FOREIGN KEY ({}) REFERENCES {}", caps.get(1).map(|m| m.as_str()).unwrap_or_default(), caps.get(2).map(|m| m.as_str()).unwrap_or_default())));
+    }
+
+    if let Some(caps) = ALTER_ADD_PRIMARY_KEY_RE.captures(text) {
+        return Ok(parse_add_constraint_payload(
+            None,
+            &format!("PRIMARY KEY ({})", caps.get(1).map(|m| m.as_str()).unwrap_or_default()),
+        ));
+    }
+
+    if let Some(caps) = ALTER_ADD_UNIQUE_RE.captures(text) {
+        return Ok(parse_add_constraint_payload(
+            None,
+            &format!("UNIQUE ({})", caps.get(1).map(|m| m.as_str()).unwrap_or_default()),
+        ));
+    }
+
+    if let Some(caps) = ALTER_DROP_CONSTRAINT_RE.captures(text) {
+        return Ok(ParsedAlterOperation::DropConstraint {
+            name: parse_identifier_path(caps.get(1).unwrap().as_str())?
+                .last()
+                .cloned()
+                .unwrap_or_default(),
+        });
+    }
+
+    if let Some(caps) = ALTER_RENAME_TABLE_RE.captures(text) {
+        return Ok(ParsedAlterOperation::RenameTable {
+            to: parse_identifier_path(caps.get(1).unwrap().as_str())?
+                .last()
+                .cloned()
+                .unwrap_or_default(),
+        });
+    }
+
+    if let Some(caps) = ALTER_SET_SCHEMA_RE.captures(text) {
+        return Ok(ParsedAlterOperation::SetSchema {
+            schema: parse_identifier_path(caps.get(1).unwrap().as_str())?
+                .last()
+                .cloned()
+                .unwrap_or_default(),
+        });
+    }
+
+    Ok(ParsedAlterOperation::Raw {
+        detail: text.to_string(),
+    })
+}
+
+fn parse_alter_table_statement(
+    sql: &str,
+    fallback_schema: Option<&str>,
+) -> Result<ParsedAlterTableStatement, String> {
+    let trimmed = sql.trim();
+    let caps = ALTER_TABLE_HEADER_RE
+        .captures(trimmed)
+        .ok_or_else(|| "Only a single ALTER TABLE statement can be previewed right now.".to_string())?;
+
+    let ident = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
+    let body = caps.get(2).map(|m| m.as_str()).unwrap_or_default();
+    let path = parse_identifier_path(ident)?;
+    let (schema, table) = match path.as_slice() {
+        [table] => (
+            fallback_schema.unwrap_or("public").to_string(),
+            table.clone(),
+        ),
+        [schema, table] => (schema.clone(), table.clone()),
+        _ => {
+            return Err(format!(
+                "Could not determine the target table from `{}`.",
+                ident.trim()
+            ))
+        }
+    };
+
+    let operations = split_top_level_commas(body)
+        .into_iter()
+        .map(|fragment| parse_alter_operation(&fragment))
+        .collect::<Result<Vec<_>, _>>()?;
+
+    Ok(ParsedAlterTableStatement {
+        schema,
+        table,
+        operations,
+    })
+}
+
+fn annotation_rank(status: &str) -> u8 {
+    match status {
+        "removed" => 5,
+        "added" => 5,
+        "renamed" => 4,
+        "modified" => 3,
+        _ => 1,
+    }
+}
+
+fn record_annotation(
+    map: &mut HashMap<String, (String, Vec<String>)>,
+    key: &str,
+    status: &str,
+    detail: impl Into<String>,
+) {
+    let entry = map
+        .entry(normalize_ident_key(key))
+        .or_insert_with(|| ("unchanged".to_string(), Vec::new()));
+    if annotation_rank(status) > annotation_rank(&entry.0) {
+        entry.0 = status.to_string();
+    }
+    let detail_text = detail.into();
+    if !detail_text.is_empty() && !entry.1.iter().any(|existing| existing == &detail_text) {
+        entry.1.push(detail_text);
+    }
+}
+
+fn move_annotation(
+    map: &mut HashMap<String, (String, Vec<String>)>,
+    from: &str,
+    to: &str,
+    extra_status: &str,
+    extra_detail: impl Into<String>,
+) {
+    let from_key = normalize_ident_key(from);
+    let to_key = normalize_ident_key(to);
+    if let Some(value) = map.remove(&from_key) {
+        map.insert(to_key.clone(), value);
+    }
+    record_annotation(map, &to_key, extra_status, extra_detail);
+}
+
+fn build_preview_column(
+    column: &WorkingPreviewColumn,
+    annotations: &HashMap<String, (String, Vec<String>)>,
+) -> AlterTablePreviewColumn {
+    let normalized = normalize_ident_key(&column.name);
+    let (status, details) = annotations
+        .get(&normalized)
+        .cloned()
+        .unwrap_or_else(|| ("unchanged".to_string(), Vec::new()));
+    AlterTablePreviewColumn {
+        name: column.name.clone(),
+        data_type: column.data_type.clone(),
+        is_primary_key: column.is_primary_key,
+        is_nullable: column.is_nullable,
+        status,
+        detail: if details.is_empty() {
+            None
+        } else {
+            Some(details.join(" • "))
+        },
+    }
+}
+
+fn find_working_column_mut<'a>(
+    columns: &'a mut [WorkingPreviewColumn],
+    name: &str,
+) -> Option<&'a mut WorkingPreviewColumn> {
+    let key = normalize_ident_key(name);
+    columns
+        .iter_mut()
+        .find(|column| normalize_ident_key(&column.name) == key)
+}
+
+fn project_preview_columns(
+    details: &TableDetails,
+    operations: &[ParsedAlterOperation],
+) -> (Vec<AlterTablePreviewColumn>, Vec<AlterTablePreviewColumn>) {
+    let current_working: Vec<WorkingPreviewColumn> = details
+        .columns
+        .iter()
+        .map(|column| WorkingPreviewColumn {
+            name: column.name.clone(),
+            data_type: column.data_type.clone(),
+            is_primary_key: column.is_primary_key,
+            is_nullable: column.is_nullable,
+        })
+        .collect();
+    let mut proposed_working = current_working.clone();
+
+    let mut before_annotations: HashMap<String, (String, Vec<String>)> = HashMap::new();
+    let mut after_annotations: HashMap<String, (String, Vec<String>)> = HashMap::new();
+
+    for operation in operations {
+        match operation {
+            ParsedAlterOperation::AddColumn {
+                name,
+                data_type,
+                not_null,
+                default_expr,
+            } => {
+                proposed_working.push(WorkingPreviewColumn {
+                    name: name.clone(),
+                    data_type: data_type.clone(),
+                    is_primary_key: false,
+                    is_nullable: !not_null,
+                });
+                let mut detail = format!("New {} column", data_type);
+                if let Some(default_value) = default_expr {
+                    detail.push_str(&format!(" with default {}", default_value));
+                }
+                if *not_null {
+                    detail.push_str(" (NOT NULL)");
+                }
+                record_annotation(&mut after_annotations, name, "added", detail);
+            }
+            ParsedAlterOperation::DropColumn { name } => {
+                proposed_working
+                    .retain(|column| normalize_ident_key(&column.name) != normalize_ident_key(name));
+                record_annotation(&mut before_annotations, name, "removed", "Will be dropped");
+            }
+            ParsedAlterOperation::RenameColumn { from, to } => {
+                if let Some(column) = find_working_column_mut(&mut proposed_working, from) {
+                    column.name = to.clone();
+                }
+                record_annotation(
+                    &mut before_annotations,
+                    from,
+                    "renamed",
+                    format!("Renamed to {}", to),
+                );
+                move_annotation(
+                    &mut after_annotations,
+                    from,
+                    to,
+                    "renamed",
+                    format!("Renamed from {}", from),
+                );
+            }
+            ParsedAlterOperation::AlterColumnType { name, data_type } => {
+                if let Some(column) = find_working_column_mut(&mut proposed_working, name) {
+                    let previous = column.data_type.clone();
+                    column.data_type = data_type.clone();
+                    record_annotation(
+                        &mut after_annotations,
+                        name,
+                        "modified",
+                        format!("Type {} → {}", previous, data_type),
+                    );
+                }
+                record_annotation(
+                    &mut before_annotations,
+                    name,
+                    "modified",
+                    format!("Type will become {}", data_type),
+                );
+            }
+            ParsedAlterOperation::SetNotNull { name } => {
+                if let Some(column) = find_working_column_mut(&mut proposed_working, name) {
+                    column.is_nullable = false;
+                }
+                record_annotation(
+                    &mut before_annotations,
+                    name,
+                    "modified",
+                    "Will become NOT NULL",
+                );
+                record_annotation(&mut after_annotations, name, "modified", "NOT NULL");
+            }
+            ParsedAlterOperation::DropNotNull { name } => {
+                if let Some(column) = find_working_column_mut(&mut proposed_working, name) {
+                    column.is_nullable = true;
+                }
+                record_annotation(
+                    &mut before_annotations,
+                    name,
+                    "modified",
+                    "Will allow NULL values",
+                );
+                record_annotation(&mut after_annotations, name, "modified", "Nullable");
+            }
+            ParsedAlterOperation::SetDefault { name, default_expr } => {
+                record_annotation(
+                    &mut before_annotations,
+                    name,
+                    "modified",
+                    format!("Default will be set to {}", default_expr),
+                );
+                record_annotation(
+                    &mut after_annotations,
+                    name,
+                    "modified",
+                    format!("Default {}", default_expr),
+                );
+            }
+            ParsedAlterOperation::DropDefault { name } => {
+                record_annotation(
+                    &mut before_annotations,
+                    name,
+                    "modified",
+                    "Default will be removed",
+                );
+                record_annotation(
+                    &mut after_annotations,
+                    name,
+                    "modified",
+                    "Default removed",
+                );
+            }
+            ParsedAlterOperation::AddConstraint {
+                constraint_kind,
+                columns,
+                ref_table,
+                ..
+            } => {
+                let detail = if constraint_kind == "foreign_key" {
+                    format!(
+                        "New foreign key to {}",
+                        ref_table.clone().unwrap_or_else(|| "another table".to_string())
+                    )
+                } else {
+                    format!("New {} constraint", constraint_kind.replace('_', " "))
+                };
+                for column in columns {
+                    record_annotation(&mut after_annotations, column, "modified", detail.clone());
+                }
+            }
+            ParsedAlterOperation::DropConstraint { name } => {
+                let columns = constraint_columns_by_name(details, name);
+                if columns.is_empty() {
+                    record_annotation(
+                        &mut before_annotations,
+                        name,
+                        "modified",
+                        format!("Constraint {} will be dropped", name),
+                    );
+                } else {
+                    for column in columns {
+                        record_annotation(
+                            &mut before_annotations,
+                            &column,
+                            "modified",
+                            format!("Constraint {} will be dropped", name),
+                        );
+                    }
+                }
+            }
+            ParsedAlterOperation::RenameTable { .. }
+            | ParsedAlterOperation::SetSchema { .. }
+            | ParsedAlterOperation::Raw { .. } => {}
+        }
+    }
+
+    let current_columns = current_working
+        .iter()
+        .map(|column| build_preview_column(column, &before_annotations))
+        .collect();
+    let proposed_columns = proposed_working
+        .iter()
+        .map(|column| build_preview_column(column, &after_annotations))
+        .collect();
+
+    (current_columns, proposed_columns)
+}
+
+fn constraint_columns_by_name(details: &TableDetails, name: &str) -> Vec<String> {
+    let target = normalize_ident_key(name);
+    details
+        .constraints
+        .iter()
+        .find(|constraint| normalize_ident_key(&constraint.name) == target)
+        .map(|constraint| constraint.columns.clone())
+        .unwrap_or_default()
+}
+
+fn project_edges(
+    target_schema: &str,
+    target_table: &str,
+    operations: &[ParsedAlterOperation],
+    current_edges: &[WorkingEdge],
+) -> (String, String, Vec<WorkingEdge>) {
+    let mut focus_schema = target_schema.to_string();
+    let mut focus_table = target_table.to_string();
+    let mut projected = current_edges.to_vec();
+
+    for operation in operations {
+        match operation {
+            ParsedAlterOperation::DropColumn { name } => {
+                let key = normalize_ident_key(name);
+                projected.retain(|edge| {
+                    !((normalize_ident_key(&edge.from_schema) == normalize_ident_key(&focus_schema)
+                        && normalize_ident_key(&edge.from_table) == normalize_ident_key(&focus_table)
+                        && normalize_ident_key(&edge.from_column) == key)
+                        || (normalize_ident_key(&edge.to_schema) == normalize_ident_key(&focus_schema)
+                            && normalize_ident_key(&edge.to_table) == normalize_ident_key(&focus_table)
+                            && normalize_ident_key(&edge.to_column) == key))
+                });
+            }
+            ParsedAlterOperation::RenameColumn { from, to } => {
+                let from_key = normalize_ident_key(from);
+                for edge in &mut projected {
+                    if normalize_ident_key(&edge.from_schema) == normalize_ident_key(&focus_schema)
+                        && normalize_ident_key(&edge.from_table) == normalize_ident_key(&focus_table)
+                        && normalize_ident_key(&edge.from_column) == from_key
+                    {
+                        edge.from_column = to.clone();
+                    }
+                    if normalize_ident_key(&edge.to_schema) == normalize_ident_key(&focus_schema)
+                        && normalize_ident_key(&edge.to_table) == normalize_ident_key(&focus_table)
+                        && normalize_ident_key(&edge.to_column) == from_key
+                    {
+                        edge.to_column = to.clone();
+                    }
+                }
+            }
+            ParsedAlterOperation::DropConstraint { name } => {
+                let key = normalize_ident_key(name);
+                projected.retain(|edge| normalize_ident_key(&edge.constraint_name) != key);
+            }
+            ParsedAlterOperation::AddConstraint {
+                name,
+                constraint_kind,
+                columns,
+                ref_schema,
+                ref_table,
+                ref_columns,
+                ..
+            } if constraint_kind == "foreign_key" => {
+                let referenced_schema = ref_schema.clone().unwrap_or_else(|| focus_schema.clone());
+                let referenced_table = ref_table.clone().unwrap_or_default();
+                for (idx, from_column) in columns.iter().enumerate() {
+                    let to_column = ref_columns
+                        .get(idx)
+                        .cloned()
+                        .unwrap_or_else(|| ref_columns.first().cloned().unwrap_or_else(|| "id".to_string()));
+                    projected.push(WorkingEdge {
+                        constraint_name: name
+                            .clone()
+                            .unwrap_or_else(|| format!("preview_fk_{}", idx + 1)),
+                        from_schema: focus_schema.clone(),
+                        from_table: focus_table.clone(),
+                        from_column: from_column.clone(),
+                        to_schema: referenced_schema.clone(),
+                        to_table: referenced_table.clone(),
+                        to_column,
+                    });
+                }
+            }
+            ParsedAlterOperation::RenameTable { to } => {
+                for edge in &mut projected {
+                    if normalize_ident_key(&edge.from_schema) == normalize_ident_key(&focus_schema)
+                        && normalize_ident_key(&edge.from_table) == normalize_ident_key(&focus_table)
+                    {
+                        edge.from_table = to.clone();
+                    }
+                    if normalize_ident_key(&edge.to_schema) == normalize_ident_key(&focus_schema)
+                        && normalize_ident_key(&edge.to_table) == normalize_ident_key(&focus_table)
+                    {
+                        edge.to_table = to.clone();
+                    }
+                }
+                focus_table = to.clone();
+            }
+            ParsedAlterOperation::SetSchema { schema } => {
+                for edge in &mut projected {
+                    if normalize_ident_key(&edge.from_schema) == normalize_ident_key(&focus_schema)
+                        && normalize_ident_key(&edge.from_table) == normalize_ident_key(&focus_table)
+                    {
+                        edge.from_schema = schema.clone();
+                    }
+                    if normalize_ident_key(&edge.to_schema) == normalize_ident_key(&focus_schema)
+                        && normalize_ident_key(&edge.to_table) == normalize_ident_key(&focus_table)
+                    {
+                        edge.to_schema = schema.clone();
+                    }
+                }
+                focus_schema = schema.clone();
+            }
+            ParsedAlterOperation::AddColumn { .. }
+            | ParsedAlterOperation::AlterColumnType { .. }
+            | ParsedAlterOperation::SetNotNull { .. }
+            | ParsedAlterOperation::DropNotNull { .. }
+            | ParsedAlterOperation::SetDefault { .. }
+            | ParsedAlterOperation::DropDefault { .. }
+            | ParsedAlterOperation::Raw { .. }
+            | ParsedAlterOperation::AddConstraint { .. } => {}
+        }
+    }
+
+    (focus_schema, focus_table, projected)
+}
+
+fn working_edge_exact_key(edge: &WorkingEdge) -> String {
+    format!(
+        "{}|{}.{}.{}|{}.{}.{}",
+        edge.constraint_name,
+        edge.from_schema,
+        edge.from_table,
+        edge.from_column,
+        edge.to_schema,
+        edge.to_table,
+        edge.to_column
+    )
+}
+
+fn build_related_note(role: &str, incoming: usize, outgoing: usize) -> Option<String> {
+    match role {
+        "dependency" => Some(format!("Referenced by the proposed table via {} relationship(s)", outgoing)),
+        "dependent" => Some(format!("Depends on the proposed table via {} relationship(s)", incoming)),
+        "related" => Some(format!(
+            "Bidirectional impact surface: {} incoming / {} outgoing",
+            incoming, outgoing
+        )),
+        _ => None,
+    }
+}
+
+fn describe_change(operation: &ParsedAlterOperation) -> AlterTableChange {
+    match operation {
+        ParsedAlterOperation::AddColumn { name, data_type, .. } => AlterTableChange {
+            kind: "add_column".to_string(),
+            title: format!("Add column {}", name),
+            detail: format!("Adds `{}` as `{}`.", name, data_type),
+            column: Some(name.clone()),
+            next_column: None,
+            destructive: false,
+            impacts_data: false,
+        },
+        ParsedAlterOperation::DropColumn { name } => AlterTableChange {
+            kind: "drop_column".to_string(),
+            title: format!("Drop column {}", name),
+            detail: format!("Removes `{}` and any data stored in it.", name),
+            column: Some(name.clone()),
+            next_column: None,
+            destructive: true,
+            impacts_data: true,
+        },
+        ParsedAlterOperation::RenameColumn { from, to } => AlterTableChange {
+            kind: "rename_column".to_string(),
+            title: format!("Rename {} → {}", from, to),
+            detail: format!("Moves the column name from `{}` to `{}`.", from, to),
+            column: Some(from.clone()),
+            next_column: Some(to.clone()),
+            destructive: false,
+            impacts_data: false,
+        },
+        ParsedAlterOperation::AlterColumnType { name, data_type } => AlterTableChange {
+            kind: "alter_column_type".to_string(),
+            title: format!("Change type for {}", name),
+            detail: format!("Converts `{}` to `{}`.", name, data_type),
+            column: Some(name.clone()),
+            next_column: None,
+            destructive: false,
+            impacts_data: true,
+        },
+        ParsedAlterOperation::SetNotNull { name } => AlterTableChange {
+            kind: "set_not_null".to_string(),
+            title: format!("Require values in {}", name),
+            detail: format!("Makes `{}` mandatory for future writes.", name),
+            column: Some(name.clone()),
+            next_column: None,
+            destructive: false,
+            impacts_data: true,
+        },
+        ParsedAlterOperation::DropNotNull { name } => AlterTableChange {
+            kind: "drop_not_null".to_string(),
+            title: format!("Allow NULL in {}", name),
+            detail: format!("Permits NULL values in `{}`.", name),
+            column: Some(name.clone()),
+            next_column: None,
+            destructive: false,
+            impacts_data: false,
+        },
+        ParsedAlterOperation::SetDefault { name, default_expr } => AlterTableChange {
+            kind: "set_default".to_string(),
+            title: format!("Set default for {}", name),
+            detail: format!("Applies `{}` as the new default for `{}`.", default_expr, name),
+            column: Some(name.clone()),
+            next_column: None,
+            destructive: false,
+            impacts_data: false,
+        },
+        ParsedAlterOperation::DropDefault { name } => AlterTableChange {
+            kind: "drop_default".to_string(),
+            title: format!("Drop default for {}", name),
+            detail: format!("Stops auto-populating `{}` on insert.", name),
+            column: Some(name.clone()),
+            next_column: None,
+            destructive: false,
+            impacts_data: false,
+        },
+        ParsedAlterOperation::AddConstraint {
+            name,
+            constraint_kind,
+            detail,
+            ..
+        } => AlterTableChange {
+            kind: format!("add_{}", constraint_kind),
+            title: format!(
+                "Add {} constraint{}",
+                constraint_kind.replace('_', " "),
+                name.as_ref()
+                    .map(|value| format!(" {}", value))
+                    .unwrap_or_default()
+            ),
+            detail: detail.clone(),
+            column: None,
+            next_column: None,
+            destructive: false,
+            impacts_data: constraint_kind == "foreign_key" || constraint_kind == "primary_key",
+        },
+        ParsedAlterOperation::DropConstraint { name } => AlterTableChange {
+            kind: "drop_constraint".to_string(),
+            title: format!("Drop constraint {}", name),
+            detail: format!("Removes `{}` from the table definition.", name),
+            column: None,
+            next_column: None,
+            destructive: true,
+            impacts_data: true,
+        },
+        ParsedAlterOperation::RenameTable { to } => AlterTableChange {
+            kind: "rename_table".to_string(),
+            title: format!("Rename table to {}", to),
+            detail: format!("Changes the table name to `{}`.", to),
+            column: None,
+            next_column: None,
+            destructive: false,
+            impacts_data: false,
+        },
+        ParsedAlterOperation::SetSchema { schema } => AlterTableChange {
+            kind: "set_schema".to_string(),
+            title: format!("Move table to {}", schema),
+            detail: format!("Moves the table into schema `{}`.", schema),
+            column: None,
+            next_column: None,
+            destructive: false,
+            impacts_data: false,
+        },
+        ParsedAlterOperation::Raw { detail } => AlterTableChange {
+            kind: "raw".to_string(),
+            title: "Custom ALTER operation".to_string(),
+            detail: detail.clone(),
+            column: None,
+            next_column: None,
+            destructive: false,
+            impacts_data: false,
+        },
+    }
+}
+
+fn risk_level_for_score(score: u8) -> String {
+    match score {
+        0..=19 => "low".to_string(),
+        20..=39 => "medium".to_string(),
+        40..=69 => "high".to_string(),
+        _ => "critical".to_string(),
+    }
+}
+
+fn push_risk(
+    risks: &mut Vec<AlterTableRisk>,
+    severity: &str,
+    title: impl Into<String>,
+    detail: impl Into<String>,
+    mitigation: Option<String>,
+) {
+    risks.push(AlterTableRisk {
+        severity: severity.to_string(),
+        title: title.into(),
+        detail: detail.into(),
+        mitigation,
+    });
+}
+
+fn push_unique_alternative(
+    alternatives: &mut Vec<AlterTableAlternative>,
+    seen: &mut HashSet<String>,
+    alternative: AlterTableAlternative,
+) {
+    let key = alternative.title.to_lowercase();
+    if seen.insert(key) {
+        alternatives.push(alternative);
+    }
+}
+
+fn assess_alter_table_risks(
+    details: &TableDetails,
+    operations: &[ParsedAlterOperation],
+    current_edges: &[WorkingEdge],
+    warnings: &[String],
+) -> (u8, Vec<AlterTableRisk>) {
+    let mut score = 5u8;
+    let mut risks = Vec::new();
+    let row_count = details.row_count.max(0);
+    let pk_columns: HashSet<String> = details
+        .columns
+        .iter()
+        .filter(|column| column.is_primary_key)
+        .map(|column| normalize_ident_key(&column.name))
+        .collect();
+
+    let incoming_edges: Vec<&WorkingEdge> = current_edges
+        .iter()
+        .filter(|edge| {
+            normalize_ident_key(&edge.to_schema) == normalize_ident_key(&details.schema)
+                && normalize_ident_key(&edge.to_table) == normalize_ident_key(&details.name)
+        })
+        .collect();
+    let outgoing_edges: Vec<&WorkingEdge> = current_edges
+        .iter()
+        .filter(|edge| {
+            normalize_ident_key(&edge.from_schema) == normalize_ident_key(&details.schema)
+                && normalize_ident_key(&edge.from_table) == normalize_ident_key(&details.name)
+        })
+        .collect();
+
+    let mut touched_columns = HashSet::new();
+    for operation in operations {
+        match operation {
+            ParsedAlterOperation::AddColumn { .. } => {}
+            ParsedAlterOperation::DropColumn { name }
+            | ParsedAlterOperation::SetNotNull { name }
+            | ParsedAlterOperation::DropNotNull { name }
+            | ParsedAlterOperation::DropDefault { name }
+            | ParsedAlterOperation::SetDefault { name, .. }
+            | ParsedAlterOperation::AlterColumnType { name, .. } => {
+                touched_columns.insert(normalize_ident_key(name));
+            }
+            ParsedAlterOperation::RenameColumn { from, to } => {
+                touched_columns.insert(normalize_ident_key(from));
+                touched_columns.insert(normalize_ident_key(to));
+            }
+            ParsedAlterOperation::AddConstraint { columns, .. } => {
+                for column in columns {
+                    touched_columns.insert(normalize_ident_key(column));
+                }
+            }
+            ParsedAlterOperation::DropConstraint { name } => {
+                for column in constraint_columns_by_name(details, name) {
+                    touched_columns.insert(normalize_ident_key(&column));
+                }
+            }
+            ParsedAlterOperation::RenameTable { .. }
+            | ParsedAlterOperation::SetSchema { .. }
+            | ParsedAlterOperation::Raw { .. } => {}
+        }
+    }
+
+    if row_count >= 100_000 {
+        score = score.saturating_add(10);
+    }
+    if row_count >= 1_000_000 {
+        score = score.saturating_add(12);
+    }
+    if row_count >= 10_000_000 {
+        score = score.saturating_add(15);
+    }
+
+    if !incoming_edges.is_empty() {
+        score = score.saturating_add(8);
+    }
+    if !outgoing_edges.is_empty() {
+        score = score.saturating_add(6);
+    }
+
+    let touches_referenced_columns = incoming_edges
+        .iter()
+        .any(|edge| touched_columns.contains(&normalize_ident_key(&edge.to_column)))
+        || pk_columns.iter().any(|column| touched_columns.contains(column));
+    if touches_referenced_columns && !incoming_edges.is_empty() {
+        score = score.saturating_add(18);
+        push_risk(
+            &mut risks,
+            "block",
+            "Dependent tables reference the affected key surface",
+            format!(
+                "{} foreign-key relationship(s) currently point at this table. Touched key columns can ripple into application queries and dependent writes.",
+                incoming_edges.len()
+            ),
+            Some("Stage the change behind a compatibility layer, or validate all downstream foreign keys before rollout.".to_string()),
+        );
+    }
+
+    for operation in operations {
+        match operation {
+            ParsedAlterOperation::AddColumn {
+                name,
+                not_null,
+                default_expr,
+                ..
+            } => {
+                if *not_null || default_expr.is_some() {
+                    score = score.saturating_add(18);
+                    push_risk(
+                        &mut risks,
+                        if row_count >= 1_000_000 { "block" } else { "warn" },
+                        format!("Adding `{}` may hold a longer lock window", name),
+                        "Bundling default values or NOT NULL validation into the first step can increase lock time on a hot table.".to_string(),
+                        Some("Prefer add nullable column → backfill in batches → set default/NOT NULL in follow-up steps.".to_string()),
+                    );
+                }
+            }
+            ParsedAlterOperation::DropColumn { name } => {
+                score = score.saturating_add(30);
+                push_risk(
+                    &mut risks,
+                    "block",
+                    format!("Dropping `{}` is destructive", name),
+                    "The column data is removed immediately and any dependent code paths will fail until they are updated.".to_string(),
+                    Some("Deprecate the column first or rename it to a tombstone name before dropping it in a later release.".to_string()),
+                );
+            }
+            ParsedAlterOperation::RenameColumn { from, to } => {
+                score = score.saturating_add(18);
+                push_risk(
+                    &mut risks,
+                    "warn",
+                    format!("Renaming `{}` to `{}` is an application compatibility change", from, to),
+                    "Queries, ORM models, views, and ETL jobs that still reference the old name will start failing immediately.".to_string(),
+                    Some("Use an expand/contract rollout with a new column and a short-lived compatibility period.".to_string()),
+                );
+            }
+            ParsedAlterOperation::AlterColumnType { name, data_type } => {
+                score = score.saturating_add(24);
+                push_risk(
+                    &mut risks,
+                    if row_count >= 1_000_000 { "block" } else { "warn" },
+                    format!("Type change on `{}` can rewrite data", name),
+                    format!("Casting `{}` to `{}` can trigger a full-table rewrite or expensive validation, depending on the types involved.", name, data_type),
+                    Some("Shadow the new representation in a parallel column, backfill, and cut over once reads are ready.".to_string()),
+                );
+            }
+            ParsedAlterOperation::SetNotNull { name } => {
+                score = score.saturating_add(16);
+                push_risk(
+                    &mut risks,
+                    "warn",
+                    format!("NOT NULL validation on `{}` scans existing rows", name),
+                    "Postgres must confirm there are no NULL values before enforcing the new requirement.".to_string(),
+                    Some("Backfill missing values first, then validate with a NOT VALID check before SET NOT NULL.".to_string()),
+                );
+            }
+            ParsedAlterOperation::AddConstraint {
+                constraint_kind,
+                not_valid,
+                detail,
+                ..
+            } if constraint_kind == "foreign_key" => {
+                score = score.saturating_add(14);
+                push_risk(
+                    &mut risks,
+                    if *not_valid { "info" } else { "warn" },
+                    "Foreign-key validation can be heavy on large tables",
+                    detail.clone(),
+                    Some("Use NOT VALID first, then VALIDATE CONSTRAINT during a quieter window.".to_string()),
+                );
+            }
+            ParsedAlterOperation::AddConstraint {
+                constraint_kind, ..
+            } if constraint_kind == "primary_key" || constraint_kind == "unique" => {
+                score = score.saturating_add(20);
+                push_risk(
+                    &mut risks,
+                    "warn",
+                    "New uniqueness enforcement may build a large index",
+                    "Unique and primary-key constraints often need an index build, which can be expensive on large tables.".to_string(),
+                    Some("Create the supporting unique index concurrently first, then attach the constraint.".to_string()),
+                );
+            }
+            ParsedAlterOperation::DropConstraint { name } => {
+                score = score.saturating_add(14);
+                push_risk(
+                    &mut risks,
+                    "warn",
+                    format!("Constraint `{}` removal loosens data guarantees", name),
+                    "Dropping constraints changes how future writes are validated and can affect downstream assumptions.".to_string(),
+                    Some("Document the behavioral change and confirm downstream code no longer relies on the old guarantee.".to_string()),
+                );
+            }
+            ParsedAlterOperation::RenameTable { to } => {
+                score = score.saturating_add(16);
+                push_risk(
+                    &mut risks,
+                    "warn",
+                    format!("Renaming the table to `{}` can break dependent objects", to),
+                    "Views, functions, ETL jobs, and application code that reference the old table name need to move in lockstep.".to_string(),
+                    Some("Introduce a compatibility view or update all dependent SQL in the same release window.".to_string()),
+                );
+            }
+            ParsedAlterOperation::SetSchema { schema } => {
+                score = score.saturating_add(16);
+                push_risk(
+                    &mut risks,
+                    "warn",
+                    format!("Moving the table into `{}` changes object resolution", schema),
+                    "Schema-qualified references, grants, and search_path-dependent queries may need follow-up changes.".to_string(),
+                    Some("Keep search_path assumptions out of production SQL and update grants alongside the move.".to_string()),
+                );
+            }
+            ParsedAlterOperation::Raw { detail } => {
+                score = score.saturating_add(10);
+                push_risk(
+                    &mut risks,
+                    "warn",
+                    "Preview used a best-effort interpretation",
+                    format!("This ALTER fragment could not be fully modeled: {}", detail),
+                    Some("Review the generated preview manually before executing.".to_string()),
+                );
+            }
+            ParsedAlterOperation::DropNotNull { .. }
+            | ParsedAlterOperation::SetDefault { .. }
+            | ParsedAlterOperation::DropDefault { .. } => {}
+            ParsedAlterOperation::AddConstraint {
+                constraint_kind,
+                detail,
+                ..
+            } => {
+                score = score.saturating_add(8);
+                push_risk(
+                    &mut risks,
+                    "info",
+                    format!(
+                        "Additional {} constraint detected",
+                        constraint_kind.replace('_', " ")
+                    ),
+                    detail.clone(),
+                    Some(
+                        "Confirm the new invariant is compatible with existing rows and downstream write paths."
+                            .to_string(),
+                    ),
+                );
+            }
+        }
+    }
+
+    if !details.triggers.is_empty()
+        && operations.iter().any(|operation| {
+            matches!(
+                operation,
+                ParsedAlterOperation::DropColumn { .. }
+                    | ParsedAlterOperation::RenameColumn { .. }
+                    | ParsedAlterOperation::AlterColumnType { .. }
+                    | ParsedAlterOperation::RenameTable { .. }
+            )
+        })
+    {
+        score = score.saturating_add(8);
+        push_risk(
+            &mut risks,
+            "warn",
+            "Triggers may depend on the altered shape",
+            format!(
+                "{} trigger(s) are attached to this table and may need matching updates.",
+                details.triggers.len()
+            ),
+            Some("Re-run trigger smoke tests after applying the change.".to_string()),
+        );
+    }
+
+    if risks.is_empty() {
+        push_risk(
+            &mut risks,
+            "info",
+            "No obvious blockers were detected",
+            "This is still a heuristic preview. Validate on staging before touching production.".to_string(),
+            None,
+        );
+    }
+
+    if !warnings.is_empty() {
+        push_risk(
+            &mut risks,
+            "info",
+            "Preview includes approximation warnings",
+            warnings.join(" "),
+            None,
+        );
+    }
+
+    (score.min(99), risks)
+}
+
+fn suggest_alternatives(
+    details: &TableDetails,
+    operations: &[ParsedAlterOperation],
+) -> Vec<AlterTableAlternative> {
+    let qtable = format!("{}.{}", quote_ident(&details.schema), quote_ident(&details.name));
+    let mut alternatives = Vec::new();
+    let mut seen = HashSet::new();
+    let column_types: HashMap<String, String> = details
+        .columns
+        .iter()
+        .map(|column| (normalize_ident_key(&column.name), column.data_type.clone()))
+        .collect();
+
+    for operation in operations {
+        match operation {
+            ParsedAlterOperation::AddColumn {
+                name,
+                data_type,
+                not_null,
+                default_expr,
+            } if *not_null || default_expr.is_some() => {
+                let qcol = quote_ident(name);
+                let mut sql = format!("ALTER TABLE {} ADD COLUMN {} {};\n", qtable, qcol, data_type);
+                sql.push_str(&format!(
+                    "-- Backfill in batches so hot writers do not wait on a single migration.\nUPDATE {}\nSET {} = /* fill expression */\nWHERE {} IS NULL;\n",
+                    qtable, qcol, qcol
+                ));
+                if let Some(default_value) = default_expr {
+                    sql.push_str(&format!(
+                        "ALTER TABLE {} ALTER COLUMN {} SET DEFAULT {};\n",
+                        qtable, qcol, default_value
+                    ));
+                }
+                sql.push_str(&format!(
+                    "ALTER TABLE {} ALTER COLUMN {} SET NOT NULL;",
+                    qtable, qcol
+                ));
+                push_unique_alternative(&mut alternatives, &mut seen, AlterTableAlternative {
+                    title: format!("Use a phased rollout for {}", name),
+                    summary: "Split the additive change into safe, lock-friendly steps.".to_string(),
+                    sql,
+                    reason: "This avoids bundling data backfill, defaulting, and validation into one heavier ALTER statement.".to_string(),
+                });
+            }
+            ParsedAlterOperation::DropColumn { name } => {
+                let deprecated_name = format!("{}_deprecated", name);
+                push_unique_alternative(&mut alternatives, &mut seen, AlterTableAlternative {
+                    title: format!("Deprecate {} before dropping it", name),
+                    summary: "Use a compatibility window instead of deleting the column immediately.".to_string(),
+                    sql: format!(
+                        "-- Step 1: stop application reads/writes to {col}.\nALTER TABLE {table} RENAME COLUMN {col} TO {deprecated};\n-- Step 2: monitor for stragglers, then drop it in a later release.",
+                        table = qtable,
+                        col = quote_ident(name),
+                        deprecated = quote_ident(&deprecated_name)
+                    ),
+                    reason: "Renaming first gives downstream jobs and application code time to surface hidden dependencies before data is lost.".to_string(),
+                });
+            }
+            ParsedAlterOperation::RenameColumn { from, to } => {
+                let current_type = column_types
+                    .get(&normalize_ident_key(from))
+                    .cloned()
+                    .unwrap_or_else(|| "text".to_string());
+                push_unique_alternative(&mut alternatives, &mut seen, AlterTableAlternative {
+                    title: format!("Expand/contract the rename {} → {}", from, to),
+                    summary: "Introduce the new shape without breaking existing readers immediately.".to_string(),
+                    sql: format!(
+                        "ALTER TABLE {table} ADD COLUMN {new_col} {dtype};\nUPDATE {table}\nSET {new_col} = {old_col}\nWHERE {new_col} IS NULL;\n-- Keep both columns in sync from the application during rollout.\n-- Drop {old_col} only after every reader has moved.",
+                        table = qtable,
+                        new_col = quote_ident(to),
+                        old_col = quote_ident(from),
+                        dtype = current_type
+                    ),
+                    reason: "This keeps old and new contracts alive together so API servers, ETL, and BI queries can move independently.".to_string(),
+                });
+            }
+            ParsedAlterOperation::AlterColumnType { name, data_type } => {
+                let shadow_name = format!("{}_v2", name);
+                push_unique_alternative(&mut alternatives, &mut seen, AlterTableAlternative {
+                    title: format!("Shadow-migrate {} into {}", name, data_type),
+                    summary: "Backfill the new representation in parallel before cutting reads over.".to_string(),
+                    sql: format!(
+                        "ALTER TABLE {table} ADD COLUMN {shadow} {dtype};\nUPDATE {table}\nSET {shadow} = {col}::{dtype}\nWHERE {col} IS NOT NULL AND {shadow} IS NULL;\n-- Switch reads/writes to {shadow}, then retire {col} in a follow-up migration.",
+                        table = qtable,
+                        shadow = quote_ident(&shadow_name),
+                        col = quote_ident(name),
+                        dtype = data_type
+                    ),
+                    reason: "Shadow columns avoid doing a risky one-shot cast on every row while traffic is live.".to_string(),
+                });
+            }
+            ParsedAlterOperation::SetNotNull { name } => {
+                let check_name = format!("{}_{}_not_null_check", details.name, name);
+                push_unique_alternative(&mut alternatives, &mut seen, AlterTableAlternative {
+                    title: format!("Validate {} in two stages", name),
+                    summary: "Backfill first, then promote the constraint after validation succeeds.".to_string(),
+                    sql: format!(
+                        "UPDATE {table}\nSET {col} = /* fill value */\nWHERE {col} IS NULL;\nALTER TABLE {table} ADD CONSTRAINT {check_name} CHECK ({col} IS NOT NULL) NOT VALID;\nALTER TABLE {table} VALIDATE CONSTRAINT {check_name};\nALTER TABLE {table} ALTER COLUMN {col} SET NOT NULL;\nALTER TABLE {table} DROP CONSTRAINT {check_name};",
+                        table = qtable,
+                        col = quote_ident(name),
+                        check_name = quote_ident(&check_name)
+                    ),
+                    reason: "You get observability over validation progress before permanently tightening write rules.".to_string(),
+                });
+            }
+            ParsedAlterOperation::AddConstraint {
+                name,
+                constraint_kind,
+                columns,
+                ref_schema,
+                ref_table,
+                ref_columns,
+                ..
+            } if constraint_kind == "foreign_key" => {
+                let constraint_name = name.clone().unwrap_or_else(|| {
+                    format!("fk_{}_{}", details.name, columns.first().cloned().unwrap_or_else(|| "id".to_string()))
+                });
+                let ref_target = match (ref_schema, ref_table) {
+                    (Some(schema), Some(table)) => format!("{}.{}", quote_ident(schema), quote_ident(table)),
+                    (None, Some(table)) => format!("{}.{}", quote_ident(&details.schema), quote_ident(table)),
+                    _ => "\"target\"".to_string(),
+                };
+                push_unique_alternative(&mut alternatives, &mut seen, AlterTableAlternative {
+                    title: format!("Add foreign key {} in validate-later mode", constraint_name),
+                    summary: "Create the relationship first, then validate it in a quieter window.".to_string(),
+                    sql: format!(
+                        "ALTER TABLE {table}\nADD CONSTRAINT {constraint_name} FOREIGN KEY ({from_cols}) REFERENCES {ref_target} ({to_cols}) NOT VALID;\nALTER TABLE {table} VALIDATE CONSTRAINT {constraint_name};",
+                        table = qtable,
+                        constraint_name = quote_ident(&constraint_name),
+                        from_cols = columns.iter().map(|col| quote_ident(col)).collect::<Vec<_>>().join(", "),
+                        ref_target = ref_target,
+                        to_cols = ref_columns.iter().map(|col| quote_ident(col)).collect::<Vec<_>>().join(", ")
+                    ),
+                    reason: "NOT VALID keeps the first step lighter while still preventing new violations once the constraint exists.".to_string(),
+                });
+            }
+            ParsedAlterOperation::AddConstraint {
+                name,
+                constraint_kind,
+                columns,
+                ..
+            } if constraint_kind == "unique" || constraint_kind == "primary_key" => {
+                let idx_name = format!(
+                    "idx_{}_{}_preview",
+                    details.name,
+                    columns
+                        .iter()
+                        .map(|column| normalize_ident_key(column))
+                        .collect::<Vec<_>>()
+                        .join("_")
+                );
+                let constraint_name = name.clone().unwrap_or_else(|| {
+                    format!("{}_{}_{}", details.name, columns.join("_"), constraint_kind)
+                });
+                push_unique_alternative(&mut alternatives, &mut seen, AlterTableAlternative {
+                    title: format!("Build the supporting {} index first", constraint_kind.replace('_', " ")),
+                    summary: "Offload the expensive part into a concurrent index build.".to_string(),
+                    sql: format!(
+                        "CREATE UNIQUE INDEX CONCURRENTLY {idx} ON {table} ({cols});\nALTER TABLE {table} ADD CONSTRAINT {constraint} {kind} USING INDEX {idx};",
+                        idx = quote_ident(&idx_name),
+                        table = qtable,
+                        cols = columns.iter().map(|column| quote_ident(column)).collect::<Vec<_>>().join(", "),
+                        constraint = quote_ident(&constraint_name),
+                        kind = if constraint_kind == "primary_key" { "PRIMARY KEY" } else { "UNIQUE" }
+                    ),
+                    reason: "Concurrent index creation is usually easier to schedule than a fully inline constraint build on a busy table.".to_string(),
+                });
+            }
+            ParsedAlterOperation::RenameTable { to } => {
+                push_unique_alternative(&mut alternatives, &mut seen, AlterTableAlternative {
+                    title: format!("Bridge the rename to {}", to),
+                    summary: "Expose the new name while keeping a compatibility surface for old callers.".to_string(),
+                    sql: format!(
+                        "ALTER TABLE {table} RENAME TO {new_name};\nCREATE VIEW {old_name} AS SELECT * FROM {new_name};",
+                        table = qtable,
+                        new_name = quote_ident(to),
+                        old_name = quote_ident(&details.name)
+                    ),
+                    reason: "A compatibility view can reduce the blast radius while application code catches up.".to_string(),
+                });
+            }
+            _ => {}
+        }
+    }
+
+    if alternatives.is_empty() {
+        push_unique_alternative(&mut alternatives, &mut seen, AlterTableAlternative {
+            title: "Stage this migration behind a compatibility layer".to_string(),
+            summary: "Prefer additive changes first, destructive cleanup later.".to_string(),
+            sql: format!(
+                "-- 1. Ship additive structures on {}.\n-- 2. Backfill / validate in batches.\n-- 3. Switch application reads and writes.\n-- 4. Remove legacy structures in a later release.",
+                qtable
+            ),
+            reason: "Phased migrations keep production safer when the exact lock behavior or dependency graph is uncertain.".to_string(),
+        });
+    }
+
+    alternatives.truncate(4);
+    alternatives
+}
+
+pub async fn preview_alter_table(
+    pool: &Arc<Pool>,
+    sql: &str,
+    fallback_schema: Option<&str>,
+) -> Result<AlterTablePreview, String> {
+    let parsed = parse_alter_table_statement(sql, fallback_schema)?;
+    let details = get_table_details(pool, &parsed.schema, &parsed.table).await?;
+    let effective_row_count = details.row_count.max(0);
+
+    let mut warnings = vec![
+        "Relationship rendering currently focuses on dependencies visible in the same schema.".to_string(),
+    ];
+    if details.row_count < 0 {
+        warnings.push(
+            "Table statistics are currently unavailable for this object, so row estimates are shown as 0. Run ANALYZE for fresher estimates."
+                .to_string(),
+        );
+    }
+    let topology = match get_schema_topology(pool, &parsed.schema).await {
+        Ok(data) => Some(data),
+        Err(error) => {
+            warnings.push(format!(
+                "Schema topology could not be loaded, so the ER graph is partial: {}",
+                error
+            ));
+            None
+        }
+    };
+
+    for operation in &parsed.operations {
+        if let ParsedAlterOperation::Raw { detail } = operation {
+            warnings.push(format!(
+                "One ALTER fragment used a best-effort preview: `{}`.",
+                detail
+            ));
+        }
+        if let ParsedAlterOperation::AddConstraint {
+            constraint_kind,
+            ref_schema,
+            ..
+        } = operation
+        {
+            if constraint_kind == "foreign_key" {
+                if let Some(schema) = ref_schema {
+                    if normalize_ident_key(schema) != normalize_ident_key(&parsed.schema) {
+                        warnings.push(format!(
+                            "The new foreign key points at `{}`. Cross-schema nodes are summarized but not fully rendered.",
+                            schema
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
+    let current_edges: Vec<WorkingEdge> = topology
+        .as_ref()
+        .map(|data| {
+            data.edges
+                .iter()
+                .filter(|edge| {
+                    (normalize_ident_key(&edge.from_schema) == normalize_ident_key(&parsed.schema)
+                        && normalize_ident_key(&edge.from_table) == normalize_ident_key(&parsed.table))
+                        || (normalize_ident_key(&edge.to_schema) == normalize_ident_key(&parsed.schema)
+                            && normalize_ident_key(&edge.to_table) == normalize_ident_key(&parsed.table))
+                })
+                .map(|edge| WorkingEdge {
+                    constraint_name: edge.constraint_name.clone(),
+                    from_schema: edge.from_schema.clone(),
+                    from_table: edge.from_table.clone(),
+                    from_column: edge.from_column.clone(),
+                    to_schema: edge.to_schema.clone(),
+                    to_table: edge.to_table.clone(),
+                    to_column: edge.to_column.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let (focus_schema_after, focus_table_after, projected_edges) =
+        project_edges(&parsed.schema, &parsed.table, &parsed.operations, &current_edges);
+    let (current_columns, proposed_columns) = project_preview_columns(&details, &parsed.operations);
+
+    let current_focus_node_id = format!("{}.{}::current", parsed.schema, parsed.table);
+    let proposed_focus_node_id = format!("{}.{}::proposed", focus_schema_after, focus_table_after);
+
+    let current_exact_keys: HashSet<String> =
+        current_edges.iter().map(working_edge_exact_key).collect();
+    let projected_exact_keys: HashSet<String> =
+        projected_edges.iter().map(working_edge_exact_key).collect();
+    let current_constraint_names: HashSet<String> = current_edges
+        .iter()
+        .map(|edge| normalize_ident_key(&edge.constraint_name))
+        .collect();
+    let projected_constraint_names: HashSet<String> = projected_edges
+        .iter()
+        .map(|edge| normalize_ident_key(&edge.constraint_name))
+        .collect();
+
+    let mut nodes = vec![
+        AlterTablePreviewNode {
+            id: current_focus_node_id.clone(),
+            schema: parsed.schema.clone(),
+            table_name: parsed.table.clone(),
+            row_count: effective_row_count,
+            role: "current".to_string(),
+            note: Some(format!(
+                "{} rows • {} indexes • {} triggers",
+                effective_row_count,
+                details.indexes.len(),
+                details.triggers.len()
+            )),
+            columns: current_columns,
+        },
+        AlterTablePreviewNode {
+            id: proposed_focus_node_id.clone(),
+            schema: focus_schema_after.clone(),
+            table_name: focus_table_after.clone(),
+            row_count: effective_row_count,
+            role: "proposed".to_string(),
+            note: Some("Projected shape after this ALTER TABLE statement".to_string()),
+            columns: proposed_columns,
+        },
+    ];
+
+    let mut edges = Vec::new();
+
+    let topology_nodes = topology
+        .as_ref()
+        .map(|data| {
+            data.nodes
+                .iter()
+                .map(|node| {
+                    (
+                        format!(
+                            "{}.{}",
+                            normalize_ident_key(&node.schema),
+                            normalize_ident_key(&node.table_name)
+                        ),
+                        node.clone(),
+                    )
+                })
+                .collect::<HashMap<_, _>>()
+        })
+        .unwrap_or_default();
+
+    let mut related_counts: HashMap<String, (usize, usize)> = HashMap::new();
+    for edge in current_edges.iter().chain(projected_edges.iter()) {
+        let from_focus = normalize_ident_key(&edge.from_schema) == normalize_ident_key(&focus_schema_after)
+            && normalize_ident_key(&edge.from_table) == normalize_ident_key(&focus_table_after);
+        let to_focus = normalize_ident_key(&edge.to_schema) == normalize_ident_key(&focus_schema_after)
+            && normalize_ident_key(&edge.to_table) == normalize_ident_key(&focus_table_after);
+
+        if !from_focus && !to_focus {
+            let from_is_current_focus = normalize_ident_key(&edge.from_schema) == normalize_ident_key(&parsed.schema)
+                && normalize_ident_key(&edge.from_table) == normalize_ident_key(&parsed.table);
+            let to_is_current_focus = normalize_ident_key(&edge.to_schema) == normalize_ident_key(&parsed.schema)
+                && normalize_ident_key(&edge.to_table) == normalize_ident_key(&parsed.table);
+            if !from_is_current_focus && !to_is_current_focus {
+                continue;
+            }
+        }
+
+        if normalize_ident_key(&edge.from_schema) == normalize_ident_key(&focus_schema_after)
+            && normalize_ident_key(&edge.from_table) == normalize_ident_key(&focus_table_after)
+        {
+            let key = format!(
+                "{}.{}",
+                normalize_ident_key(&edge.to_schema),
+                normalize_ident_key(&edge.to_table)
+            );
+            let entry = related_counts.entry(key).or_insert((0, 0));
+            entry.1 += 1;
+        }
+        if normalize_ident_key(&edge.to_schema) == normalize_ident_key(&focus_schema_after)
+            && normalize_ident_key(&edge.to_table) == normalize_ident_key(&focus_table_after)
+        {
+            let key = format!(
+                "{}.{}",
+                normalize_ident_key(&edge.from_schema),
+                normalize_ident_key(&edge.from_table)
+            );
+            let entry = related_counts.entry(key).or_insert((0, 0));
+            entry.0 += 1;
+        }
+        if normalize_ident_key(&edge.from_schema) == normalize_ident_key(&parsed.schema)
+            && normalize_ident_key(&edge.from_table) == normalize_ident_key(&parsed.table)
+        {
+            let key = format!(
+                "{}.{}",
+                normalize_ident_key(&edge.to_schema),
+                normalize_ident_key(&edge.to_table)
+            );
+            let entry = related_counts.entry(key).or_insert((0, 0));
+            entry.1 += 1;
+        }
+        if normalize_ident_key(&edge.to_schema) == normalize_ident_key(&parsed.schema)
+            && normalize_ident_key(&edge.to_table) == normalize_ident_key(&parsed.table)
+        {
+            let key = format!(
+                "{}.{}",
+                normalize_ident_key(&edge.from_schema),
+                normalize_ident_key(&edge.from_table)
+            );
+            let entry = related_counts.entry(key).or_insert((0, 0));
+            entry.0 += 1;
+        }
+    }
+
+    for (key, (incoming, outgoing)) in related_counts {
+        if let Some(node) = topology_nodes.get(&key) {
+            let role = match (incoming > 0, outgoing > 0) {
+                (true, true) => "related",
+                (true, false) => "dependent",
+                (false, true) => "dependency",
+                _ => "related",
+            };
+            nodes.push(AlterTablePreviewNode {
+                id: format!("{}::related", key),
+                schema: node.schema.clone(),
+                table_name: node.table_name.clone(),
+                row_count: node.row_count.max(0),
+                role: role.to_string(),
+                note: build_related_note(role, incoming, outgoing),
+                columns: node
+                    .columns
+                    .iter()
+                    .map(|column| AlterTablePreviewColumn {
+                        name: column.name.clone(),
+                        data_type: column.data_type.clone(),
+                        is_primary_key: column.is_primary_key,
+                        is_nullable: column.is_nullable,
+                        status: "unchanged".to_string(),
+                        detail: None,
+                    })
+                    .collect(),
+            });
+        }
+    }
+
+    for edge in &current_edges {
+        let exact_key = working_edge_exact_key(edge);
+        let impact = if projected_exact_keys.contains(&exact_key) {
+            "unchanged"
+        } else if projected_constraint_names.contains(&normalize_ident_key(&edge.constraint_name)) {
+            "changed"
+        } else {
+            "removed"
+        };
+
+        let from_is_focus = normalize_ident_key(&edge.from_schema) == normalize_ident_key(&parsed.schema)
+            && normalize_ident_key(&edge.from_table) == normalize_ident_key(&parsed.table);
+        let to_is_focus = normalize_ident_key(&edge.to_schema) == normalize_ident_key(&parsed.schema)
+            && normalize_ident_key(&edge.to_table) == normalize_ident_key(&parsed.table);
+        if !from_is_focus && !to_is_focus {
+            continue;
+        }
+
+        edges.push(AlterTablePreviewEdge {
+            id: format!("current:{}", exact_key),
+            constraint_name: edge.constraint_name.clone(),
+            from_node_id: if from_is_focus {
+                current_focus_node_id.clone()
+            } else {
+                format!(
+                    "{}.{}::related",
+                    normalize_ident_key(&edge.from_schema),
+                    normalize_ident_key(&edge.from_table)
+                )
+            },
+            from_column: edge.from_column.clone(),
+            to_node_id: if to_is_focus {
+                current_focus_node_id.clone()
+            } else {
+                format!(
+                    "{}.{}::related",
+                    normalize_ident_key(&edge.to_schema),
+                    normalize_ident_key(&edge.to_table)
+                )
+            },
+            to_column: edge.to_column.clone(),
+            phase: "current".to_string(),
+            impact: impact.to_string(),
+        });
+    }
+
+    for edge in &projected_edges {
+        let exact_key = working_edge_exact_key(edge);
+        let impact = if current_exact_keys.contains(&exact_key) {
+            "unchanged"
+        } else if current_constraint_names.contains(&normalize_ident_key(&edge.constraint_name)) {
+            "changed"
+        } else {
+            "added"
+        };
+
+        let from_is_focus = normalize_ident_key(&edge.from_schema) == normalize_ident_key(&focus_schema_after)
+            && normalize_ident_key(&edge.from_table) == normalize_ident_key(&focus_table_after);
+        let to_is_focus = normalize_ident_key(&edge.to_schema) == normalize_ident_key(&focus_schema_after)
+            && normalize_ident_key(&edge.to_table) == normalize_ident_key(&focus_table_after);
+        if !from_is_focus && !to_is_focus {
+            continue;
+        }
+
+        edges.push(AlterTablePreviewEdge {
+            id: format!("proposed:{}", exact_key),
+            constraint_name: edge.constraint_name.clone(),
+            from_node_id: if from_is_focus {
+                proposed_focus_node_id.clone()
+            } else {
+                format!(
+                    "{}.{}::related",
+                    normalize_ident_key(&edge.from_schema),
+                    normalize_ident_key(&edge.from_table)
+                )
+            },
+            from_column: edge.from_column.clone(),
+            to_node_id: if to_is_focus {
+                proposed_focus_node_id.clone()
+            } else {
+                format!(
+                    "{}.{}::related",
+                    normalize_ident_key(&edge.to_schema),
+                    normalize_ident_key(&edge.to_table)
+                )
+            },
+            to_column: edge.to_column.clone(),
+            phase: "proposed".to_string(),
+            impact: impact.to_string(),
+        });
+    }
+
+    let incoming_relations = projected_edges
+        .iter()
+        .filter(|edge| {
+            normalize_ident_key(&edge.to_schema) == normalize_ident_key(&focus_schema_after)
+                && normalize_ident_key(&edge.to_table) == normalize_ident_key(&focus_table_after)
+        })
+        .count();
+    let outgoing_relations = projected_edges
+        .iter()
+        .filter(|edge| {
+            normalize_ident_key(&edge.from_schema) == normalize_ident_key(&focus_schema_after)
+                && normalize_ident_key(&edge.from_table) == normalize_ident_key(&focus_table_after)
+        })
+        .count();
+
+    let changes = parsed
+        .operations
+        .iter()
+        .map(describe_change)
+        .collect::<Vec<_>>();
+    let (risk_score, risks) =
+        assess_alter_table_risks(&details, &parsed.operations, &current_edges, &warnings);
+    let summary = AlterTableImpactSummary {
+        table_type: details.table_type.clone(),
+        row_count: effective_row_count,
+        total_size: details.total_size.clone(),
+        table_size: details.table_size.clone(),
+        indexes_size: details.indexes_size.clone(),
+        index_count: details.indexes.len(),
+        trigger_count: details.triggers.len(),
+        incoming_relations,
+        outgoing_relations,
+        operation_count: changes.len(),
+        risk_level: risk_level_for_score(risk_score),
+        risk_score,
+    };
+
+    Ok(AlterTablePreview {
+        focus_schema: parsed.schema,
+        focus_table: parsed.table,
+        focus_schema_after,
+        focus_table_after,
+        summary,
+        nodes,
+        edges,
+        changes,
+        risks,
+        alternatives: suggest_alternatives(&details, &parsed.operations),
+        warnings,
+    })
 }
 
 /// Simple identifier quoting for SQL safety

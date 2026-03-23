@@ -16,6 +16,7 @@ import {
     notifyNoInternetDetected,
 } from "@/lib/network-errors";
 import { geminiLogger } from "@/lib/gemini-logger";
+import { getWebAppBaseUrl } from "@/lib/web-app-url";
 
 // ── Model Configuration ──────────────────────────────────────────────────────
 
@@ -210,6 +211,20 @@ RESPONSE STYLE:
 
 const GEMINI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/models";
 
+const GOOGLE_API_KEY_HEADER = "x-goog-api-key";
+
+function geminiProxyEnabled(): boolean {
+    return process.env.NEXT_PUBLIC_GEMINI_USE_PROXY !== "false";
+}
+
+/** Control-plane Gemini proxy (rate-limited per IP). Null when direct Google access is enabled. */
+function getGeminiProxyBaseUrl(): string | null {
+    if (!geminiProxyEnabled()) return null;
+    const override = process.env.NEXT_PUBLIC_GEMINI_PROXY_BASE?.trim();
+    if (override) return override.replace(/\/+$/, "");
+    return `${getWebAppBaseUrl()}/api/gemini`;
+}
+
 interface GeminiPart {
     text?: string;
     inlineData?: {
@@ -303,6 +318,23 @@ function parseGeminiError(status: number, body: string): AIError {
     }
 }
 
+async function throwIfGeminiResponseNotOk(res: Response): Promise<void> {
+    if (res.ok) return;
+    const errorBody = await res.text();
+    if (res.status === 429) {
+        const ra = res.headers.get("Retry-After");
+        const sec = ra ? parseInt(ra, 10) : NaN;
+        const hint = Number.isFinite(sec) && sec > 0 ? ` Try again in about ${sec}s.` : "";
+        throw new AIError(
+            429,
+            errorBody,
+            `⏳ Rate limit reached.${hint}`,
+            true
+        );
+    }
+    throw parseGeminiError(res.status, errorBody);
+}
+
 function mapNoInternetError(error: unknown): AIError | null {
     if (!isNoInternetError(error)) return null;
     notifyNoInternetDetected(error);
@@ -321,7 +353,10 @@ export async function callGeminiStream(
     onChunk: (text: string) => void,
     signal?: AbortSignal
 ): Promise<string> {
-    const url = `${GEMINI_BASE_URL}/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
+    const proxyBase = getGeminiProxyBaseUrl();
+    const url = proxyBase
+        ? `${proxyBase}/stream-generate-content?model=${encodeURIComponent(model)}`
+        : `${GEMINI_BASE_URL}/${model}:streamGenerateContent?alt=sse&key=${apiKey}`;
 
     const body = {
         system_instruction: {
@@ -346,7 +381,12 @@ export async function callGeminiStream(
     try {
         res = await fetch(url, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: proxyBase
+                ? {
+                      "Content-Type": "application/json",
+                      [GOOGLE_API_KEY_HEADER]: apiKey,
+                  }
+                : { "Content-Type": "application/json" },
             body: JSON.stringify(body),
             signal,
         });
@@ -356,10 +396,7 @@ export async function callGeminiStream(
         throw error;
     }
 
-    if (!res.ok) {
-        const errorBody = await res.text();
-        throw parseGeminiError(res.status, errorBody);
-    }
+    await throwIfGeminiResponseNotOk(res);
 
     if (!res.body) {
         throw new AIError(0, "No response body", "❌ Empty response from Gemini API.", true);
@@ -419,7 +456,10 @@ export async function callGeminiSync(
     signal?: AbortSignal,
     options?: { maxOutputTokens?: number }
 ): Promise<string> {
-    const url = `${GEMINI_BASE_URL}/${model}:generateContent?key=${apiKey}`;
+    const proxyBase = getGeminiProxyBaseUrl();
+    const url = proxyBase
+        ? `${proxyBase}/generate-content?model=${encodeURIComponent(model)}`
+        : `${GEMINI_BASE_URL}/${model}:generateContent?key=${apiKey}`;
 
     const body = {
         system_instruction: {
@@ -438,7 +478,12 @@ export async function callGeminiSync(
     try {
         res = await fetch(url, {
             method: "POST",
-            headers: { "Content-Type": "application/json" },
+            headers: proxyBase
+                ? {
+                      "Content-Type": "application/json",
+                      [GOOGLE_API_KEY_HEADER]: apiKey,
+                  }
+                : { "Content-Type": "application/json" },
             body: JSON.stringify(body),
             signal,
         });
@@ -448,10 +493,7 @@ export async function callGeminiSync(
         throw error;
     }
 
-    if (!res.ok) {
-        const errorBody = await res.text();
-        throw parseGeminiError(res.status, errorBody);
-    }
+    await throwIfGeminiResponseNotOk(res);
 
     const data = await res.json();
     return data?.candidates?.[0]?.content?.parts?.[0]?.text ?? "";
@@ -571,6 +613,8 @@ export class AIChatEngine {
                 requestTimestamp: _logTs,
                 responseTime: Date.now() - _logStart,
                 status: "success",
+                provider: "google_gemini",
+                stream: true,
             });
 
             return response;
@@ -588,6 +632,8 @@ export class AIChatEngine {
                 status: isAbort ? "aborted" : "error",
                 errorMessage: error instanceof Error ? error.message : String(error),
                 errorCode: (error as { code?: number })?.code,
+                provider: "google_gemini",
+                stream: true,
             });
 
             if (isAbort) {
@@ -655,6 +701,8 @@ export class AIChatEngine {
                 requestTimestamp: _regenTs,
                 responseTime: Date.now() - _regenStart,
                 status: "success",
+                provider: "google_gemini",
+                stream: true,
             });
             return response;
         } catch (error) {
@@ -668,6 +716,8 @@ export class AIChatEngine {
                 status: isAbort ? "aborted" : "error",
                 errorMessage: error instanceof Error ? error.message : String(error),
                 errorCode: (error as { code?: number })?.code,
+                provider: "google_gemini",
+                stream: true,
             });
             if (isAbort) {
                 throw new AIError(0, "Aborted", "Request was cancelled.", false);
@@ -729,6 +779,8 @@ export class AIChatEngine {
                 requestTimestamp: _editTs,
                 responseTime: Date.now() - _editStart,
                 status: "success",
+                provider: "google_gemini",
+                stream: true,
             });
             return response;
         } catch (error) {
@@ -742,6 +794,8 @@ export class AIChatEngine {
                 status: isAbort ? "aborted" : "error",
                 errorMessage: error instanceof Error ? error.message : String(error),
                 errorCode: (error as { code?: number })?.code,
+                provider: "google_gemini",
+                stream: true,
             });
             if (isAbort) {
                 throw new AIError(0, "Aborted", "Request was cancelled.", false);

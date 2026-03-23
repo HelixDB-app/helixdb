@@ -17,6 +17,7 @@ import type {
     TableDetails,
     TableInfo,
     TopologyData,
+    AlterTablePreview,
 } from "@/lib/types";
 import * as tauri from "@/lib/tauri";
 
@@ -53,6 +54,11 @@ export interface DbPlatform {
     dbTerminateBackend(connectionId: string, pid: number): Promise<boolean>;
     dbCancelBackend(connectionId: string, pid: number): Promise<boolean>;
     dbGetSchemaTopology(connectionId: string, schema: string): Promise<TopologyData>;
+    dbPreviewAlterTable(
+        connectionId: string,
+        sql: string,
+        fallbackSchema?: string | null
+    ): Promise<AlterTablePreview>;
     dbGetColumns(
         connectionId: string,
         schema: string,
@@ -121,6 +127,9 @@ class TauriDbPlatform implements DbPlatform {
     }
     dbGetSchemaTopology(connectionId: string, schema: string) {
         return tauri.dbGetSchemaTopology(connectionId, schema);
+    }
+    dbPreviewAlterTable(connectionId: string, sql: string, fallbackSchema?: string | null) {
+        return tauri.dbPreviewAlterTable(connectionId, sql, fallbackSchema ?? null);
     }
     dbGetColumns(connectionId: string, schema: string, table: string) {
         return tauri.dbGetColumns(connectionId, schema, table);
@@ -327,6 +336,17 @@ class HttpDbPlatform implements DbPlatform {
         return this.json<TopologyData>(res);
     }
 
+    async dbPreviewAlterTable(
+        _connectionId: string,
+        _sql: string,
+        _fallbackSchema?: string | null
+    ): Promise<AlterTablePreview> {
+        void _connectionId;
+        void _sql;
+        void _fallbackSchema;
+        throw new Error("ALTER TABLE preview is only available in the desktop app.");
+    }
+
     async dbGetColumns(
         connectionId: string,
         schema: string,
@@ -459,6 +479,14 @@ export function dbCancelBackend(connectionId: string, pid: number) {
 
 export function dbGetSchemaTopology(connectionId: string, schema: string) {
     return p().dbGetSchemaTopology(connectionId, schema);
+}
+
+export function dbPreviewAlterTable(
+    connectionId: string,
+    sql: string,
+    fallbackSchema?: string | null
+) {
+    return p().dbPreviewAlterTable(connectionId, sql, fallbackSchema);
 }
 
 export function dbGetColumns(connectionId: string, schema: string, table: string) {

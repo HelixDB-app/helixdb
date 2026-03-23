@@ -4,6 +4,8 @@ import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
 import { FirebaseProvider } from "@/components/firebase-provider";
+import { PosthogAppProvider } from "@/components/posthog-provider";
+import { PosthogAuthBridge } from "@/components/posthog-auth-bridge";
 import { NotificationProvider } from "@/components/notification-provider";
 import { NotificationRTDBProvider } from "@/components/notification-rtdb-provider";
 import { SubscriptionProvider } from "@/components/subscription-provider";
@@ -95,8 +97,10 @@ export default function RootLayout({
           enableSystem
           disableTransitionOnChange
         >
+          <PosthogAppProvider>
           <TooltipProvider delayDuration={200}>
             <FirebaseProvider>
+              <PosthogAuthBridge />
               <NetworkStatusProvider>
                 <NotificationProvider>
                   <NotificationRTDBProvider>
@@ -117,6 +121,7 @@ export default function RootLayout({
             </FirebaseProvider>
           </TooltipProvider>
           <Toaster />
+          </PosthogAppProvider>
         </ThemeProvider>
       </body>
     </html>
