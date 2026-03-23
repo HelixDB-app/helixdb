@@ -3047,6 +3047,7 @@ function ResultsArea({
                     <QueryErrorPanel
                         message={activeTab.result.error_message ?? "Unknown error"}
                         sql={activeTab.sql}
+                        resultQuery={activeTab.result.query}
                         schemaContextForAi={schemaContextForAi}
                         onRetry={onRefresh}
                         isRetrying={activeTabIsExecuting}

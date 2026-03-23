@@ -14,7 +14,7 @@ help:
 	@echo "  make lint      — Run ESLint"
 	@echo "  make data-plane — Run HTTP API locally (cargo)"
 	@echo "  make compose-up — docker compose up (API + Redis)"
-	@echo "  make icons      — Regenerate Tauri/macOS/Android/iOS icons from public/logo.png"
+	@echo "  make icons      — Build 1024² app icon from public/logo.png → Tauri / PWA / iOS assets"
 
 # Tauri dev: runs pnpm dev and opens the app window
 dev:
@@ -56,8 +56,20 @@ data-plane:
 compose-up:
 	docker compose up --build
 
-# Source: public/logo.png (square 1024 master + all bundle sizes). Requires magick (ImageMagick).
+# Source: public/logo.png — transparent margins + inner squircle art: do NOT letterbox on a square first
+# (that leaves a huge dark halo in the Dock). Trim alpha, overscale ~12%, center-crop 1024², flatten.
+# Tune APP_ICON_ZOOM if the glyph clips (lower) or still feels small (raise).
+APP_ICON_ZOOM := 336
 icons:
-	magick public/logo.png -resize '900x900>' -background '#0c1524' -gravity center -extent 1024x1024 src-tauri/icons/app-icon-source.png
-	cd src-tauri && cargo tauri icon icons/app-icon-source.png --ios-color '#0c1524'
+	magick public/logo.png -trim +repage \
+		-filter Lanczos -resize $(APP_ICON_ZOOM)% \
+		-gravity center -crop 1024x1024+0+0 +repage \
+		-background '#0f172a' -flatten -strip \
+		src-tauri/icons/app-icon-source.png
+	cd src-tauri && cargo tauri icon icons/app-icon-source.png --ios-color '#0f172a'
 	cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/
+	magick src-tauri/icons/app-icon-source.png -resize 180x180 -strip public/apple-touch-icon.png
+	magick src-tauri/icons/app-icon-source.png -resize 192x192 -strip public/icon-192.png
+	magick src-tauri/icons/app-icon-source.png -resize 512x512 -strip public/icon-512.png
+	magick src-tauri/icons/app-icon-source.png -resize 32x32 -strip public/favicon-32x32.png
+	cp src-tauri/icons/icon.ico public/favicon.ico

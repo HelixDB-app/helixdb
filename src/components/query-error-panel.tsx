@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useState } from "react";
+import { useCallback, useMemo, useState, type ReactNode } from "react";
 import { AlertCircle, CheckCircle2, ChevronDown, Copy, Lightbulb, Loader2, Sparkles } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -8,6 +8,7 @@ import { explainQueryErrorWithAI } from "@/lib/query-error-ai";
 import { AIError } from "@/lib/ai-chat-engine";
 import { isDbInfrastructureError } from "@/lib/db-errors";
 import { DbInfrastructureErrorState } from "@/components/db-infrastructure-error-state";
+import { highlightSqlForDisplay, parsePgErrorMessage } from "@/lib/parse-pg-error";
 
 function extractObjectName(raw: string, prefix: string): string | null {
     const lower = raw.toLowerCase();
@@ -20,6 +21,12 @@ function extractObjectName(raw: string, prefix: string): string | null {
 
 function explainQueryError(raw: string): { summary: string; fix: string } | null {
     const lower = raw.toLowerCase();
+    if (lower.includes("insert") && lower.includes("more expressions than target columns")) {
+        return {
+            summary: "The INSERT has a different number of values than target columns.",
+            fix: "Align VALUES (…) with the column list: same count and order, or add/remove columns in the INSERT clause.",
+        };
+    }
     if (lower.includes("function") && (lower.includes("does not exist") || lower.includes("no function matches"))) {
         const name = extractObjectName(raw, "function");
         const withName = name ? ` The function \`${name}\` is not defined or has different argument types.` : "";
@@ -86,24 +93,50 @@ function explainQueryError(raw: string): { summary: string; fix: string } | null
     return null;
 }
 
+function Section({ label, children, mono }: { label: string; children: ReactNode; mono?: boolean }) {
+    return (
+        <div className="space-y-1.5">
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/90">{label}</p>
+            <div className={mono ? "text-xs font-mono text-foreground/90 whitespace-pre-wrap break-words" : "text-xs text-foreground/90 whitespace-pre-wrap break-words"}>
+                {children}
+            </div>
+        </div>
+    );
+}
+
 export interface QueryErrorPanelProps {
     message: string;
     sql?: string;
+    /** SQL as recorded on the query result (full script sent to the runner). */
+    resultQuery?: string;
     schemaContextForAi?: string;
-    /** Re-run the current query (shown for connection / transport failures). */
     onRetry?: () => void;
     isRetrying?: boolean;
 }
 
-export function QueryErrorPanel({ message, sql, schemaContextForAi, onRetry, isRetrying }: QueryErrorPanelProps) {
+export function QueryErrorPanel({ message, sql, resultQuery, schemaContextForAi, onRetry, isRetrying }: QueryErrorPanelProps) {
     const [copied, setCopied] = useState(false);
-    const [showTechnical, setShowTechnical] = useState(false);
+    const [showRawMessage, setShowRawMessage] = useState(false);
+    const [expandNotices, setExpandNotices] = useState(false);
     const [aiExplanation, setAiExplanation] = useState<string | null>(null);
     const [aiLoading, setAiLoading] = useState(false);
     const [aiError, setAiError] = useState<string | null>(null);
+
+    const parsed = useMemo(() => parsePgErrorMessage(message), [message]);
     const explanation = explainQueryError(message);
-    const shortMessage = message.split(/\n/)[0]?.trim() || message;
     const canUseAi = Boolean(sql?.trim() && schemaContextForAi?.trim());
+
+    const displaySql = useMemo(() => {
+        const fromServer = parsed.queryFromError?.trim();
+        const rq = resultQuery?.trim();
+        const ed = sql?.trim();
+        if (fromServer) return { text: fromServer, label: "Failed statement (server)" as const };
+        if (rq) return { text: rq, label: "Executed query" as const };
+        if (ed) return { text: ed, label: "SQL in editor" as const };
+        return null;
+    }, [parsed.queryFromError, resultQuery, sql]);
+
+    const highlightedSql = useMemo(() => (displaySql ? highlightSqlForDisplay(displaySql.text) : ""), [displaySql]);
 
     const handleAiExplain = useCallback(async () => {
         if (!sql?.trim() || !schemaContextForAi?.trim()) return;
@@ -143,55 +176,83 @@ export function QueryErrorPanel({ message, sql, schemaContextForAi, onRetry, isR
         );
     }
 
+    const noticeLimit = 4;
+    const noticesShown = expandNotices ? parsed.notices : parsed.notices.slice(0, noticeLimit);
+    const hasMoreNotices = parsed.notices.length > noticeLimit;
+
     return (
-        <div className="flex flex-col h-full overflow-hidden animate-in fade-in slide-in-from-bottom-2 duration-200">
-            <div className="p-4 space-y-3">
-                <div className="rounded-xl border border-destructive/30 bg-destructive/5 overflow-hidden shadow-sm">
-                    <div className="flex items-center justify-between gap-3 px-4 py-3 border-b border-destructive/10">
-                        <div className="flex items-center gap-2 min-w-0">
-                            <AlertCircle className="h-5 w-5 text-destructive shrink-0" />
-                            <div className="min-w-0">
-                                <p className="text-sm font-semibold text-destructive">Query failed</p>
-                                {!explanation && (
-                                    <p className="text-xs text-muted-foreground truncate mt-0.5" title={shortMessage}>
-                                        {shortMessage}
-                                    </p>
-                                )}
-                            </div>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                            {canUseAi && (
-                                <Button
-                                    variant="outline"
-                                    size="sm"
-                                    className="h-8 gap-1.5 text-xs border-primary/30 text-primary hover:bg-primary/10"
-                                    onClick={handleAiExplain}
-                                    disabled={aiLoading}
-                                >
-                                    {aiLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
-                                    AI Explain
-                                </Button>
+        <div className="flex h-full min-h-0 flex-col p-4 animate-in fade-in slide-in-from-bottom-2 duration-200">
+            <div className="flex flex-col flex-1 min-h-0 rounded-xl border border-destructive/30 bg-destructive/5 overflow-hidden shadow-sm">
+                <div className="shrink-0 flex items-center justify-between gap-3 px-4 py-3 border-b border-destructive/10">
+                    <div className="flex items-center gap-2 min-w-0">
+                        <AlertCircle className="h-5 w-5 text-destructive shrink-0" />
+                        <div className="min-w-0">
+                            <p className="text-sm font-semibold text-destructive">Query failed</p>
+                            {parsed.statementPrefix && (
+                                <p className="text-[11px] text-muted-foreground mt-0.5 font-medium">{parsed.statementPrefix}</p>
                             )}
-                            <Button
-                                variant="ghost"
-                                size="sm"
-                                className="h-8 gap-1.5 text-xs"
-                                onClick={() => {
-                                    navigator.clipboard.writeText(message);
-                                    setCopied(true);
-                                    setTimeout(() => setCopied(false), 2000);
-                                }}
-                            >
-                                {copied ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
-                                {copied ? "Copied" : "Copy"}
-                            </Button>
+                            <p className="text-sm text-foreground/95 mt-1 font-medium leading-snug break-words" title={parsed.primaryError}>
+                                {parsed.primaryError}
+                            </p>
                         </div>
                     </div>
+                    <div className="flex items-center gap-1.5 shrink-0">
+                        {canUseAi && (
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="h-8 gap-1.5 text-xs border-primary/30 text-primary hover:bg-primary/10"
+                                onClick={handleAiExplain}
+                                disabled={aiLoading}
+                            >
+                                {aiLoading ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Sparkles className="h-3.5 w-3.5" />}
+                                AI Explain
+                            </Button>
+                        )}
+                        <Button
+                            variant="ghost"
+                            size="sm"
+                            className="h-8 gap-1.5 text-xs"
+                            onClick={() => {
+                                navigator.clipboard.writeText(message);
+                                setCopied(true);
+                                setTimeout(() => setCopied(false), 2000);
+                            }}
+                        >
+                            {copied ? <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" /> : <Copy className="h-3.5 w-3.5" />}
+                            {copied ? "Copied" : "Copy"}
+                        </Button>
+                    </div>
+                </div>
+
+                <ScrollArea className="flex-1 min-h-0">
+                    <div className="p-4 space-y-4">
+                    {parsed.notices.length > 0 && (
+                        <div className="rounded-lg border border-sky-500/20 bg-sky-500/5 px-3 py-2.5 space-y-1.5">
+                            <p className="text-[10px] font-semibold uppercase tracking-wider text-sky-700/90 dark:text-sky-300/90">Notices</p>
+                            <ul className="text-xs text-muted-foreground space-y-1 list-disc list-inside">
+                                {noticesShown.map((n, i) => (
+                                    <li key={i} className="break-words">
+                                        {n}
+                                    </li>
+                                ))}
+                            </ul>
+                            {hasMoreNotices && (
+                                <button
+                                    type="button"
+                                    className="text-[11px] font-medium text-sky-600 dark:text-sky-400 hover:underline"
+                                    onClick={() => setExpandNotices((v) => !v)}
+                                >
+                                    {expandNotices ? "Show fewer" : `Show all ${parsed.notices.length} notices`}
+                                </button>
+                            )}
+                        </div>
+                    )}
 
                     {explanation && (
-                        <div className="px-4 py-3 space-y-3">
+                        <div className="rounded-lg border border-border/60 bg-muted/25 px-3 py-2.5 space-y-2">
                             <p className="text-sm text-foreground/95">{explanation.summary}</p>
-                            <div className="flex items-start gap-2 rounded-lg bg-muted/40 p-2.5">
+                            <div className="flex items-start gap-2 rounded-md bg-muted/40 p-2">
                                 <Lightbulb className="h-4 w-4 text-amber-500/80 mt-0.5 shrink-0" />
                                 <div className="text-xs">
                                     <span className="font-medium text-foreground/90">How to fix: </span>
@@ -201,36 +262,105 @@ export function QueryErrorPanel({ message, sql, schemaContextForAi, onRetry, isR
                         </div>
                     )}
 
+                    {parsed.lineCaret && (
+                        <div className="rounded-lg border border-destructive/15 bg-muted/40 overflow-hidden">
+                            <div className="px-3 py-1.5 border-b border-border/40 bg-muted/30">
+                                <p className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Location</p>
+                            </div>
+                            <div className="px-3 py-2.5 font-mono text-xs text-foreground/90 overflow-x-auto">
+                                <div>
+                                    LINE {parsed.lineCaret.lineNumber}: {parsed.lineCaret.lineContent}
+                                </div>
+                                <div className="text-destructive whitespace-pre select-none">{parsed.lineCaret.caret}</div>
+                            </div>
+                        </div>
+                    )}
+
+                    {displaySql && (
+                        <div className="rounded-lg border border-border/50 overflow-hidden bg-[var(--sql-bg)]">
+                            <div className="px-3 py-1.5 border-b border-border/40 bg-muted/25 flex items-center justify-between gap-2">
+                                <span className="text-[10px] font-mono uppercase tracking-wider text-muted-foreground">{displaySql.label}</span>
+                            </div>
+                            <pre className="p-3 text-xs leading-relaxed overflow-x-auto m-0">
+                                <code dangerouslySetInnerHTML={{ __html: highlightedSql }} />
+                            </pre>
+                        </div>
+                    )}
+
+                    {(parsed.detail ||
+                        parsed.hint ||
+                        parsed.context ||
+                        parsed.position ||
+                        parsed.sqlState) && (
+                    <div className="rounded-lg border border-border/40 bg-background/60 divide-y divide-border/30">
+                        {parsed.detail && (
+                            <div className="p-3">
+                                <Section label="Detail" mono>
+                                    {parsed.detail}
+                                </Section>
+                            </div>
+                        )}
+                        {parsed.hint && (
+                            <div className="p-3">
+                                <Section label="Hint" mono>
+                                    {parsed.hint}
+                                </Section>
+                            </div>
+                        )}
+                        {parsed.context && (
+                            <div className="p-3">
+                                <Section label="Context" mono>
+                                    {parsed.context}
+                                </Section>
+                            </div>
+                        )}
+                        {parsed.position && (
+                            <div className="p-3">
+                                <Section label="Position" mono>
+                                    {parsed.position}
+                                </Section>
+                            </div>
+                        )}
+                        {parsed.sqlState && (
+                            <div className="p-3 flex items-baseline gap-2 flex-wrap">
+                                <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">SQL state</span>
+                                <code className="text-xs font-mono px-1.5 py-0.5 rounded bg-muted/80 text-foreground/90">{parsed.sqlState}</code>
+                            </div>
+                        )}
+                    </div>
+                    )}
+
                     {(aiExplanation || aiError) && (
-                        <div className="px-4 py-3 border-t border-destructive/10 space-y-2">
+                        <div className="rounded-lg border border-primary/20 bg-primary/5 p-3 space-y-2">
                             <p className="text-[10px] font-medium uppercase tracking-wider text-muted-foreground/80">AI analysis</p>
                             {aiError && <p className="text-xs text-destructive/90">{aiError}</p>}
                             {aiExplanation && (
-                                <ScrollArea className="max-h-56 rounded-lg border border-border/30 bg-background/90 p-3">
+                                <ScrollArea className="max-h-56 rounded-md border border-border/30 bg-background/90 p-3">
                                     <pre className="text-xs text-foreground/90 whitespace-pre-wrap break-words font-sans">{aiExplanation}</pre>
                                 </ScrollArea>
                             )}
                         </div>
                     )}
 
-                    <div className="border-t border-destructive/10">
+                    <div className="rounded-lg border border-border/30 overflow-hidden">
                         <button
                             type="button"
-                            onClick={() => setShowTechnical((v) => !v)}
-                            className="flex items-center gap-2 w-full px-4 py-2.5 text-left text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
+                            onClick={() => setShowRawMessage((v) => !v)}
+                            className="flex items-center gap-2 w-full px-3 py-2.5 text-left text-xs font-medium text-muted-foreground hover:text-foreground hover:bg-muted/30 transition-colors"
                         >
-                            <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${showTechnical ? "rotate-180" : ""}`} />
-                            {showTechnical ? "Hide" : "Show"} technical details
+                            <ChevronDown className={`h-3.5 w-3.5 shrink-0 transition-transform ${showRawMessage ? "rotate-180" : ""}`} />
+                            {showRawMessage ? "Hide" : "Show"} full server message
                         </button>
-                        {showTechnical && (
-                            <div className="px-4 pb-4 pt-0">
-                                <ScrollArea className="max-h-48 rounded-lg border border-border/30 bg-background/90 p-3">
-                                    <pre className="text-xs font-mono whitespace-pre-wrap break-all text-foreground/80">{message}</pre>
-                                </ScrollArea>
+                        {showRawMessage && (
+                            <div className="px-3 pb-3 pt-0">
+                                <pre className="text-[11px] font-mono whitespace-pre-wrap break-all text-muted-foreground bg-muted/30 rounded-md p-3 max-h-48 overflow-y-auto border border-border/20">
+                                    {message}
+                                </pre>
                             </div>
                         )}
                     </div>
-                </div>
+                    </div>
+                </ScrollArea>
             </div>
         </div>
     );

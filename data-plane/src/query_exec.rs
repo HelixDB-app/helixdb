@@ -5,6 +5,7 @@ use deadpool_postgres::Pool;
 use rust_decimal::Decimal;
 use std::sync::Arc;
 use std::time::Instant;
+use tokio_postgres::error::ErrorPosition;
 use tokio_postgres::types::Type;
 use tokio_postgres::{Error as PgError, Row};
 
@@ -19,6 +20,25 @@ fn format_pg_error(e: &PgError) -> String {
             s.push_str("\n\nHint: ");
             s.push_str(h);
         }
+        if let Some(w) = db.where_() {
+            s.push_str("\n\nCONTEXT:\n");
+            s.push_str(w);
+        }
+        match db.position() {
+            Some(ErrorPosition::Original(pos)) => {
+                s.push_str("\n\nPosition: character ");
+                s.push_str(&pos.to_string());
+            }
+            Some(ErrorPosition::Internal { position, query }) => {
+                s.push_str("\n\nQUERY:\n");
+                s.push_str(query);
+                s.push_str("\n\nPosition: character ");
+                s.push_str(&position.to_string());
+            }
+            None => {}
+        }
+        s.push_str("\n\nSQL state: ");
+        s.push_str(db.code().code());
         return s;
     }
     e.to_string()

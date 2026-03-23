@@ -35,7 +35,21 @@ export const metadata: Metadata = {
   description:
     "A blazing-fast, modern database admin panel powered by Rust and Next.js",
   manifest: "/manifest.webmanifest",
-  icons: { icon: "/logo.png", apple: "/logo.png" },
+  icons: {
+    icon: [
+      { url: "/favicon.ico" },
+      { url: "/favicon-32x32.png", sizes: "32x32", type: "image/png" },
+      { url: "/icon-192.png", sizes: "192x192", type: "image/png" },
+      { url: "/icon-512.png", sizes: "512x512", type: "image/png" },
+    ],
+    apple: [
+      { url: "/apple-touch-icon.png", sizes: "180x180", type: "image/png" },
+    ],
+  },
+  openGraph: {
+    type: "website",
+    images: [{ url: "/icon-512.png", width: 512, height: 512, alt: APP_NAME }],
+  },
   appleWebApp: {
     capable: true,
     statusBarStyle: "default",

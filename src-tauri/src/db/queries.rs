@@ -6,6 +6,7 @@ use std::error::Error as StdError;
 use std::io::{self as io, Write};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
+use tokio_postgres::error::ErrorPosition;
 use tokio_postgres::types::Type;
 use tokio_postgres::{Error as PgError, Row};
 
@@ -22,7 +23,7 @@ fn pg_error_message(e: &impl StdError) -> String {
     msg
 }
 
-/// Format a tokio_postgres::Error for display: message, detail, hint (no raw Debug).
+/// Format a tokio_postgres::Error for display: message, detail, hint, context, position/query, SQLSTATE.
 fn format_pg_error(e: &PgError) -> String {
     if let Some(db) = e.as_db_error() {
         let mut s = db.message().to_string();
@@ -34,6 +35,25 @@ fn format_pg_error(e: &PgError) -> String {
             s.push_str("\n\nHint: ");
             s.push_str(h);
         }
+        if let Some(w) = db.where_() {
+            s.push_str("\n\nCONTEXT:\n");
+            s.push_str(w);
+        }
+        match db.position() {
+            Some(ErrorPosition::Original(pos)) => {
+                s.push_str("\n\nPosition: character ");
+                s.push_str(&pos.to_string());
+            }
+            Some(ErrorPosition::Internal { position, query }) => {
+                s.push_str("\n\nQUERY:\n");
+                s.push_str(query);
+                s.push_str("\n\nPosition: character ");
+                s.push_str(&position.to_string());
+            }
+            None => {}
+        }
+        s.push_str("\n\nSQL state: ");
+        s.push_str(db.code().code());
         return s;
     }
     e.to_string()

@@ -56,8 +56,12 @@ export function StatusBar() {
                         PostgreSQL {pgVersion}
                     </span>
                 )}
-                <span className="flex items-center gap-1.5 text-[10px] text-muted-foreground/25 font-mono">
-                    <img src={APP_LOGO} alt="" className="h-3.5 w-3.5 rounded object-contain opacity-80" />
+                <span className="flex items-center gap-2 text-[10px] text-muted-foreground/25 font-mono">
+                    <img
+                        src={APP_LOGO}
+                        alt=""
+                        className="h-5 w-5 rounded-lg object-contain shrink-0 opacity-90 ring-1 ring-border/20"
+                    />
                     {`${APP_NAME} v${APP_VERSION.split(".").slice(0, 2).join(".")}`}
                 </span>
             </div>
