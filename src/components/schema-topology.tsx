@@ -9,7 +9,7 @@ import {
     memo,
 } from "react";
 import { useConnectionStore } from "@/stores/connection-store";
-import { dbGetSchemaTopology } from "@/lib/db-platform";
+import { dbGetDatabaseTopology, dbGetSchemaTopology } from "@/lib/db-platform";
 import type { TopologyData, TopologyNode, TopologyEdge, TopologyColumn } from "@/lib/types";
 import { cn } from "@/lib/utils";
 import { Button } from "@/components/ui/button";
@@ -33,7 +33,7 @@ import {
     PopoverContent,
 } from "@/components/ui/popover";
 import { toast } from "sonner";
-import { Loader2, Network, RefreshCw, Search, Table2, Maximize2, Download, FileImage, FileType, FileText, List, Key, Link2, AlertTriangle, XCircle } from "lucide-react";
+import { Loader2, Network, RefreshCw, Search, Table2, Maximize2, Download, FileImage, FileType, FileText, List, Key, Link2, AlertTriangle, XCircle, Minus, Plus } from "lucide-react";
 
 // ── Layout Constants ─────────────────────────────────────────────────────────
 
@@ -53,6 +53,8 @@ const EDGE_LIMIT_ZOOMED_OUT = 900;
 const EDGE_LIMIT_MEDIUM_ZOOM = 1800;
 const TOPOLOGY_CACHE_TTL_MS = 30_000;
 const TOPOLOGY_PERF_LOG_KEY = "pgstudio:topology:perf";
+/** Select value: load every user-visible schema in one request */
+const TOPOLOGY_ALL_SCHEMAS = "__ALL__";
 
 const topologyCache = new Map<string, { cachedAt: number; data: TopologyData }>();
 
@@ -135,6 +137,16 @@ const EXPORT_VISIBLE_COLUMNS = 10;
 
 function nodeId(schema: string, table: string): string {
     return `${schema}.${table}`;
+}
+
+/** Deterministic header stripe color per schema (multi-schema diagram). */
+function schemaHeaderAccent(schemaName: string): string {
+    let h = 0;
+    for (let i = 0; i < schemaName.length; i++) {
+        h = (Math.imul(31, h) + schemaName.charCodeAt(i)) >>> 0;
+    }
+    const hue = h % 360;
+    return `hsl(${hue} 42% 32%)`;
 }
 
 function formatRowCount(n: number): string {
@@ -386,6 +398,7 @@ const NodeCard = memo(function NodeCard({
     fkColumns,
     highlightedColumns,
     denseMode,
+    headerAccent,
 }: {
     node: TopologyNode;
     x: number;
@@ -395,6 +408,7 @@ const NodeCard = memo(function NodeCard({
     fkColumns: Set<string>;
     highlightedColumns: Set<string>;
     denseMode: boolean;
+    headerAccent?: string;
 }) {
     const h = nodeHeight(node);
     const visibleCols = node.columns.slice(0, MAX_VISIBLE_COLUMNS);
@@ -450,6 +464,15 @@ const NodeCard = memo(function NodeCard({
                 height={4}
                 className="fill-muted/30"
             />
+            {headerAccent ? (
+                <rect
+                    width={NODE_WIDTH}
+                    height={3}
+                    rx={0}
+                    fill={headerAccent}
+                    className="opacity-90"
+                />
+            ) : null}
 
             {/* Schema tag */}
             <text
@@ -604,7 +627,8 @@ const NodeCard = memo(function NodeCard({
     prev.isEdgeSelected === next.isEdgeSelected &&
     prev.fkColumns === next.fkColumns &&
     prev.highlightedColumns === next.highlightedColumns &&
-    prev.denseMode === next.denseMode
+    prev.denseMode === next.denseMode &&
+    prev.headerAccent === next.headerAccent
 );
 
 // ── Main Component ───────────────────────────────────────────────────────────
@@ -614,11 +638,10 @@ export function SchemaTopology({
 }: {
     onNavigateToTable: (schema: string, table: string) => void;
 }) {
-    const { connectionId, selectedSchema, schemas, selectTable } =
-        useConnectionStore();
+    const { connectionId, schemas, selectTable } = useConnectionStore();
     const containerRef = useRef<HTMLDivElement>(null);
     const svgRef = useRef<SVGSVGElement>(null);
-    const [topologySchema, setTopologySchema] = useState<string | null>(null);
+    const [topologySchema, setTopologySchema] = useState<string>(TOPOLOGY_ALL_SCHEMAS);
     const [topology, setTopology] = useState<TopologyData | null>(null);
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string | null>(null);
@@ -656,7 +679,12 @@ export function SchemaTopology({
     const interactionRafRef = useRef<number | null>(null);
     const lastLaidOutTopologyRef = useRef<TopologyData | null>(null);
 
-    const schema = topologySchema ?? selectedSchema ?? schemas[0]?.name ?? null;
+    const isAllSchemas = topologySchema === TOPOLOGY_ALL_SCHEMAS;
+
+    useEffect(() => {
+        setTopologySchema(TOPOLOGY_ALL_SCHEMAS);
+    }, [connectionId]);
+
     const w = Math.max(400, viewportSize.width);
     const h = Math.max(300, viewportSize.height);
 
@@ -704,14 +732,20 @@ export function SchemaTopology({
 
     const fetchTopology = useCallback(
         (signal?: AbortSignal, opts?: { force?: boolean }) => {
-            if (!connectionId || !schema) {
+            if (!connectionId) {
+                lastLaidOutTopologyRef.current = null;
+                setTopology(null);
+                setPositions(new Map());
+                return;
+            }
+            if (!isAllSchemas && schemas.length === 0) {
                 lastLaidOutTopologyRef.current = null;
                 setTopology(null);
                 setPositions(new Map());
                 return;
             }
             const force = opts?.force ?? false;
-            const cacheKey = `${connectionId}::${schema}`;
+            const cacheKey = `${connectionId}::${topologySchema}`;
             const cacheEntry = topologyCache.get(cacheKey);
             if (
                 !force &&
@@ -722,7 +756,7 @@ export function SchemaTopology({
                 setLoading(false);
                 setTopology(cacheEntry.data);
                 logTopologyPerf("cache-hit", {
-                    schema,
+                    schema: topologySchema,
                     nodes: cacheEntry.data.nodes.length,
                     edges: cacheEntry.data.edges.length,
                 });
@@ -734,13 +768,16 @@ export function SchemaTopology({
             setError(null);
             const startedAt = performance.now();
 
-            dbGetSchemaTopology(connectionId, schema)
-                .then((data) => {
+            const req = isAllSchemas
+                ? dbGetDatabaseTopology(connectionId)
+                : dbGetSchemaTopology(connectionId, topologySchema);
+
+            req.then((data) => {
                     if (signal?.aborted) return;
                     topologyCache.set(cacheKey, { cachedAt: Date.now(), data });
                     setTopology(data);
                     logTopologyPerf("fetch-success", {
-                        schema,
+                        schema: topologySchema,
                         durationMs: Math.round(performance.now() - startedAt),
                         nodes: data.nodes.length,
                         edges: data.edges.length,
@@ -751,7 +788,7 @@ export function SchemaTopology({
                     setError(String(err));
                     setTopology(null);
                     logTopologyPerf("fetch-error", {
-                        schema,
+                        schema: topologySchema,
                         durationMs: Math.round(performance.now() - startedAt),
                     });
                 })
@@ -760,7 +797,7 @@ export function SchemaTopology({
                     setLoading(false);
                 });
         },
-        [connectionId, schema]
+        [connectionId, isAllSchemas, schemas.length, topologySchema]
     );
 
     useEffect(() => {
@@ -1226,7 +1263,10 @@ export function SchemaTopology({
             toast.loading(`Exporting ${label}…`, { id: "export-toast" });
             const bbox = computeBbox(positions, nodeMap);
             const svgString = buildExportSvg(topology, positions, bbox);
-            const baseName = `schema-topology-${schema ?? "public"}`;
+            const baseName =
+                topologySchema === TOPOLOGY_ALL_SCHEMAS
+                    ? "schema-topology-all-schemas"
+                    : `schema-topology-${topologySchema}`;
 
             try {
                 if (format === "svg") {
@@ -1302,7 +1342,7 @@ export function SchemaTopology({
                 setIsExporting(false);
             }
         },
-        [topology, positions, schema, nodeMap]
+        [topology, positions, topologySchema, nodeMap]
     );
 
     // ── Guard Renders ────────────────────────────────────────────────────────
@@ -1315,10 +1355,10 @@ export function SchemaTopology({
         );
     }
 
-    if (!schema) {
+    if (!isAllSchemas && schemas.length === 0) {
         return (
             <div className="flex h-full items-center justify-center text-muted-foreground text-sm">
-                Select a schema in the sidebar.
+                No schemas available for this connection.
             </div>
         );
     }
@@ -1374,7 +1414,11 @@ export function SchemaTopology({
         return (
             <div className="flex h-full flex-col items-center justify-center gap-3 text-muted-foreground text-sm">
                 <Network className="h-10 w-10 opacity-50" />
-                <span>No tables in this schema.</span>
+                <span>
+                    {isAllSchemas
+                        ? "No tables in any visible user schema."
+                        : "No tables in this schema."}
+                </span>
             </div>
         );
     }
@@ -1385,14 +1429,17 @@ export function SchemaTopology({
         <div className="flex h-full flex-col">
             {/* Toolbar */}
             <div className="flex shrink-0 items-center gap-2 border-b border-border/20 px-3 py-2">
-                <Select
-                    value={schema ?? ""}
-                    onValueChange={(v) => setTopologySchema(v)}
-                >
-                    <SelectTrigger className="h-8 w-[140px] text-xs" size="sm">
+                <Select value={topologySchema} onValueChange={setTopologySchema}>
+                    <SelectTrigger
+                        className="h-8 min-w-[10rem] max-w-[13rem] text-xs"
+                        size="sm"
+                    >
                         <SelectValue placeholder="Schema" />
                     </SelectTrigger>
                     <SelectContent>
+                        <SelectItem value={TOPOLOGY_ALL_SCHEMAS} className="text-xs">
+                            All schemas
+                        </SelectItem>
                         {schemas.map((s) => (
                             <SelectItem key={s.name} value={s.name} className="text-xs">
                                 {s.name}
@@ -1400,6 +1447,19 @@ export function SchemaTopology({
                         ))}
                     </SelectContent>
                 </Select>
+                <div className="hidden sm:flex items-center gap-3 text-[10px] text-muted-foreground shrink-0">
+                    <span className="flex items-center gap-1">
+                        <span className="inline-block size-2 shrink-0 rounded-full bg-yellow-500" />
+                        PK
+                    </span>
+                    <span className="flex items-center gap-1">
+                        <span className="inline-block size-2 shrink-0 rounded-full bg-blue-400" />
+                        FK
+                    </span>
+                </div>
+                <span className="text-[10px] text-muted-foreground tabular-nums shrink-0">
+                    {topology.nodes.length} tables · {topology.edges.length} FKs
+                </span>
                 <div className="relative flex-1 max-w-xs">
                     <Search className="absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" />
                     <Input
@@ -1418,6 +1478,28 @@ export function SchemaTopology({
                 >
                     <Maximize2 className="h-3 w-3" />
                     Fit view
+                </Button>
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0"
+                    onClick={() =>
+                        setScale((s) => Math.max(0.2, Math.min(3, s - 0.15)))
+                    }
+                    title="Zoom out"
+                >
+                    <Minus className="h-3.5 w-3.5" />
+                </Button>
+                <Button
+                    variant="ghost"
+                    size="icon"
+                    className="h-8 w-8 shrink-0"
+                    onClick={() =>
+                        setScale((s) => Math.max(0.2, Math.min(3, s + 0.15)))
+                    }
+                    title="Zoom in"
+                >
+                    <Plus className="h-3.5 w-3.5" />
                 </Button>
                 <Button
                     variant="ghost"
@@ -1602,6 +1684,11 @@ export function SchemaTopology({
                                         fkColumns={fkColumns}
                                         highlightedColumns={highlightedColumns}
                                         denseMode={isDenseGraph}
+                                        headerAccent={
+                                            isAllSchemas
+                                                ? schemaHeaderAccent(node.schema)
+                                                : undefined
+                                        }
                                     />
                                 </g>
                             );

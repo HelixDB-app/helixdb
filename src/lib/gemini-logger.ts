@@ -16,6 +16,7 @@ export type ApiFeatureType =
     | "doc-writer"
     | "sql-review"
     | "seed-data"
+    | "row-form-fill"
     | "index-optimization"
     | "query-error"
     | "query-explain"

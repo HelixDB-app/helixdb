@@ -282,7 +282,15 @@ fn should_cast_to_text(data_type: &str, is_enum: bool) -> bool {
     }
     if matches!(
         base.as_str(),
-        "inet" | "cidr" | "macaddr" | "macaddr8" | "point" | "line" | "lseg" | "box" | "path"
+        "inet"
+            | "cidr"
+            | "macaddr"
+            | "macaddr8"
+            | "point"
+            | "line"
+            | "lseg"
+            | "box"
+            | "path"
             | "polygon"
             | "circle"
     ) {
@@ -386,7 +394,10 @@ async fn fetch_enum_labels_by_column(
     name_and_oid
         .into_iter()
         .filter_map(|(name, oid)| {
-            oid_to_labels.get(&oid).cloned().map(|labels| (name, labels))
+            oid_to_labels
+                .get(&oid)
+                .cloned()
+                .map(|labels| (name, labels))
         })
         .collect()
 }
@@ -896,6 +907,7 @@ pub async fn get_columns(
                       AND i.indisprimary
                       AND a.attnum = ANY(i.indkey)
                 ) AS is_pk,
+                (COALESCE(a.attgenerated::text, '') <> '') AS is_generated,
                 d.description AS column_comment
              FROM pg_class c
              JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -922,7 +934,8 @@ pub async fn get_columns(
             ordinal_position: row.get(3),
             column_default: row.get(4),
             is_primary_key: row.get(5),
-            comment: row.get(6),
+            is_generated: row.get(6),
+            comment: row.get(7),
         })
         .collect();
 
@@ -1287,8 +1300,7 @@ pub async fn get_table_data(
     let columns_meta = get_columns(pool, schema, table).await.unwrap_or_default();
 
     // Fetch enum labels for columns that use custom enum types (one batch of queries).
-    let enum_labels_by_column =
-        fetch_enum_labels_by_column(&client, schema, table).await;
+    let enum_labels_by_column = fetch_enum_labels_by_column(&client, schema, table).await;
 
     let (query, columns): (String, Vec<ResultColumn>) = if !columns_meta.is_empty() {
         let select_list: String = build_select_list(&columns_meta, &enum_labels_by_column);
@@ -3375,6 +3387,20 @@ pub async fn update_table_row(
         .await
         .map_err(|e| format!("Columns: {}", e))?;
 
+    let generated: std::collections::HashSet<String> = columns
+        .iter()
+        .filter(|c| c.is_generated)
+        .map(|c| c.name.clone())
+        .collect();
+    let updates: Vec<(String, Option<String>)> = updates
+        .iter()
+        .filter(|(col, _)| !generated.contains(col))
+        .cloned()
+        .collect();
+    if updates.is_empty() {
+        return Ok(0);
+    }
+
     let col_type_map: std::collections::HashMap<String, String> = columns
         .iter()
         .map(|c| (c.name.clone(), c.data_type.clone()))
@@ -3388,7 +3414,8 @@ pub async fn update_table_row(
         .enumerate()
         .map(|(i, (col, _))| {
             let safe_col = sanitize_identifier(col);
-            let cast = pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
+            let cast =
+                pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
             // Force params to be TEXT so we can pass strings, then cast to the target type.
             // This avoids "error serializing parameter" for non-text columns (uuid, jsonb, etc).
             format!("\"{}\" = ${}::text::{}", safe_col, i + 1, cast)
@@ -3402,7 +3429,8 @@ pub async fn update_table_row(
         .map(|(i, col)| {
             let safe_col = sanitize_identifier(col);
             let param_idx = updates.len() + i + 1;
-            let cast = pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
+            let cast =
+                pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
             format!("\"{}\" = ${}::text::{}", safe_col, param_idx, cast)
         })
         .collect();
@@ -3454,6 +3482,21 @@ pub async fn insert_table_row(
     let columns = get_columns(pool, schema, table)
         .await
         .map_err(|e| format!("Columns: {}", e))?;
+    let generated: std::collections::HashSet<String> = columns
+        .iter()
+        .filter(|c| c.is_generated)
+        .map(|c| c.name.clone())
+        .collect();
+    let values: Vec<(String, Option<String>)> = values
+        .into_iter()
+        .filter(|(name, _)| !generated.contains(name))
+        .collect();
+    if values.is_empty() {
+        return Err(
+            "No insertable columns left (generated columns cannot be written).".to_string(),
+        );
+    }
+
     let col_type_map: std::collections::HashMap<String, String> = columns
         .iter()
         .map(|c| (c.name.clone(), c.data_type.clone()))
@@ -3472,7 +3515,8 @@ pub async fn insert_table_row(
         .iter()
         .enumerate()
         .map(|(i, (col, _))| {
-            let cast = pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
+            let cast =
+                pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
             format!("${}::text::{}", i + 1, cast)
         })
         .collect();
@@ -3512,6 +3556,11 @@ pub async fn insert_table_rows_bulk(
     let columns = get_columns(pool, schema, table)
         .await
         .map_err(|e| format!("Columns: {}", e))?;
+    let generated: std::collections::HashSet<String> = columns
+        .iter()
+        .filter(|c| c.is_generated)
+        .map(|c| c.name.clone())
+        .collect();
     let col_type_map: std::collections::HashMap<String, String> = columns
         .iter()
         .map(|c| (c.name.clone(), c.data_type.clone()))
@@ -3528,6 +3577,10 @@ pub async fn insert_table_rows_bulk(
                     .unwrap_or(false)
             })
             .cloned()
+            .collect();
+        let values: Vec<(String, Option<String>)> = values
+            .into_iter()
+            .filter(|(name, _)| !generated.contains(name))
             .collect();
         if values.is_empty() {
             continue;
@@ -3607,8 +3660,9 @@ pub async fn delete_table_rows(
                 .enumerate()
                 .map(|(col_i, col)| {
                     let param_idx = start + col_i + 1;
-                    let cast =
-                        pg_cast_type_expr(col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"));
+                    let cast = pg_cast_type_expr(
+                        col_type_map.get(col).map(|s| s.as_str()).unwrap_or("text"),
+                    );
                     // Force params to be text then cast to target type to avoid serialization errors.
                     format!("${}::text::{}", param_idx, cast)
                 })
@@ -3667,8 +3721,7 @@ pub async fn search_table_data(
     let safe_col = sanitize_identifier(column);
 
     let columns_meta = get_columns(pool, schema, table).await.unwrap_or_default();
-    let enum_labels_by_column =
-        fetch_enum_labels_by_column(&client, schema, table).await;
+    let enum_labels_by_column = fetch_enum_labels_by_column(&client, schema, table).await;
     let select_list = if columns_meta.is_empty() {
         "*".to_string()
     } else {
@@ -3788,6 +3841,7 @@ pub async fn get_table_details(
                       AND i.indisprimary
                       AND a.attnum = ANY(i.indkey)
                 ) AS is_primary_key,
+                (COALESCE(a.attgenerated::text, '') <> '') AS is_generated,
                 d.description AS column_comment
              FROM pg_class c
              JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -3814,7 +3868,8 @@ pub async fn get_table_details(
             ordinal_position: row.get(3),
             column_default: row.get(4),
             is_primary_key: row.get(5),
-            comment: row.get(6),
+            is_generated: row.get(6),
+            comment: row.get(7),
         })
         .collect();
 
@@ -4824,8 +4879,7 @@ pub async fn search_table_data_multi(
     let safe_table = sanitize_identifier(table);
 
     let columns_meta = get_columns(pool, schema, table).await.unwrap_or_default();
-    let enum_labels_by_column =
-        fetch_enum_labels_by_column(&client, schema, table).await;
+    let enum_labels_by_column = fetch_enum_labels_by_column(&client, schema, table).await;
     let select_list = if columns_meta.is_empty() {
         "*".to_string()
     } else {
@@ -5752,6 +5806,77 @@ pub async fn get_index_build_progress(
 // Schema topology (ER diagram)
 // ──────────────────────────────────────────────────────────────────────────────
 
+/// Matches `list_schemas`: user-visible schemas only (`IN (...)` subquery).
+const USER_SCHEMA_TOPOLOGY_SUBQUERY: &str = "(SELECT schema_name FROM information_schema.schemata \
+      WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast'))";
+
+fn build_topology_from_rows(
+    table_rows: &[Row],
+    col_rows: &[Row],
+    pk_rows: &[Row],
+    fk_rows: &[Row],
+) -> TopologyData {
+    let mut pk_set: HashSet<(String, String, String)> = HashSet::new();
+    for row in pk_rows {
+        let s: String = row.get(0);
+        let t: String = row.get(1);
+        let c: String = row.get(2);
+        pk_set.insert((s, t, c));
+    }
+
+    let mut columns_by_table: HashMap<(String, String), Vec<TopologyColumn>> = HashMap::new();
+    for row in col_rows {
+        let s: String = row.get(0);
+        let t: String = row.get(1);
+        let col_name: String = row.get(2);
+        let data_type: String = row.get(3);
+        let nullable: bool = row.get(4);
+        let is_pk = pk_set.contains(&(s.clone(), t.clone(), col_name.clone()));
+        columns_by_table
+            .entry((s, t))
+            .or_default()
+            .push(TopologyColumn {
+                name: col_name,
+                data_type,
+                is_primary_key: is_pk,
+                is_nullable: nullable,
+            });
+    }
+
+    let nodes: Vec<TopologyNode> = table_rows
+        .iter()
+        .map(|row| {
+            let schema_name: String = row.get(1);
+            let table_name: String = row.get(0);
+            let row_count: i64 = row.get(3);
+            let columns = columns_by_table
+                .remove(&(schema_name.clone(), table_name.clone()))
+                .unwrap_or_default();
+            TopologyNode {
+                schema: schema_name,
+                table_name,
+                row_count,
+                columns,
+            }
+        })
+        .collect();
+
+    let edges: Vec<TopologyEdge> = fk_rows
+        .iter()
+        .map(|row| TopologyEdge {
+            constraint_name: row.get(0),
+            from_schema: row.get(1),
+            from_table: row.get(2),
+            from_column: row.get(3),
+            to_schema: row.get(4),
+            to_table: row.get(5),
+            to_column: row.get(6),
+        })
+        .collect();
+
+    TopologyData { nodes, edges }
+}
+
 /// Fetch nodes (tables + row count + columns with types/PK) and edges (FKs) for a schema.
 /// Uses a 15-second timeout and runs all 4 queries concurrently for performance.
 pub async fn get_schema_topology(pool: &Arc<Pool>, schema: &str) -> Result<TopologyData, String> {
@@ -5801,7 +5926,7 @@ pub async fn get_schema_topology(pool: &Arc<Pool>, schema: &str) -> Result<Topol
             async {
                 client
                     .query(
-                        "SELECT kcu.table_name, kcu.column_name
+                        "SELECT kcu.table_schema, kcu.table_name, kcu.column_name
                          FROM information_schema.table_constraints tc
                          JOIN information_schema.key_column_usage kcu
                            ON tc.constraint_name = kcu.constraint_name
@@ -5841,68 +5966,12 @@ pub async fn get_schema_topology(pool: &Arc<Pool>, schema: &str) -> Result<Topol
             }
         )?;
 
-        // Build a set of (table_name, column_name) that are primary keys
-        let mut pk_set: std::collections::HashSet<(String, String)> =
-            std::collections::HashSet::new();
-        for row in &pk_rows {
-            let t: String = row.get(0);
-            let c: String = row.get(1);
-            pk_set.insert((t, c));
-        }
-
-        // Build columns map: (schema, table) -> Vec<TopologyColumn>
-        let mut columns_by_table: std::collections::HashMap<(String, String), Vec<TopologyColumn>> =
-            std::collections::HashMap::new();
-        for row in &col_rows {
-            let s: String = row.get(0);
-            let t: String = row.get(1);
-            let col_name: String = row.get(2);
-            let data_type: String = row.get(3);
-            let nullable: bool = row.get(4);
-            let is_pk = pk_set.contains(&(t.clone(), col_name.clone()));
-            columns_by_table
-                .entry((s, t))
-                .or_default()
-                .push(TopologyColumn {
-                    name: col_name,
-                    data_type,
-                    is_primary_key: is_pk,
-                    is_nullable: nullable,
-                });
-        }
-
-        let nodes: Vec<TopologyNode> = table_rows
-            .iter()
-            .map(|row| {
-                let schema_name: String = row.get(1);
-                let table_name: String = row.get(0);
-                let row_count: i64 = row.get(3);
-                let columns = columns_by_table
-                    .remove(&(schema_name.clone(), table_name.clone()))
-                    .unwrap_or_default();
-                TopologyNode {
-                    schema: schema_name,
-                    table_name,
-                    row_count,
-                    columns,
-                }
-            })
-            .collect();
-
-        let edges: Vec<TopologyEdge> = fk_rows
-            .iter()
-            .map(|row| TopologyEdge {
-                constraint_name: row.get(0),
-                from_schema: row.get(1),
-                from_table: row.get(2),
-                from_column: row.get(3),
-                to_schema: row.get(4),
-                to_table: row.get(5),
-                to_column: row.get(6),
-            })
-            .collect();
-
-        Ok(TopologyData { nodes, edges })
+        Ok(build_topology_from_rows(
+            &table_rows,
+            &col_rows,
+            &pk_rows,
+            &fk_rows,
+        ))
     })
     .await;
 
@@ -5940,6 +6009,134 @@ pub async fn get_schema_topology(pool: &Arc<Pool>, schema: &str) -> Result<Topol
     }
 }
 
+/// All user-visible schemas in one round trip (same filter as list_schemas). Includes cross-schema FKs.
+pub async fn get_all_user_schemas_topology(pool: &Arc<Pool>) -> Result<TopologyData, String> {
+    const TIMEOUT: Duration = Duration::from_secs(15);
+    let started_at = Instant::now();
+
+    let tables_sql = format!(
+        "SELECT t.table_name, t.table_schema, t.table_type,
+                COALESCE(
+                    (SELECT reltuples::bigint FROM pg_class c
+                     JOIN pg_namespace n ON n.oid = c.relnamespace
+                     WHERE c.relname = t.table_name AND n.nspname = t.table_schema),
+                    0
+                ) AS estimated_row_count
+         FROM information_schema.tables t
+         WHERE t.table_schema IN {us}
+           AND t.table_type IN ('BASE TABLE', 'VIEW')
+         ORDER BY t.table_schema, t.table_name",
+        us = USER_SCHEMA_TOPOLOGY_SUBQUERY
+    );
+    let cols_sql = format!(
+        "SELECT table_schema, table_name, column_name, data_type,
+                CASE WHEN is_nullable = 'YES' THEN true ELSE false END AS nullable
+         FROM information_schema.columns
+         WHERE table_schema IN {us}
+         ORDER BY table_schema, table_name, ordinal_position",
+        us = USER_SCHEMA_TOPOLOGY_SUBQUERY
+    );
+    let pk_sql = format!(
+        "SELECT kcu.table_schema, kcu.table_name, kcu.column_name
+         FROM information_schema.table_constraints tc
+         JOIN information_schema.key_column_usage kcu
+           ON tc.constraint_name = kcu.constraint_name
+          AND tc.table_schema    = kcu.table_schema
+         WHERE tc.constraint_type = 'PRIMARY KEY'
+           AND tc.table_schema IN {us}",
+        us = USER_SCHEMA_TOPOLOGY_SUBQUERY
+    );
+    let fk_sql = format!(
+        "SELECT tc.constraint_name,
+                kcu.table_schema AS from_schema,
+                kcu.table_name   AS from_table,
+                kcu.column_name   AS from_column,
+                ccu.table_schema  AS to_schema,
+                ccu.table_name    AS to_table,
+                ccu.column_name   AS to_column
+         FROM information_schema.table_constraints tc
+         JOIN information_schema.key_column_usage kcu
+           ON tc.constraint_name = kcu.constraint_name
+          AND tc.table_schema    = kcu.table_schema
+         JOIN information_schema.constraint_column_usage ccu
+           ON tc.constraint_name = ccu.constraint_name
+         WHERE tc.constraint_type = 'FOREIGN KEY'
+           AND kcu.table_schema IN {us}
+           AND ccu.table_schema IN {us}
+         ORDER BY tc.constraint_name",
+        us = USER_SCHEMA_TOPOLOGY_SUBQUERY
+    );
+
+    let result = tokio::time::timeout(TIMEOUT, async {
+        let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+
+        let (table_rows, col_rows, pk_rows, fk_rows) = tokio::try_join!(
+            async {
+                client
+                    .query(&tables_sql, &[])
+                    .await
+                    .map_err(|e| format!("Topology tables query: {}", e))
+            },
+            async {
+                client
+                    .query(&cols_sql, &[])
+                    .await
+                    .map_err(|e| format!("Topology columns query: {}", e))
+            },
+            async {
+                client
+                    .query(&pk_sql, &[])
+                    .await
+                    .map_err(|e| format!("Topology PKs query: {}", e))
+            },
+            async {
+                client
+                    .query(&fk_sql, &[])
+                    .await
+                    .map_err(|e| format!("Topology FKs query: {}", e))
+            }
+        )?;
+
+        Ok(build_topology_from_rows(
+            &table_rows,
+            &col_rows,
+            &pk_rows,
+            &fk_rows,
+        ))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(data)) => {
+            debug!(
+                target: "topology",
+                "database_topology ok nodes={} edges={} elapsed_ms={}",
+                data.nodes.len(),
+                data.edges.len(),
+                started_at.elapsed().as_millis()
+            );
+            Ok(data)
+        }
+        Ok(Err(err)) => {
+            warn!(
+                target: "topology",
+                "database_topology error elapsed_ms={} error={}",
+                started_at.elapsed().as_millis(),
+                err
+            );
+            Err(err)
+        }
+        Err(_) => {
+            warn!(
+                target: "topology",
+                "database_topology timeout elapsed_ms={}",
+                started_at.elapsed().as_millis()
+            );
+            Err("Topology query timed out after 15 seconds. The database may be slow or unreachable.".to_string())
+        }
+    }
+}
+
 // ALTER TABLE preview
 // ──────────────────────────────────────────────────────────────────────────────
 
@@ -5956,92 +6153,74 @@ static ALTER_TABLE_HEADER_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 static ALTER_ADD_COLUMN_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        &format!(
-            r#"(?is)^add\s+column(?:\s+if\s+not\s+exists)?\s+({ident})\s+(.+)$"#,
-            ident = ALTER_IDENT_RE
-        ),
-    )
+    Regex::new(&format!(
+        r#"(?is)^add\s+column(?:\s+if\s+not\s+exists)?\s+({ident})\s+(.+)$"#,
+        ident = ALTER_IDENT_RE
+    ))
     .unwrap()
 });
 
 static ALTER_DROP_COLUMN_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        &format!(
-            r#"(?is)^drop\s+column(?:\s+if\s+exists)?\s+({ident})(?:\s+cascade)?$"#,
-            ident = ALTER_IDENT_RE
-        ),
-    )
+    Regex::new(&format!(
+        r#"(?is)^drop\s+column(?:\s+if\s+exists)?\s+({ident})(?:\s+cascade)?$"#,
+        ident = ALTER_IDENT_RE
+    ))
     .unwrap()
 });
 
 static ALTER_RENAME_COLUMN_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        &format!(
-            r#"(?is)^rename\s+column\s+({ident})\s+to\s+({ident})$"#,
-            ident = ALTER_IDENT_RE
-        ),
-    )
+    Regex::new(&format!(
+        r#"(?is)^rename\s+column\s+({ident})\s+to\s+({ident})$"#,
+        ident = ALTER_IDENT_RE
+    ))
     .unwrap()
 });
 
 static ALTER_COLUMN_TYPE_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        &format!(
-            r#"(?is)^alter\s+column\s+({ident})\s+(?:set\s+data\s+type|type)\s+(.+)$"#,
-            ident = ALTER_IDENT_RE
-        ),
-    )
+    Regex::new(&format!(
+        r#"(?is)^alter\s+column\s+({ident})\s+(?:set\s+data\s+type|type)\s+(.+)$"#,
+        ident = ALTER_IDENT_RE
+    ))
     .unwrap()
 });
 
 static ALTER_SET_NOT_NULL_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        &format!(
-            r#"(?is)^alter\s+column\s+({ident})\s+set\s+not\s+null$"#,
-            ident = ALTER_IDENT_RE
-        ),
-    )
+    Regex::new(&format!(
+        r#"(?is)^alter\s+column\s+({ident})\s+set\s+not\s+null$"#,
+        ident = ALTER_IDENT_RE
+    ))
     .unwrap()
 });
 
 static ALTER_DROP_NOT_NULL_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        &format!(
-            r#"(?is)^alter\s+column\s+({ident})\s+drop\s+not\s+null$"#,
-            ident = ALTER_IDENT_RE
-        ),
-    )
+    Regex::new(&format!(
+        r#"(?is)^alter\s+column\s+({ident})\s+drop\s+not\s+null$"#,
+        ident = ALTER_IDENT_RE
+    ))
     .unwrap()
 });
 
 static ALTER_SET_DEFAULT_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        &format!(
-            r#"(?is)^alter\s+column\s+({ident})\s+set\s+default\s+(.+)$"#,
-            ident = ALTER_IDENT_RE
-        ),
-    )
+    Regex::new(&format!(
+        r#"(?is)^alter\s+column\s+({ident})\s+set\s+default\s+(.+)$"#,
+        ident = ALTER_IDENT_RE
+    ))
     .unwrap()
 });
 
 static ALTER_DROP_DEFAULT_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        &format!(
-            r#"(?is)^alter\s+column\s+({ident})\s+drop\s+default$"#,
-            ident = ALTER_IDENT_RE
-        ),
-    )
+    Regex::new(&format!(
+        r#"(?is)^alter\s+column\s+({ident})\s+drop\s+default$"#,
+        ident = ALTER_IDENT_RE
+    ))
     .unwrap()
 });
 
 static ALTER_ADD_CONSTRAINT_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        &format!(
-            r#"(?is)^add\s+constraint\s+({ident})\s+(.+)$"#,
-            ident = ALTER_IDENT_RE
-        ),
-    )
+    Regex::new(&format!(
+        r#"(?is)^add\s+constraint\s+({ident})\s+(.+)$"#,
+        ident = ALTER_IDENT_RE
+    ))
     .unwrap()
 });
 
@@ -6056,12 +6235,10 @@ static ALTER_ADD_UNIQUE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"(?is)^add\s+unique\s*\((.*?)\)(.*)$"#).unwrap());
 
 static ALTER_DROP_CONSTRAINT_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        &format!(
-            r#"(?is)^drop\s+constraint(?:\s+if\s+exists)?\s+({ident})(?:\s+cascade)?$"#,
-            ident = ALTER_IDENT_RE
-        ),
-    )
+    Regex::new(&format!(
+        r#"(?is)^drop\s+constraint(?:\s+if\s+exists)?\s+({ident})(?:\s+cascade)?$"#,
+        ident = ALTER_IDENT_RE
+    ))
     .unwrap()
 });
 
@@ -6389,7 +6566,11 @@ fn split_top_level_commas(text: &str) -> Vec<String> {
 fn parse_identifier_list(raw: &str) -> Vec<String> {
     split_top_level_commas(raw)
         .into_iter()
-        .filter_map(|part| parse_identifier_path(&part).ok().and_then(|parts| parts.last().cloned()))
+        .filter_map(|part| {
+            parse_identifier_path(&part)
+                .ok()
+                .and_then(|parts| parts.last().cloned())
+        })
         .collect()
 }
 
@@ -6593,20 +6774,33 @@ fn parse_alter_operation(raw: &str) -> Result<ParsedAlterOperation, String> {
     }
 
     if let Some(caps) = ALTER_ADD_FOREIGN_KEY_RE.captures(text) {
-        return Ok(parse_add_constraint_payload(None, &format!("FOREIGN KEY ({}) REFERENCES {}", caps.get(1).map(|m| m.as_str()).unwrap_or_default(), caps.get(2).map(|m| m.as_str()).unwrap_or_default())));
+        return Ok(parse_add_constraint_payload(
+            None,
+            &format!(
+                "FOREIGN KEY ({}) REFERENCES {}",
+                caps.get(1).map(|m| m.as_str()).unwrap_or_default(),
+                caps.get(2).map(|m| m.as_str()).unwrap_or_default()
+            ),
+        ));
     }
 
     if let Some(caps) = ALTER_ADD_PRIMARY_KEY_RE.captures(text) {
         return Ok(parse_add_constraint_payload(
             None,
-            &format!("PRIMARY KEY ({})", caps.get(1).map(|m| m.as_str()).unwrap_or_default()),
+            &format!(
+                "PRIMARY KEY ({})",
+                caps.get(1).map(|m| m.as_str()).unwrap_or_default()
+            ),
         ));
     }
 
     if let Some(caps) = ALTER_ADD_UNIQUE_RE.captures(text) {
         return Ok(parse_add_constraint_payload(
             None,
-            &format!("UNIQUE ({})", caps.get(1).map(|m| m.as_str()).unwrap_or_default()),
+            &format!(
+                "UNIQUE ({})",
+                caps.get(1).map(|m| m.as_str()).unwrap_or_default()
+            ),
         ));
     }
 
@@ -6647,9 +6841,9 @@ fn parse_alter_table_statement(
     fallback_schema: Option<&str>,
 ) -> Result<ParsedAlterTableStatement, String> {
     let trimmed = sql.trim();
-    let caps = ALTER_TABLE_HEADER_RE
-        .captures(trimmed)
-        .ok_or_else(|| "Only a single ALTER TABLE statement can be previewed right now.".to_string())?;
+    let caps = ALTER_TABLE_HEADER_RE.captures(trimmed).ok_or_else(|| {
+        "Only a single ALTER TABLE statement can be previewed right now.".to_string()
+    })?;
 
     let ident = caps.get(1).map(|m| m.as_str()).unwrap_or_default();
     let body = caps.get(2).map(|m| m.as_str()).unwrap_or_default();
@@ -6799,8 +6993,9 @@ fn project_preview_columns(
                 record_annotation(&mut after_annotations, name, "added", detail);
             }
             ParsedAlterOperation::DropColumn { name } => {
-                proposed_working
-                    .retain(|column| normalize_ident_key(&column.name) != normalize_ident_key(name));
+                proposed_working.retain(|column| {
+                    normalize_ident_key(&column.name) != normalize_ident_key(name)
+                });
                 record_annotation(&mut before_annotations, name, "removed", "Will be dropped");
             }
             ParsedAlterOperation::RenameColumn { from, to } => {
@@ -6884,12 +7079,7 @@ fn project_preview_columns(
                     "modified",
                     "Default will be removed",
                 );
-                record_annotation(
-                    &mut after_annotations,
-                    name,
-                    "modified",
-                    "Default removed",
-                );
+                record_annotation(&mut after_annotations, name, "modified", "Default removed");
             }
             ParsedAlterOperation::AddConstraint {
                 constraint_kind,
@@ -6900,7 +7090,9 @@ fn project_preview_columns(
                 let detail = if constraint_kind == "foreign_key" {
                     format!(
                         "New foreign key to {}",
-                        ref_table.clone().unwrap_or_else(|| "another table".to_string())
+                        ref_table
+                            .clone()
+                            .unwrap_or_else(|| "another table".to_string())
                     )
                 } else {
                     format!("New {} constraint", constraint_kind.replace('_', " "))
@@ -6972,11 +7164,15 @@ fn project_edges(
             ParsedAlterOperation::DropColumn { name } => {
                 let key = normalize_ident_key(name);
                 projected.retain(|edge| {
-                    !((normalize_ident_key(&edge.from_schema) == normalize_ident_key(&focus_schema)
-                        && normalize_ident_key(&edge.from_table) == normalize_ident_key(&focus_table)
+                    !((normalize_ident_key(&edge.from_schema)
+                        == normalize_ident_key(&focus_schema)
+                        && normalize_ident_key(&edge.from_table)
+                            == normalize_ident_key(&focus_table)
                         && normalize_ident_key(&edge.from_column) == key)
-                        || (normalize_ident_key(&edge.to_schema) == normalize_ident_key(&focus_schema)
-                            && normalize_ident_key(&edge.to_table) == normalize_ident_key(&focus_table)
+                        || (normalize_ident_key(&edge.to_schema)
+                            == normalize_ident_key(&focus_schema)
+                            && normalize_ident_key(&edge.to_table)
+                                == normalize_ident_key(&focus_table)
                             && normalize_ident_key(&edge.to_column) == key))
                 });
             }
@@ -6984,7 +7180,8 @@ fn project_edges(
                 let from_key = normalize_ident_key(from);
                 for edge in &mut projected {
                     if normalize_ident_key(&edge.from_schema) == normalize_ident_key(&focus_schema)
-                        && normalize_ident_key(&edge.from_table) == normalize_ident_key(&focus_table)
+                        && normalize_ident_key(&edge.from_table)
+                            == normalize_ident_key(&focus_table)
                         && normalize_ident_key(&edge.from_column) == from_key
                     {
                         edge.from_column = to.clone();
@@ -7013,10 +7210,12 @@ fn project_edges(
                 let referenced_schema = ref_schema.clone().unwrap_or_else(|| focus_schema.clone());
                 let referenced_table = ref_table.clone().unwrap_or_default();
                 for (idx, from_column) in columns.iter().enumerate() {
-                    let to_column = ref_columns
-                        .get(idx)
-                        .cloned()
-                        .unwrap_or_else(|| ref_columns.first().cloned().unwrap_or_else(|| "id".to_string()));
+                    let to_column = ref_columns.get(idx).cloned().unwrap_or_else(|| {
+                        ref_columns
+                            .first()
+                            .cloned()
+                            .unwrap_or_else(|| "id".to_string())
+                    });
                     projected.push(WorkingEdge {
                         constraint_name: name
                             .clone()
@@ -7033,7 +7232,8 @@ fn project_edges(
             ParsedAlterOperation::RenameTable { to } => {
                 for edge in &mut projected {
                     if normalize_ident_key(&edge.from_schema) == normalize_ident_key(&focus_schema)
-                        && normalize_ident_key(&edge.from_table) == normalize_ident_key(&focus_table)
+                        && normalize_ident_key(&edge.from_table)
+                            == normalize_ident_key(&focus_table)
                     {
                         edge.from_table = to.clone();
                     }
@@ -7048,7 +7248,8 @@ fn project_edges(
             ParsedAlterOperation::SetSchema { schema } => {
                 for edge in &mut projected {
                     if normalize_ident_key(&edge.from_schema) == normalize_ident_key(&focus_schema)
-                        && normalize_ident_key(&edge.from_table) == normalize_ident_key(&focus_table)
+                        && normalize_ident_key(&edge.from_table)
+                            == normalize_ident_key(&focus_table)
                     {
                         edge.from_schema = schema.clone();
                     }
@@ -7089,8 +7290,14 @@ fn working_edge_exact_key(edge: &WorkingEdge) -> String {
 
 fn build_related_note(role: &str, incoming: usize, outgoing: usize) -> Option<String> {
     match role {
-        "dependency" => Some(format!("Referenced by the proposed table via {} relationship(s)", outgoing)),
-        "dependent" => Some(format!("Depends on the proposed table via {} relationship(s)", incoming)),
+        "dependency" => Some(format!(
+            "Referenced by the proposed table via {} relationship(s)",
+            outgoing
+        )),
+        "dependent" => Some(format!(
+            "Depends on the proposed table via {} relationship(s)",
+            incoming
+        )),
         "related" => Some(format!(
             "Bidirectional impact surface: {} incoming / {} outgoing",
             incoming, outgoing
@@ -7101,7 +7308,9 @@ fn build_related_note(role: &str, incoming: usize, outgoing: usize) -> Option<St
 
 fn describe_change(operation: &ParsedAlterOperation) -> AlterTableChange {
     match operation {
-        ParsedAlterOperation::AddColumn { name, data_type, .. } => AlterTableChange {
+        ParsedAlterOperation::AddColumn {
+            name, data_type, ..
+        } => AlterTableChange {
             kind: "add_column".to_string(),
             title: format!("Add column {}", name),
             detail: format!("Adds `{}` as `{}`.", name, data_type),
@@ -7158,7 +7367,10 @@ fn describe_change(operation: &ParsedAlterOperation) -> AlterTableChange {
         ParsedAlterOperation::SetDefault { name, default_expr } => AlterTableChange {
             kind: "set_default".to_string(),
             title: format!("Set default for {}", name),
-            detail: format!("Applies `{}` as the new default for `{}`.", default_expr, name),
+            detail: format!(
+                "Applies `{}` as the new default for `{}`.",
+                default_expr, name
+            ),
             column: Some(name.clone()),
             next_column: None,
             destructive: false,
@@ -7350,7 +7562,9 @@ fn assess_alter_table_risks(
     let touches_referenced_columns = incoming_edges
         .iter()
         .any(|edge| touched_columns.contains(&normalize_ident_key(&edge.to_column)))
-        || pk_columns.iter().any(|column| touched_columns.contains(column));
+        || pk_columns
+            .iter()
+            .any(|column| touched_columns.contains(column));
     if touches_referenced_columns && !incoming_edges.is_empty() {
         score = score.saturating_add(18);
         push_risk(
@@ -7436,7 +7650,10 @@ fn assess_alter_table_risks(
                     if *not_valid { "info" } else { "warn" },
                     "Foreign-key validation can be heavy on large tables",
                     detail.clone(),
-                    Some("Use NOT VALID first, then VALIDATE CONSTRAINT during a quieter window.".to_string()),
+                    Some(
+                        "Use NOT VALID first, then VALIDATE CONSTRAINT during a quieter window."
+                            .to_string(),
+                    ),
                 );
             }
             ParsedAlterOperation::AddConstraint {
@@ -7546,7 +7763,8 @@ fn assess_alter_table_risks(
             &mut risks,
             "info",
             "No obvious blockers were detected",
-            "This is still a heuristic preview. Validate on staging before touching production.".to_string(),
+            "This is still a heuristic preview. Validate on staging before touching production."
+                .to_string(),
             None,
         );
     }
@@ -7568,7 +7786,11 @@ fn suggest_alternatives(
     details: &TableDetails,
     operations: &[ParsedAlterOperation],
 ) -> Vec<AlterTableAlternative> {
-    let qtable = format!("{}.{}", quote_ident(&details.schema), quote_ident(&details.name));
+    let qtable = format!(
+        "{}.{}",
+        quote_ident(&details.schema),
+        quote_ident(&details.name)
+    );
     let mut alternatives = Vec::new();
     let mut seen = HashSet::new();
     let column_types: HashMap<String, String> = details
@@ -7586,7 +7808,10 @@ fn suggest_alternatives(
                 default_expr,
             } if *not_null || default_expr.is_some() => {
                 let qcol = quote_ident(name);
-                let mut sql = format!("ALTER TABLE {} ADD COLUMN {} {};\n", qtable, qcol, data_type);
+                let mut sql = format!(
+                    "ALTER TABLE {} ADD COLUMN {} {};\n",
+                    qtable, qcol, data_type
+                );
                 sql.push_str(&format!(
                     "-- Backfill in batches so hot writers do not wait on a single migration.\nUPDATE {}\nSET {} = /* fill expression */\nWHERE {} IS NULL;\n",
                     qtable, qcol, qcol
@@ -7679,11 +7904,19 @@ fn suggest_alternatives(
                 ..
             } if constraint_kind == "foreign_key" => {
                 let constraint_name = name.clone().unwrap_or_else(|| {
-                    format!("fk_{}_{}", details.name, columns.first().cloned().unwrap_or_else(|| "id".to_string()))
+                    format!(
+                        "fk_{}_{}",
+                        details.name,
+                        columns.first().cloned().unwrap_or_else(|| "id".to_string())
+                    )
                 });
                 let ref_target = match (ref_schema, ref_table) {
-                    (Some(schema), Some(table)) => format!("{}.{}", quote_ident(schema), quote_ident(table)),
-                    (None, Some(table)) => format!("{}.{}", quote_ident(&details.schema), quote_ident(table)),
+                    (Some(schema), Some(table)) => {
+                        format!("{}.{}", quote_ident(schema), quote_ident(table))
+                    }
+                    (None, Some(table)) => {
+                        format!("{}.{}", quote_ident(&details.schema), quote_ident(table))
+                    }
                     _ => "\"target\"".to_string(),
                 };
                 push_unique_alternative(&mut alternatives, &mut seen, AlterTableAlternative {
@@ -7775,7 +8008,8 @@ pub async fn preview_alter_table(
     let effective_row_count = details.row_count.max(0);
 
     let mut warnings = vec![
-        "Relationship rendering currently focuses on dependencies visible in the same schema.".to_string(),
+        "Relationship rendering currently focuses on dependencies visible in the same schema."
+            .to_string(),
     ];
     if details.row_count < 0 {
         warnings.push(
@@ -7827,9 +8061,12 @@ pub async fn preview_alter_table(
                 .iter()
                 .filter(|edge| {
                     (normalize_ident_key(&edge.from_schema) == normalize_ident_key(&parsed.schema)
-                        && normalize_ident_key(&edge.from_table) == normalize_ident_key(&parsed.table))
-                        || (normalize_ident_key(&edge.to_schema) == normalize_ident_key(&parsed.schema)
-                            && normalize_ident_key(&edge.to_table) == normalize_ident_key(&parsed.table))
+                        && normalize_ident_key(&edge.from_table)
+                            == normalize_ident_key(&parsed.table))
+                        || (normalize_ident_key(&edge.to_schema)
+                            == normalize_ident_key(&parsed.schema)
+                            && normalize_ident_key(&edge.to_table)
+                                == normalize_ident_key(&parsed.table))
                 })
                 .map(|edge| WorkingEdge {
                     constraint_name: edge.constraint_name.clone(),
@@ -7844,8 +8081,12 @@ pub async fn preview_alter_table(
         })
         .unwrap_or_default();
 
-    let (focus_schema_after, focus_table_after, projected_edges) =
-        project_edges(&parsed.schema, &parsed.table, &parsed.operations, &current_edges);
+    let (focus_schema_after, focus_table_after, projected_edges) = project_edges(
+        &parsed.schema,
+        &parsed.table,
+        &parsed.operations,
+        &current_edges,
+    );
     let (current_columns, proposed_columns) = project_preview_columns(&details, &parsed.operations);
 
     let current_focus_node_id = format!("{}.{}::current", parsed.schema, parsed.table);
@@ -7913,15 +8154,19 @@ pub async fn preview_alter_table(
 
     let mut related_counts: HashMap<String, (usize, usize)> = HashMap::new();
     for edge in current_edges.iter().chain(projected_edges.iter()) {
-        let from_focus = normalize_ident_key(&edge.from_schema) == normalize_ident_key(&focus_schema_after)
+        let from_focus = normalize_ident_key(&edge.from_schema)
+            == normalize_ident_key(&focus_schema_after)
             && normalize_ident_key(&edge.from_table) == normalize_ident_key(&focus_table_after);
-        let to_focus = normalize_ident_key(&edge.to_schema) == normalize_ident_key(&focus_schema_after)
+        let to_focus = normalize_ident_key(&edge.to_schema)
+            == normalize_ident_key(&focus_schema_after)
             && normalize_ident_key(&edge.to_table) == normalize_ident_key(&focus_table_after);
 
         if !from_focus && !to_focus {
-            let from_is_current_focus = normalize_ident_key(&edge.from_schema) == normalize_ident_key(&parsed.schema)
+            let from_is_current_focus = normalize_ident_key(&edge.from_schema)
+                == normalize_ident_key(&parsed.schema)
                 && normalize_ident_key(&edge.from_table) == normalize_ident_key(&parsed.table);
-            let to_is_current_focus = normalize_ident_key(&edge.to_schema) == normalize_ident_key(&parsed.schema)
+            let to_is_current_focus = normalize_ident_key(&edge.to_schema)
+                == normalize_ident_key(&parsed.schema)
                 && normalize_ident_key(&edge.to_table) == normalize_ident_key(&parsed.table);
             if !from_is_current_focus && !to_is_current_focus {
                 continue;
@@ -8015,9 +8260,11 @@ pub async fn preview_alter_table(
             "removed"
         };
 
-        let from_is_focus = normalize_ident_key(&edge.from_schema) == normalize_ident_key(&parsed.schema)
+        let from_is_focus = normalize_ident_key(&edge.from_schema)
+            == normalize_ident_key(&parsed.schema)
             && normalize_ident_key(&edge.from_table) == normalize_ident_key(&parsed.table);
-        let to_is_focus = normalize_ident_key(&edge.to_schema) == normalize_ident_key(&parsed.schema)
+        let to_is_focus = normalize_ident_key(&edge.to_schema)
+            == normalize_ident_key(&parsed.schema)
             && normalize_ident_key(&edge.to_table) == normalize_ident_key(&parsed.table);
         if !from_is_focus && !to_is_focus {
             continue;
@@ -8061,9 +8308,11 @@ pub async fn preview_alter_table(
             "added"
         };
 
-        let from_is_focus = normalize_ident_key(&edge.from_schema) == normalize_ident_key(&focus_schema_after)
+        let from_is_focus = normalize_ident_key(&edge.from_schema)
+            == normalize_ident_key(&focus_schema_after)
             && normalize_ident_key(&edge.from_table) == normalize_ident_key(&focus_table_after);
-        let to_is_focus = normalize_ident_key(&edge.to_schema) == normalize_ident_key(&focus_schema_after)
+        let to_is_focus = normalize_ident_key(&edge.to_schema)
+            == normalize_ident_key(&focus_schema_after)
             && normalize_ident_key(&edge.to_table) == normalize_ident_key(&focus_table_after);
         if !from_is_focus && !to_is_focus {
             continue;

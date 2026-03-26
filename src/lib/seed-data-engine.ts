@@ -14,14 +14,15 @@ const SYSTEM_PROMPT = `You are a database expert. Given a PostgreSQL table schem
 
 Rules:
 - Output ONLY a single JSON array of objects. No markdown, no code fence, no explanation outside the JSON.
-- Each object has keys = column names (exact spelling/case from the schema). Values are strings or null.
+- Each object has keys = column names (exact spelling/case from the schema). The schema lists only insertable columns (generated/computed columns are omitted). Values are strings or null.
 - For nullable columns you may use null. For NOT NULL columns always provide a string value.
 - Generate realistic, consistent data: proper names, emails, dates (ISO 8601), integers, decimals, booleans as "true"/"false", UUIDs as standard format.
 - For serial/identity columns omit the key or use a plausible integer if the schema says it's not auto-generated.
 - For foreign key columns use plausible reference values (e.g. integer IDs, UUIDs) that could exist in the referenced table.
 - Respect data types: numbers as string digits, booleans as "true"/"false", timestamps as ISO strings, etc.`;
 
-function buildSchemaForSeed(details: TableDetails): string {
+/** Schema text for AI prompts (FK hints, column flags). */
+export function buildSchemaForSeed(details: TableDetails): string {
     const { columns, constraints } = details;
     const fkByColumn = new Map<string, { refTable: string; refCol: string }>();
     for (const c of constraints) {
@@ -30,6 +31,7 @@ function buildSchemaForSeed(details: TableDetails): string {
         }
     }
     const lines = columns.map((col) => {
+        if (col.is_generated) return "";
         const flags: string[] = [];
         if (col.is_primary_key) flags.push("pk");
         const fk = fkByColumn.get(col.name);
@@ -39,7 +41,8 @@ function buildSchemaForSeed(details: TableDetails): string {
         const flagStr = flags.length ? `,${flags.join(",")}` : "";
         return `  - ${col.name}: ${type}${flagStr}`;
     });
-    return `Table: ${details.schema}.${details.name}\nColumns:\n${lines.join("\n")}`;
+    const body = lines.filter(Boolean).join("\n");
+    return `Table: ${details.schema}.${details.name}\nColumns:\n${body}`;
 }
 
 function getApiKeyAndModel(): { apiKey: string; model: GeminiModelId } {
@@ -50,7 +53,7 @@ function getApiKeyAndModel(): { apiKey: string; model: GeminiModelId } {
     };
 }
 
-function coerceValue(
+export function coerceValue(
     raw: unknown,
     col: ColumnInfo
 ): string | null {
@@ -136,9 +139,10 @@ export async function generateSeedData(
     const modelId = options?.model ?? model;
     if (!apiKey)
         throw new Error("Add your Gemini API key in Settings → AI to use data seeding.");
-    if (details.columns.length === 0)
-        throw new Error("Table has no columns.");
-    const schemaStr = buildSchemaForSeed(details);
+    const cols = details.columns.filter((c) => !c.is_generated);
+    if (cols.length === 0)
+        throw new Error("Table has no insertable columns.");
+    const schemaStr = buildSchemaForSeed({ ...details, columns: cols });
     const count = Math.min(Math.max(1, rowCount), 100);
     let instruction = `Generate exactly ${count} sample rows as a JSON array of objects. Each object must have keys for every column listed above. Use realistic values. Output only the JSON array, nothing else.`;
     if (options?.previousError?.trim()) {
@@ -163,5 +167,5 @@ export async function generateSeedData(
         ),
         { model: modelId, featureType: "seed-data", endpoint: "generateContent" }
     );
-    return parseAndValidateRows(response, details.columns);
+    return parseAndValidateRows(response, cols);
 }

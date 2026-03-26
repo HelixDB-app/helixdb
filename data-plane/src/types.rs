@@ -203,6 +203,8 @@ pub struct ColumnInfo {
     pub ordinal_position: i32,
     pub column_default: Option<String>,
     pub is_primary_key: bool,
+    #[serde(default)]
+    pub is_generated: bool,
     pub comment: Option<String>,
 }
 

@@ -10,6 +10,78 @@ use std::time::{Duration, Instant};
 use tokio_postgres::Row;
 use tracing::warn;
 
+/// Matches [`crate::table_ops::list_schemas`]: user-visible schemas only (`IN (...)` subquery).
+const USER_SCHEMA_SUBQUERY: &str =
+    "(SELECT schema_name FROM information_schema.schemata \
+      WHERE schema_name NOT IN ('pg_catalog', 'information_schema', 'pg_toast'))";
+
+fn build_topology_from_rows(
+    table_rows: &[Row],
+    col_rows: &[Row],
+    pk_rows: &[Row],
+    fk_rows: &[Row],
+) -> TopologyData {
+    let mut pk_set: HashSet<(String, String, String)> = HashSet::new();
+    for row in pk_rows {
+        let s: String = row.get(0);
+        let t: String = row.get(1);
+        let c: String = row.get(2);
+        pk_set.insert((s, t, c));
+    }
+
+    let mut columns_by_table: HashMap<(String, String), Vec<TopologyColumn>> = HashMap::new();
+    for row in col_rows {
+        let s: String = row.get(0);
+        let t: String = row.get(1);
+        let col_name: String = row.get(2);
+        let data_type: String = row.get(3);
+        let nullable: bool = row.get(4);
+        let is_pk = pk_set.contains(&(s.clone(), t.clone(), col_name.clone()));
+        columns_by_table
+            .entry((s, t))
+            .or_default()
+            .push(TopologyColumn {
+                name: col_name,
+                data_type,
+                is_primary_key: is_pk,
+                is_nullable: nullable,
+            });
+    }
+
+    let nodes: Vec<TopologyNode> = table_rows
+        .iter()
+        .map(|row| {
+            let schema_name: String = row.get(1);
+            let table_name: String = row.get(0);
+            let row_count: i64 = row.get(3);
+            let columns = columns_by_table
+                .remove(&(schema_name.clone(), table_name.clone()))
+                .unwrap_or_default();
+            TopologyNode {
+                schema: schema_name,
+                table_name,
+                row_count,
+                columns,
+            }
+        })
+        .collect();
+
+    let edges: Vec<TopologyEdge> = fk_rows
+        .iter()
+        .map(|row| TopologyEdge {
+            constraint_name: row.get(0),
+            from_schema: row.get(1),
+            from_table: row.get(2),
+            from_column: row.get(3),
+            to_schema: row.get(4),
+            to_table: row.get(5),
+            to_column: row.get(6),
+        })
+        .collect();
+
+    TopologyData { nodes, edges }
+}
+
 pub async fn get_sessions(pool: &Pool) -> Result<Vec<PgSession>, String> {
     let client = pool.get().await.map_err(|e| e.to_string())?;
     let rows = client
@@ -151,7 +223,7 @@ pub async fn get_schema_topology(pool: &Pool, schema: &str) -> Result<TopologyDa
             async {
                 client
                     .query(
-                        "SELECT kcu.table_name, kcu.column_name
+                        "SELECT kcu.table_schema, kcu.table_name, kcu.column_name
                          FROM information_schema.table_constraints tc
                          JOIN information_schema.key_column_usage kcu
                            ON tc.constraint_name = kcu.constraint_name
@@ -190,64 +262,12 @@ pub async fn get_schema_topology(pool: &Pool, schema: &str) -> Result<TopologyDa
             }
         )?;
 
-        let mut pk_set: HashSet<(String, String)> = HashSet::new();
-        for row in &pk_rows {
-            let t: String = row.get(0);
-            let c: String = row.get(1);
-            pk_set.insert((t, c));
-        }
-
-        let mut columns_by_table: HashMap<(String, String), Vec<TopologyColumn>> = HashMap::new();
-        for row in &col_rows {
-            let s: String = row.get(0);
-            let t: String = row.get(1);
-            let col_name: String = row.get(2);
-            let data_type: String = row.get(3);
-            let nullable: bool = row.get(4);
-            let is_pk = pk_set.contains(&(t.clone(), col_name.clone()));
-            columns_by_table
-                .entry((s, t))
-                .or_default()
-                .push(TopologyColumn {
-                    name: col_name,
-                    data_type,
-                    is_primary_key: is_pk,
-                    is_nullable: nullable,
-                });
-        }
-
-        let nodes: Vec<TopologyNode> = table_rows
-            .iter()
-            .map(|row| {
-                let schema_name: String = row.get(1);
-                let table_name: String = row.get(0);
-                let row_count: i64 = row.get(3);
-                let columns = columns_by_table
-                    .remove(&(schema_name.clone(), table_name.clone()))
-                    .unwrap_or_default();
-                TopologyNode {
-                    schema: schema_name,
-                    table_name,
-                    row_count,
-                    columns,
-                }
-            })
-            .collect();
-
-        let edges: Vec<TopologyEdge> = fk_rows
-            .iter()
-            .map(|row| TopologyEdge {
-                constraint_name: row.get(0),
-                from_schema: row.get(1),
-                from_table: row.get(2),
-                from_column: row.get(3),
-                to_schema: row.get(4),
-                to_table: row.get(5),
-                to_column: row.get(6),
-            })
-            .collect();
-
-        Ok(TopologyData { nodes, edges })
+        Ok(build_topology_from_rows(
+            &table_rows,
+            &col_rows,
+            &pk_rows,
+            &fk_rows,
+        ))
     })
     .await;
 
@@ -278,6 +298,128 @@ pub async fn get_schema_topology(pool: &Pool, schema: &str) -> Result<TopologyDa
     }
 }
 
+/// All user-visible schemas in one round trip (same filter as list_schemas). Includes cross-schema FKs.
+pub async fn get_all_user_schemas_topology(pool: &Pool) -> Result<TopologyData, String> {
+    const TIMEOUT: Duration = Duration::from_secs(15);
+    let started_at = Instant::now();
+
+    let tables_sql = format!(
+        "SELECT t.table_name, t.table_schema, t.table_type,
+                COALESCE(
+                    (SELECT reltuples::bigint FROM pg_class c
+                     JOIN pg_namespace n ON n.oid = c.relnamespace
+                     WHERE c.relname = t.table_name AND n.nspname = t.table_schema),
+                    0
+                ) AS estimated_row_count
+         FROM information_schema.tables t
+         WHERE t.table_schema IN {us}
+           AND t.table_type IN ('BASE TABLE', 'VIEW')
+         ORDER BY t.table_schema, t.table_name",
+        us = USER_SCHEMA_SUBQUERY
+    );
+    let cols_sql = format!(
+        "SELECT table_schema, table_name, column_name, data_type,
+                CASE WHEN is_nullable = 'YES' THEN true ELSE false END AS nullable
+         FROM information_schema.columns
+         WHERE table_schema IN {us}
+         ORDER BY table_schema, table_name, ordinal_position",
+        us = USER_SCHEMA_SUBQUERY
+    );
+    let pk_sql = format!(
+        "SELECT kcu.table_schema, kcu.table_name, kcu.column_name
+         FROM information_schema.table_constraints tc
+         JOIN information_schema.key_column_usage kcu
+           ON tc.constraint_name = kcu.constraint_name
+          AND tc.table_schema    = kcu.table_schema
+         WHERE tc.constraint_type = 'PRIMARY KEY'
+           AND tc.table_schema IN {us}",
+        us = USER_SCHEMA_SUBQUERY
+    );
+    let fk_sql = format!(
+        "SELECT tc.constraint_name,
+                kcu.table_schema AS from_schema,
+                kcu.table_name   AS from_table,
+                kcu.column_name   AS from_column,
+                ccu.table_schema  AS to_schema,
+                ccu.table_name    AS to_table,
+                ccu.column_name   AS to_column
+         FROM information_schema.table_constraints tc
+         JOIN information_schema.key_column_usage kcu
+           ON tc.constraint_name = kcu.constraint_name
+          AND tc.table_schema    = kcu.table_schema
+         JOIN information_schema.constraint_column_usage ccu
+           ON tc.constraint_name = ccu.constraint_name
+         WHERE tc.constraint_type = 'FOREIGN KEY'
+           AND kcu.table_schema IN {us}
+           AND ccu.table_schema IN {us}
+         ORDER BY tc.constraint_name",
+        us = USER_SCHEMA_SUBQUERY
+    );
+
+    let result = tokio::time::timeout(TIMEOUT, async {
+        let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
+
+        let (table_rows, col_rows, pk_rows, fk_rows) = tokio::try_join!(
+            async {
+                client
+                    .query(&tables_sql, &[])
+                    .await
+                    .map_err(|e| format!("Topology tables query: {}", e))
+            },
+            async {
+                client
+                    .query(&cols_sql, &[])
+                    .await
+                    .map_err(|e| format!("Topology columns query: {}", e))
+            },
+            async {
+                client
+                    .query(&pk_sql, &[])
+                    .await
+                    .map_err(|e| format!("Topology PKs query: {}", e))
+            },
+            async {
+                client
+                    .query(&fk_sql, &[])
+                    .await
+                    .map_err(|e| format!("Topology FKs query: {}", e))
+            }
+        )?;
+
+        Ok(build_topology_from_rows(
+            &table_rows,
+            &col_rows,
+            &pk_rows,
+            &fk_rows,
+        ))
+    })
+    .await;
+
+    match result {
+        Ok(Ok(data)) => Ok(data),
+        Ok(Err(err)) => {
+            warn!(
+                target: "topology",
+                elapsed_ms = started_at.elapsed().as_millis(),
+                error = %err,
+                "database_topology error"
+            );
+            Err(err)
+        }
+        Err(_) => {
+            warn!(
+                target: "topology",
+                elapsed_ms = started_at.elapsed().as_millis(),
+                "database_topology timeout"
+            );
+            Err(
+                "Topology query timed out after 15 seconds. The database may be slow or unreachable."
+                    .to_string(),
+            )
+        }
+    }
+}
+
 pub async fn get_columns(pool: &Pool, schema: &str, table: &str) -> Result<Vec<ColumnInfo>, String> {
     let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
 
@@ -296,6 +438,7 @@ pub async fn get_columns(pool: &Pool, schema: &str, table: &str) -> Result<Vec<C
                       AND i.indisprimary
                       AND a.attnum = ANY(i.indkey)
                 ) AS is_pk,
+                (COALESCE(a.attgenerated::text, '') <> '') AS is_generated,
                 d.description AS column_comment
              FROM pg_class c
              JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -322,7 +465,8 @@ pub async fn get_columns(pool: &Pool, schema: &str, table: &str) -> Result<Vec<C
             ordinal_position: row.get(3),
             column_default: row.get(4),
             is_primary_key: row.get(5),
-            comment: row.get(6),
+            is_generated: row.get(6),
+            comment: row.get(7),
         })
         .collect())
 }
@@ -379,6 +523,7 @@ pub async fn get_table_details(
                       AND i.indisprimary
                       AND a.attnum = ANY(i.indkey)
                 ) AS is_primary_key,
+                (COALESCE(a.attgenerated::text, '') <> '') AS is_generated,
                 d.description AS column_comment
              FROM pg_class c
              JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -405,7 +550,8 @@ pub async fn get_table_details(
             ordinal_position: row.get(3),
             column_default: row.get(4),
             is_primary_key: row.get(5),
-            comment: row.get(6),
+            is_generated: row.get(6),
+            comment: row.get(7),
         })
         .collect();
 

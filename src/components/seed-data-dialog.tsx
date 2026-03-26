@@ -21,7 +21,14 @@ import {
 import { ScrollArea, ScrollBar } from "@/components/ui/scroll-area";
 import { dbGetTableDetails, dbListSchemas, dbListTables } from "@/lib/db-platform";
 import { dbGetAccessProfile, dbInsertTableRowsBulk } from "@/lib/tauri";
-import type { TableDetails, DatabaseAccessProfile, SchemaInfo, TableInfo, ColumnInfo } from "@/lib/types";
+import {
+    writableInsertColumns,
+    type TableDetails,
+    type DatabaseAccessProfile,
+    type SchemaInfo,
+    type TableInfo,
+    type ColumnInfo,
+} from "@/lib/types";
 import { GEMINI_MODELS, type GeminiModelId } from "@/lib/ai-chat-engine";
 import { useSettingsStore } from "@/stores/settings-store";
 import { generateSeedData, type SeedDataRow } from "@/lib/seed-data-engine";
@@ -232,7 +239,8 @@ export function SeedDataDialog({
 
     const handleConfirmInsert = useCallback(async () => {
         if (!connectionId || !details || !generatedRows?.length) return;
-        const validation = validateRowsForInsert(generatedRows, details.columns);
+        const insertCols = writableInsertColumns(details.columns);
+        const validation = validateRowsForInsert(generatedRows, insertCols);
         if (!validation.ok) {
             toast.error(validation.message);
             return;
@@ -240,7 +248,7 @@ export function SeedDataDialog({
         setInsertError(null);
         setInserting(true);
         try {
-            const rows = generatedRows.map((row) => normalizeRowForInsert(row, details.columns));
+            const rows = generatedRows.map((row) => normalizeRowForInsert(row, insertCols));
             await dbInsertTableRowsBulk(connectionId, details.schema, details.name, rows);
             toast.success(`${generatedRows.length} row(s) inserted successfully.`);
             setConfirmOpen(false);
@@ -507,7 +515,12 @@ export function SeedDataDialog({
                                                             size="sm"
                                                             className="h-7 gap-1.5 text-xs"
                                                             onClick={() => {
-                                                                const sql = buildInsertSql(details.schema, details.name, details.columns, generatedRows);
+                                                                const sql = buildInsertSql(
+                                                                    details.schema,
+                                                                    details.name,
+                                                                    writableInsertColumns(details.columns),
+                                                                    generatedRows
+                                                                );
                                                                 navigator.clipboard.writeText(sql);
                                                                 toast.success("SQL copied to clipboard");
                                                             }}
@@ -517,7 +530,12 @@ export function SeedDataDialog({
                                                     </div>
                                                     <ScrollArea className="max-h-[220px] w-full">
                                                         <pre className="p-3 text-xs font-mono text-foreground/90 whitespace-pre-wrap break-all">
-                                                            {buildInsertSql(details.schema, details.name, details.columns, generatedRows)}
+                                                            {buildInsertSql(
+                                                                details.schema,
+                                                                details.name,
+                                                                writableInsertColumns(details.columns),
+                                                                generatedRows
+                                                            )}
                                                         </pre>
                                                     </ScrollArea>
                                                 </div>

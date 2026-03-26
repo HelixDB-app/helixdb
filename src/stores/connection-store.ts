@@ -45,6 +45,7 @@ export interface ConnectionEntry {
     databaseName: string;
     serverVersion: string;
     connectionString: string;
+    sshTunnel?: SshTunnelConfig | null;
     environment: ConnectionEnvironment;
     owner: string | null;
     criticality: ConnectionCriticality;
@@ -53,6 +54,7 @@ export interface ConnectionEntry {
 
 export interface PerConnectionState {
     connectionString: string;
+    sshTunnel?: SshTunnelConfig | null;
     databaseName: string;
     serverVersion: string;
     schemas: SchemaInfo[];
@@ -79,9 +81,15 @@ export interface PerConnectionState {
     isLoadingSchemaObjects: boolean;
 }
 
-function emptyPerConnectionState(connectionString: string, databaseName: string, serverVersion: string): PerConnectionState {
+function emptyPerConnectionState(
+    connectionString: string,
+    databaseName: string,
+    serverVersion: string,
+    sshTunnel?: SshTunnelConfig | null
+): PerConnectionState {
     return {
         connectionString,
+        sshTunnel: sshTunnel ?? null,
         databaseName,
         serverVersion,
         schemas: [],
@@ -216,6 +224,7 @@ function syncCurrentFromActive(state: {
 }): Partial<{
     connectionId: string | null;
     connectionString: string;
+    sshTunnel: SshTunnelConfig | null;
     databaseName: string;
     serverVersion: string;
     isConnected: boolean;
@@ -250,6 +259,7 @@ function syncCurrentFromActive(state: {
         return {
             connectionId: null,
             connectionString: "",
+            sshTunnel: null,
             databaseName: "",
             serverVersion: "",
             isConnected,
@@ -281,6 +291,7 @@ function syncCurrentFromActive(state: {
         connectionId: active,
         isConnected,
         connectionString: entry.connectionString,
+        sshTunnel: per.sshTunnel ?? null,
         databaseName: entry.databaseName,
         serverVersion: entry.serverVersion,
         schemas: per.schemas,
@@ -316,6 +327,7 @@ interface ConnectionState {
     // Mirrored from active connection for backward compatibility
     connectionId: string | null;
     connectionString: string;
+    sshTunnel: SshTunnelConfig | null;
     databaseName: string;
     serverVersion: string;
     isConnected: boolean;
@@ -581,6 +593,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
 
         connectionId: null,
         connectionString: "",
+        sshTunnel: null,
         databaseName: "",
         serverVersion: "",
         isConnected: false,
@@ -655,12 +668,18 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                     databaseName: response.database_name,
                     serverVersion: response.server_version,
                     connectionString,
+                    sshTunnel: sshTunnel ?? null,
                     environment: normalizedMetadata.environment,
                     owner: normalizedMetadata.owner,
                     criticality: normalizedMetadata.criticality,
                     savedConnectionId,
                 };
-                const per = emptyPerConnectionState(connectionString, response.database_name, response.server_version);
+                const per = emptyPerConnectionState(
+                    connectionString,
+                    response.database_name,
+                    response.server_version,
+                    sshTunnel ?? null
+                );
                 per.schemas = schemas;
                 per.selectedSchema = defaultSchema;
                 per.tables = tables;
@@ -850,7 +869,11 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
             try {
                 await dbDisconnect(connId).catch(() => {});
                 const newConnString = replaceDatabase(per.connectionString, targetDatabase);
-                const response: ConnectionResponse = await dbConnect(newConnString);
+                const response: ConnectionResponse = await dbConnect(
+                    newConnString,
+                    undefined,
+                    per.sshTunnel ?? undefined
+                );
                 const newId = response.connection_id;
 
                 const schemas = await dbListSchemas(newId);
@@ -870,7 +893,12 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                     serverVersion: response.server_version,
                     connectionString: newConnString,
                 };
-                const newPer = emptyPerConnectionState(newConnString, response.database_name, response.server_version);
+                const newPer = emptyPerConnectionState(
+                    newConnString,
+                    response.database_name,
+                    response.server_version,
+                    per.sshTunnel ?? null
+                );
                 newPer.schemas = schemas;
                 newPer.selectedSchema = defaultSchema;
                 newPer.tables = tables;
@@ -1034,7 +1062,10 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                     if (cid && s.byConnectionId[cid]) {
                         const next = { ...s.byConnectionId[cid], previewSelection: null, selectedTable: null };
                         out.byConnectionId = { ...s.byConnectionId, [cid]: next };
-                        if (s.activeConnectionId === cid) out.previewSelection = null, out.selectedTable = null;
+                        if (s.activeConnectionId === cid) {
+                            out.previewSelection = null;
+                            out.selectedTable = null;
+                        }
                     }
                     return out;
                 });
@@ -1150,7 +1181,10 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                 set((st) => {
                     const next = { ...st.byConnectionId[cid], schemas, isLoadingSchemas: false };
                     const out: Partial<ConnectionState> = { byConnectionId: { ...st.byConnectionId, [cid]: next } };
-                    if (st.activeConnectionId === cid) out.schemas = schemas, out.isLoadingSchemas = false;
+                    if (st.activeConnectionId === cid) {
+                        out.schemas = schemas;
+                        out.isLoadingSchemas = false;
+                    }
                     return out;
                 });
                 if (selectedSchema) {

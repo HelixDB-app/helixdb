@@ -14,6 +14,16 @@ import type {
     QueryResult,
     RecentTableOpen,
     SavedConnection,
+    BackupGoogleDriveConfigInput,
+    BackupGoogleDriveStatus,
+    BackupModuleState,
+    BackupRecord,
+    BackupRestoreRequest,
+    BackupRestoreResult,
+    BackupRunRequest,
+    BackupSchedule,
+    BackupScheduleInput,
+    BackupSizeEstimate,
     DatabaseAccessProfile,
     DatabaseExtensionDetail,
     DatabaseExtensionInfo,
@@ -120,6 +130,15 @@ export async function dbGetSchemaTopology(
     return invoke<TopologyData>("db_get_schema_topology", {
         connectionId,
         schema,
+    });
+}
+
+/** All user-visible schemas + cross-schema FKs in one payload */
+export async function dbGetDatabaseTopology(
+    connectionId: string
+): Promise<TopologyData> {
+    return invoke<TopologyData>("db_get_database_topology", {
+        connectionId,
     });
 }
 
@@ -833,6 +852,74 @@ export async function updateSavedConnectionDatabaseName(
         id,
         databaseName,
     });
+}
+
+// ─── Backup & Restore ────────────────────────────────────────────────────
+
+/** Load backup history, schedules, local storage root, cloud sync status, and CLI capabilities. */
+export async function backupGetModuleState(): Promise<BackupModuleState> {
+    return invoke<BackupModuleState>("backup_get_module_state");
+}
+
+/** Estimate current database or full cluster size for progress and sizing UX. */
+export async function backupEstimateSize(
+    connectionId: string,
+    scope: "database" | "cluster"
+): Promise<BackupSizeEstimate> {
+    return invoke<BackupSizeEstimate>("backup_estimate_size", { connectionId, scope });
+}
+
+/** Run a backup immediately. Progress streams via `backup-job-progress`. */
+export async function backupRunNow(
+    request: BackupRunRequest
+): Promise<BackupRecord> {
+    return invoke<BackupRecord>("backup_run_now", { request });
+}
+
+/** Restore a backup artifact into the same or a different database. Progress streams via `backup-restore-progress`. */
+export async function backupRestore(
+    request: BackupRestoreRequest
+): Promise<BackupRestoreResult> {
+    return invoke<BackupRestoreResult>("backup_restore", { request });
+}
+
+/** Create or update a cron schedule for background backups. */
+export async function backupUpsertSchedule(
+    input: BackupScheduleInput
+): Promise<BackupSchedule[]> {
+    return invoke<BackupSchedule[]>("backup_upsert_schedule", { input });
+}
+
+/** Delete a saved backup schedule. */
+export async function backupDeleteSchedule(
+    id: string
+): Promise<BackupSchedule[]> {
+    return invoke<BackupSchedule[]>("backup_delete_schedule", { id });
+}
+
+/** Delete one backup record and optionally remove its files from disk. */
+export async function backupDeleteRecord(
+    id: string,
+    deleteFiles = true
+): Promise<BackupRecord[]> {
+    return invoke<BackupRecord[]>("backup_delete_record", { id, deleteFiles });
+}
+
+/** Connect Google Drive using the desktop OAuth flow and store tokens in the OS keychain. */
+export async function backupConnectGoogleDrive(): Promise<BackupGoogleDriveStatus> {
+    return invoke<BackupGoogleDriveStatus>("backup_connect_google_drive");
+}
+
+/** Save optional Google Drive sync settings for backup uploads. */
+export async function backupSaveGoogleDriveConfig(
+    input: BackupGoogleDriveConfigInput
+): Promise<BackupGoogleDriveStatus> {
+    return invoke<BackupGoogleDriveStatus>("backup_save_google_drive_config", { input });
+}
+
+/** Remove stored Google Drive sync settings and secrets. */
+export async function backupDisconnectGoogleDrive(): Promise<BackupGoogleDriveStatus> {
+    return invoke<BackupGoogleDriveStatus>("backup_clear_google_drive_config");
 }
 
 // ─── Local PostgreSQL ─────────────────────────────────────────────────────

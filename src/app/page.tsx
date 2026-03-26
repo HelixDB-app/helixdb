@@ -54,6 +54,7 @@ const SchemaTopology = dynamic(() => import("@/components/schema-topology").then
 const SqlUnitTestRunner = dynamic(() => import("@/components/sql-unit-test-runner").then((m) => ({ default: m.SqlUnitTestRunner })), { ssr: false });
 const AIChatPanel = dynamic(() => import("@/components/ai-chat-panel").then((m) => ({ default: m.AIChatPanel })), { ssr: false });
 const GitPanel = dynamic(() => import("@/components/git-panel").then((m) => ({ default: m.GitPanel })), { ssr: false });
+const BackupRestorePanel = dynamic(() => import("@/components/backup-restore-panel").then((m) => ({ default: m.BackupRestorePanel })), { ssr: false });
 import {
     ResizableHandle,
     ResizablePanel,
@@ -78,7 +79,6 @@ import { ConnectionEnvBadge } from "@/components/connection-env-badge";
 import { cn } from "@/lib/utils";
 import {
     Activity,
-    AppWindowMac,
     Check,
     ChevronDown,
     Layers,
@@ -88,7 +88,6 @@ import {
     RefreshCw,
     Clock3,
     GitCompare,
-    GitBranch,
     Search,
     Settings,
     ShieldCheck,
@@ -97,11 +96,11 @@ import {
     Table2,
     Terminal,
     Unplug,
-    FlaskConical,
+    HardDriveDownload,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
-type HeaderPrimaryView = "data" | "query" | "sessions" | "indexes" | "topology" | "ai";
+type HeaderPrimaryView = "data" | "query" | "backup" | "sessions" | "indexes" | "topology" | "ai";
 
 type HeaderViewShortcutId = Extract<
     ShortcutActionId,
@@ -112,11 +111,12 @@ const HEADER_PRIMARY_VIEWS: {
     id: HeaderPrimaryView;
     label: string;
     Icon: LucideIcon;
-    shortcutKey: HeaderViewShortcutId;
+    shortcutKey?: HeaderViewShortcutId;
     labelClassName: string;
 }[] = [
     { id: "data", label: "Data", Icon: Table2, shortcutKey: "view_data", labelClassName: "" },
     { id: "query", label: "Query", Icon: Terminal, shortcutKey: "view_query", labelClassName: "" },
+    { id: "backup", label: "Backup", Icon: HardDriveDownload, labelClassName: "" },
     {
         id: "sessions",
         label: "Sessions",
@@ -161,7 +161,7 @@ export default function Home() {
     const { associateUser } = useTrialStore();
     const handleCollabDeepLink = useCollaborationStore((s) => s.handleDeepLinkUrl);
     const [showConnectionDialog, setShowConnectionDialog] = useState(false);
-    const [activeView, setActiveView] = useState<"data" | "query" | "tests" | "sessions" | "indexes" | "topology" | "ai" | "git">("data");
+    const [activeView, setActiveView] = useState<"data" | "query" | "backup" | "tests" | "sessions" | "indexes" | "topology" | "ai" | "git">("data");
     const [searchOpen, setSearchOpen] = useState(false);
     const [showWelcome, setShowWelcome] = useState(false);
     const [showSurveyModal, setShowSurveyModal] = useState(false);
@@ -522,7 +522,7 @@ export default function Home() {
                                                     "h-7 shrink-0 gap-1 rounded-md px-2 text-[10px] font-medium data-[state=active]:bg-background data-[state=active]:shadow-sm sm:px-2.5 sm:text-[11px]",
                                                 )}
                                                 title={
-                                                    sc(shortcutKey) ? `${label} (${sc(shortcutKey)})` : label
+                                                    shortcutKey && sc(shortcutKey) ? `${label} (${sc(shortcutKey)})` : label
                                                 }
                                             >
                                                 <Icon className="h-3 w-3 shrink-0" />
@@ -828,6 +828,7 @@ export default function Home() {
                             <div className="h-full min-h-0 bg-card/40 dark:bg-transparent border-l border-border/25 dark:border-transparent" role="tabpanel" tabIndex={0} aria-label="Active view content">
                                 {activeView === "data" && <TableLayoutView />}
                                 {activeView === "query" && <QueryEditor />}
+                                {activeView === "backup" && <BackupRestorePanel />}
                                 {activeView === "tests" && <SqlUnitTestRunner />}
                                 {activeView === "sessions" && <SessionMonitor />}
                                 {activeView === "indexes" && <IndexBuilder />}

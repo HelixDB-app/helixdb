@@ -14,7 +14,10 @@ fn build_client() -> Result<Client, String> {
 
 /// POST JSON body to the worker URL; returns raw response body on HTTP success.
 #[tauri::command]
-pub async fn ai_suggestions_worker_post(url: String, body: serde_json::Value) -> Result<String, String> {
+pub async fn ai_suggestions_worker_post(
+    url: String,
+    body: serde_json::Value,
+) -> Result<String, String> {
     let url = url.trim();
     if url.is_empty() {
         return Err("AI suggestions worker URL is empty".into());

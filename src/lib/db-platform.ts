@@ -70,6 +70,8 @@ export interface DbPlatform {
     dbTerminateBackend(connectionId: string, pid: number): Promise<boolean>;
     dbCancelBackend(connectionId: string, pid: number): Promise<boolean>;
     dbGetSchemaTopology(connectionId: string, schema: string): Promise<TopologyData>;
+    /** All user-visible schemas + cross-schema FKs in one payload */
+    dbGetDatabaseTopology(connectionId: string): Promise<TopologyData>;
     dbPreviewAlterTable(
         connectionId: string,
         sql: string,
@@ -201,6 +203,9 @@ class TauriDbPlatform implements DbPlatform {
     }
     dbGetSchemaTopology(connectionId: string, schema: string) {
         return tauri.dbGetSchemaTopology(connectionId, schema);
+    }
+    dbGetDatabaseTopology(connectionId: string) {
+        return tauri.dbGetDatabaseTopology(connectionId);
     }
     dbPreviewAlterTable(connectionId: string, sql: string, fallbackSchema?: string | null) {
         return tauri.dbPreviewAlterTable(connectionId, sql, fallbackSchema ?? null);
@@ -533,6 +538,14 @@ class HttpDbPlatform implements DbPlatform {
         return this.json<TopologyData>(res);
     }
 
+    async dbGetDatabaseTopology(connectionId: string): Promise<TopologyData> {
+        const res = await fetch(
+            `${this.base}/v1/connections/${encodeURIComponent(connectionId)}/topology`,
+            { headers: this.headers() }
+        );
+        return this.json<TopologyData>(res);
+    }
+
     async dbPreviewAlterTable(
         _connectionId: string,
         _sql: string,
@@ -838,6 +851,10 @@ export function dbCancelBackend(connectionId: string, pid: number) {
 
 export function dbGetSchemaTopology(connectionId: string, schema: string) {
     return p().dbGetSchemaTopology(connectionId, schema);
+}
+
+export function dbGetDatabaseTopology(connectionId: string) {
+    return p().dbGetDatabaseTopology(connectionId);
 }
 
 export function dbPreviewAlterTable(

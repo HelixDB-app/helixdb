@@ -30,6 +30,9 @@ pub struct ColumnInfo {
     pub ordinal_position: i32,
     pub column_default: Option<String>,
     pub is_primary_key: bool,
+    /// `GENERATED ALWAYS AS ... STORED` / PG `attgenerated` — cannot INSERT/UPDATE values directly.
+    #[serde(default)]
+    pub is_generated: bool,
     pub comment: Option<String>,
 }
 

@@ -104,7 +104,9 @@ fn mobile_support_dir() -> Result<std::path::PathBuf, String> {
 #[cfg(target_os = "android")]
 fn mobile_support_dir() -> Result<std::path::PathBuf, String> {
     let home = std::env::var("HOME").map_err(|_| "HOME not set (Android)".to_string())?;
-    Ok(std::path::PathBuf::from(home).join("files").join("pgstudio"))
+    Ok(std::path::PathBuf::from(home)
+        .join("files")
+        .join("pgstudio"))
 }
 
 // ─── Public API ───────────────────────────────────────────────────────────────

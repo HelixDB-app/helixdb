@@ -1,5 +1,7 @@
-const WEB_BASE_URL =
-  process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app";
+import { getWebAppBaseUrl } from "@/lib/web-app-url";
+import { getWebAccountJwt } from "@/lib/web-account-jwt";
+
+const surveyApiBase = () => getWebAppBaseUrl();
 
 export type SurveyTokenGetter = () => Promise<string | null>;
 
@@ -12,9 +14,14 @@ function headersWithToken(token: string | null): HeadersInit {
 }
 
 async function resolveToken(getToken?: SurveyTokenGetter): Promise<string | null> {
-  if (getToken) return getToken();
+  if (getToken) {
+    const t = await getToken();
+    if (t) return t;
+  }
   if (typeof window !== "undefined") {
-    return localStorage.getItem("pgstudio_jwt");
+    const legacy = localStorage.getItem("pgstudio_jwt")?.trim();
+    if (legacy) return legacy;
+    return getWebAccountJwt();
   }
   return null;
 }
@@ -27,7 +34,7 @@ export interface SurveyAnswers {
   mainDatabase?: string;
 }
 
-/** Options for survey API calls. Pass getToken when using desktop app (token is in Tauri keychain, not localStorage). */
+/** Options for survey API calls. Optional `getToken` overrides default resolution (Tauri keychain or web account JWT). */
 export interface SurveyOptions {
   getToken?: SurveyTokenGetter;
 }
@@ -36,7 +43,7 @@ export interface SurveyOptions {
 export async function getSurveyStatus(options?: SurveyOptions): Promise<{ completed: boolean }> {
   try {
     const token = await resolveToken(options?.getToken);
-    const res = await fetch(`${WEB_BASE_URL}/api/survey/status`, {
+    const res = await fetch(`${surveyApiBase()}/api/survey/status`, {
       method: "GET",
       headers: headersWithToken(token),
     });
@@ -50,7 +57,7 @@ export async function getSurveyStatus(options?: SurveyOptions): Promise<{ comple
 
 export async function submitSurvey(answers: SurveyAnswers, options?: SurveyOptions): Promise<void> {
   const token = await resolveToken(options?.getToken);
-  const res = await fetch(`${WEB_BASE_URL}/api/survey`, {
+  const res = await fetch(`${surveyApiBase()}/api/survey`, {
     method: "POST",
     headers: headersWithToken(token),
     body: JSON.stringify({ answers }),

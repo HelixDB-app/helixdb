@@ -1187,9 +1187,9 @@ export default function QueryHistoryPage() {
                 <ScrollArea className="h-full">
                     <div className="space-y-4 p-4">
                         <section className="rounded-xl border border-border/40 bg-card/20 p-4">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                                <h2 className="text-sm font-semibold">Query Text (pg_stat_statements)</h2>
-                                <div className="flex items-center gap-2">
+                            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-y-2">
+                                <h2 className="min-w-0 text-sm font-semibold">Query Text (pg_stat_statements)</h2>
+                                <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
                                     <Button variant="outline" size="sm" className="h-7 gap-1.5" onClick={handleCopySql}>
                                         <Copy className="h-3.5 w-3.5" />
                                         Copy SQL
@@ -1210,7 +1210,7 @@ export default function QueryHistoryPage() {
                                     </Button>
                                 </div>
                             </div>
-                            <pre className="mt-3 overflow-x-auto rounded-lg bg-black/30 p-3 text-xs leading-relaxed text-emerald-200/90">
+                            <pre className="mt-3 w-full min-w-0 max-w-full whitespace-pre-wrap break-words rounded-lg bg-black/30 p-3 font-mono text-xs leading-relaxed text-emerald-200/90 [overflow-wrap:anywhere]">
                                 {selectedPgStatItem.query}
                             </pre>
                         </section>
@@ -1283,9 +1283,9 @@ export default function QueryHistoryPage() {
                 <ScrollArea className="h-full">
                     <div className="space-y-4 p-4">
                         <section className="rounded-xl border border-border/40 bg-card/20 p-4">
-                            <div className="flex flex-wrap items-center justify-between gap-2">
-                                <div className="flex items-center gap-2">
-                                    <h2 className="text-sm font-semibold">Query Text</h2>
+                            <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-y-2">
+                                <div className="flex min-w-0 flex-1 flex-wrap items-center gap-2">
+                                    <h2 className="shrink-0 text-sm font-semibold">Query Text</h2>
                                     <Badge variant="outline" className="h-5 px-1.5 text-[10px] border-border/50">
                                         {selectedItem.query_type}
                                     </Badge>
@@ -1293,11 +1293,11 @@ export default function QueryHistoryPage() {
                                         <ConnectionEnvBadge environment={selectedItem.environment} compact />
                                     )}
                                 </div>
-                                <div className="flex items-center gap-2">
+                                <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
                                     <Button variant="outline" size="sm" className="h-7 gap-1.5" onClick={handleCopySql}>
                                         <Copy className="h-3.5 w-3.5" />
                                         Copy SQL
-                                    </Button>image.png
+                                    </Button>
                                     <Button
                                         variant="outline"
                                         size="sm"
@@ -1352,7 +1352,7 @@ export default function QueryHistoryPage() {
                                     </Button>
                                 </div>
                             </div>
-                            <pre className="mt-3 overflow-x-auto rounded-lg bg-black/30 p-3 text-xs leading-relaxed text-emerald-200/90">
+                            <pre className="mt-3 w-full min-w-0 max-w-full whitespace-pre-wrap break-words rounded-lg bg-black/30 p-3 font-mono text-xs leading-relaxed text-emerald-200/90 [overflow-wrap:anywhere]">
                                 {selectedItem.query_text}
                             </pre>
                             {selectedItem.guard_reason && (

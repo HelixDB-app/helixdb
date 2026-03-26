@@ -5,12 +5,19 @@ edition = "2021"
 description = "Helix / pgStudio HTTP data plane API (PostgreSQL proxy, phase 1)"
 publish = false
 
+[lib]
+path = "src/lib.rs"
+
 [[bin]]
 name = "helix-data-plane"
 path = "src/main.rs"
 
+[[bin]]
+name = "axum"
+path = "api/axum.rs"
+
 [dependencies]
-axum = { version = "0.7", features = ["json"] }
+axum = { version = "0.8", features = ["json"] }
 chrono = { version = "0.4", features = ["serde"] }
 dashmap = "6"
 deadpool-postgres = "0.14"
@@ -28,13 +35,20 @@ tokio-postgres = { version = "0.7", features = [
     "with-uuid-1",
 ] }
 tower = "0.5"
-tower-http = { version = "0.5", features = ["cors", "trace"] }
+tower-http = { version = "0.6", features = ["cors", "trace"] }
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 uuid = { version = "1", features = ["v4", "serde"] }
 jsonwebtoken = { version = "9", default-features = false, features = ["use_pem"] }
 subtle = "2"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+vercel_runtime = { version = "2", features = ["axum"] }
+hyper = { version = "1", features = ["full"] }
+
+[profile.release]
+codegen-units = 1
+lto = "fat"
+opt-level = 3
 
 [dev-dependencies]
 hyper = { version = "1", features = ["full"] }

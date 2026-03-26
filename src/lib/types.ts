@@ -26,7 +26,14 @@ export interface ColumnInfo {
     ordinal_position: number;
     column_default: string | null;
     is_primary_key: boolean;
+    /** PostgreSQL `GENERATED ... AS (...)` stored column — must not appear in INSERT/UPDATE values. */
+    is_generated?: boolean;
     comment: string | null;
+}
+
+/** Columns that accept literals on INSERT (excludes generated STORED columns). */
+export function writableInsertColumns(columns: ColumnInfo[]): ColumnInfo[] {
+    return columns.filter((c) => !c.is_generated);
 }
 
 export interface SchemaInfo {
@@ -423,6 +430,187 @@ export interface SavedConnection {
     owner?: string | null;
     criticality?: ConnectionCriticality | null;
     ssh_tunnel?: SshTunnelConfig | null;
+}
+
+export type BackupScope = "database" | "cluster";
+export type BackupRecordStatus = "running" | "success" | "failed";
+export type BackupCloudSyncStatus =
+    | "not_configured"
+    | "pending"
+    | "synced"
+    | "failed"
+    | "skipped";
+
+export interface BackupArtifact {
+    id: string;
+    label: string;
+    kind: string;
+    format: string;
+    relative_path: string;
+    absolute_path: string;
+    bytes: number;
+    database_name?: string | null;
+    google_drive_file_id?: string | null;
+}
+
+export interface BackupRecord {
+    id: string;
+    name: string;
+    scope: BackupScope;
+    source_database?: string | null;
+    connection_label: string;
+    connection_string: string;
+    output_root: string;
+    backup_dir: string;
+    status: BackupRecordStatus;
+    started_at: number;
+    completed_at?: number | null;
+    bytes_written: number;
+    estimated_bytes?: number | null;
+    message?: string | null;
+    error?: string | null;
+    triggered_by: string;
+    schedule_id?: string | null;
+    artifacts: BackupArtifact[];
+    server_version?: string | null;
+    postgres_client_path?: string | null;
+    postgres_client_version?: string | null;
+    cloud_sync_status?: BackupCloudSyncStatus | null;
+    cloud_sync_message?: string | null;
+}
+
+export interface BackupSchedule {
+    id: string;
+    name: string;
+    enabled: boolean;
+    cron: string;
+    scope: BackupScope;
+    source_database?: string | null;
+    connection_label: string;
+    connection_string: string;
+    output_root: string;
+    sync_to_google_drive: boolean;
+    ssh_tunnel?: SshTunnelConfig | null;
+    created_at: number;
+    updated_at: number;
+    next_run_at?: number | null;
+    last_run_at?: number | null;
+    last_status?: string | null;
+    last_error?: string | null;
+}
+
+export interface BackupGoogleDriveStatus {
+    enabled: boolean;
+    configured: boolean;
+    folder_id?: string | null;
+    client_id?: string | null;
+    connected_email?: string | null;
+    connected_at?: number | null;
+    access_token_expires_at?: number | null;
+    has_refresh_token: boolean;
+    has_access_token: boolean;
+}
+
+export interface BackupCapabilities {
+    ready_for_backup: boolean;
+    ready_for_restore: boolean;
+    psql_path?: string | null;
+    psql_version?: string | null;
+    pg_dump_path?: string | null;
+    pg_dump_version?: string | null;
+    pg_restore_path?: string | null;
+    pg_restore_version?: string | null;
+    pg_dumpall_path?: string | null;
+    pg_dumpall_version?: string | null;
+    notes: string[];
+}
+
+export interface BackupModuleState {
+    backups: BackupRecord[];
+    schedules: BackupSchedule[];
+    default_output_root: string;
+    google_drive: BackupGoogleDriveStatus;
+    capabilities: BackupCapabilities;
+}
+
+export interface BackupSizeEstimateItem {
+    database_name: string;
+    estimated_bytes: number;
+}
+
+export interface BackupSizeEstimate {
+    scope: BackupScope;
+    estimated_bytes: number;
+    database_breakdown: BackupSizeEstimateItem[];
+}
+
+export interface BackupRunRequest {
+    connection_id?: string | null;
+    connection_label: string;
+    connection_string: string;
+    ssh_tunnel?: SshTunnelConfig | null;
+    scope: BackupScope;
+    source_database?: string | null;
+    output_root?: string | null;
+    sync_to_google_drive: boolean;
+    name?: string | null;
+    schedule_id?: string | null;
+    estimated_bytes?: number | null;
+}
+
+export interface BackupRestoreRequest {
+    backup_id: string;
+    connection_string: string;
+    ssh_tunnel?: SshTunnelConfig | null;
+    target_database: string;
+    source_database?: string | null;
+    create_database_if_missing: boolean;
+    clean_restore: boolean;
+}
+
+export interface BackupRestoreResult {
+    backup_id: string;
+    target_database: string;
+    restored_artifact: string;
+    message: string;
+}
+
+export interface BackupScheduleInput {
+    id?: string | null;
+    name: string;
+    enabled: boolean;
+    cron: string;
+    scope: BackupScope;
+    source_database?: string | null;
+    connection_label: string;
+    connection_string: string;
+    output_root?: string | null;
+    sync_to_google_drive: boolean;
+    ssh_tunnel?: SshTunnelConfig | null;
+}
+
+export interface BackupProgressPayload {
+    job_id: string;
+    kind: "backup" | "restore" | string;
+    phase: string;
+    message: string;
+    current: number;
+    total: number;
+    percent: number;
+    bytes_written?: number | null;
+    estimated_bytes?: number | null;
+    artifact_label?: string | null;
+}
+
+export interface BackupGoogleDriveConfigInput {
+    enabled: boolean;
+    folder_id?: string | null;
+    client_id?: string | null;
+    refresh_token?: string | null;
+    access_token?: string | null;
+    connected_email?: string | null;
+    connected_at?: number | null;
+    access_token_expires_at?: number | null;
 }
 
 /** Event trigger (database level, PG 9.3+) */

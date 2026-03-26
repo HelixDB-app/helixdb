@@ -70,42 +70,43 @@ mod desktop {
             .accelerator("CmdOrCtrl+0")
             .build(app)?;
 
-        let nav_history = MenuItemBuilder::with_id("nav_query_history", "Query History && Performance")
-            .accelerator("CmdOrCtrl+Shift+H")
-            .build(app)?;
+        let nav_history =
+            MenuItemBuilder::with_id("nav_query_history", "Query History && Performance")
+                .accelerator("CmdOrCtrl+Shift+H")
+                .build(app)?;
 
         let nav_ext = MenuItemBuilder::with_id("nav_extensions", "Extensions && Roles")
             .accelerator("CmdOrCtrl+Shift+E")
             .build(app)?;
 
-        let nav_benchmarks = MenuItemBuilder::with_id("nav_benchmarks", "Benchmarks")
-            .build(app)?;
+        let nav_benchmarks = MenuItemBuilder::with_id("nav_benchmarks", "Benchmarks").build(app)?;
 
-        let nav_migration = MenuItemBuilder::with_id("nav_migration", "Migration Studio")
-            .build(app)?;
+        let nav_migration =
+            MenuItemBuilder::with_id("nav_migration", "Migration Studio").build(app)?;
 
-        let nav_schema = MenuItemBuilder::with_id("nav_schema_projects", "Schema Projects")
-            .build(app)?;
+        let nav_schema =
+            MenuItemBuilder::with_id("nav_schema_projects", "Schema Projects").build(app)?;
 
-        let nav_map = MenuItemBuilder::with_id("nav_map", "Map View")
-            .build(app)?;
+        let nav_map = MenuItemBuilder::with_id("nav_map", "Map View").build(app)?;
 
-        let open_docs = MenuItemBuilder::with_id("open_docs", "Documentation (web)")
-            .build(app)?;
+        let open_docs = MenuItemBuilder::with_id("open_docs", "Documentation (web)").build(app)?;
 
-        let settings_about = MenuItemBuilder::with_id("open_settings_about", "About pgStudio (details)")
-            .build(app)?;
+        let settings_about =
+            MenuItemBuilder::with_id("open_settings_about", "About pgStudio (details)")
+                .build(app)?;
 
-        let settings_shortcuts = MenuItemBuilder::with_id("open_settings_shortcuts", "Keyboard Shortcuts…")
-            .build(app)?;
+        let settings_shortcuts =
+            MenuItemBuilder::with_id("open_settings_shortcuts", "Keyboard Shortcuts…")
+                .build(app)?;
 
         let reload_item = MenuItemBuilder::with_id("reload_window", "Reload Window")
             .accelerator("CmdOrCtrl+R")
             .build(app)?;
 
-        let command_palette_item = MenuItemBuilder::with_id("open_command_palette", "Command Palette")
-            .accelerator("CmdOrCtrl+K")
-            .build(app)?;
+        let command_palette_item =
+            MenuItemBuilder::with_id("open_command_palette", "Command Palette")
+                .accelerator("CmdOrCtrl+K")
+                .build(app)?;
 
         #[cfg(target_os = "macos")]
         let edit_menu = SubmenuBuilder::new(app, "Edit")
@@ -131,19 +132,18 @@ mod desktop {
             .item(&command_palette_item)
             .build()?;
 
-        let help_release = MenuItemBuilder::with_id("help_release_notes", "Release Notes")
-            .build(app)?;
+        let help_release =
+            MenuItemBuilder::with_id("help_release_notes", "Release Notes").build(app)?;
         #[cfg(target_os = "macos")]
-        let help_updates = MenuItemBuilder::with_id("help_check_updates", "Check for Updates…").build(app)?;
+        let help_updates =
+            MenuItemBuilder::with_id("help_check_updates", "Check for Updates…").build(app)?;
 
         #[cfg(not(target_os = "macos"))]
         let help_updates = MenuItemBuilder::with_id("help_check_updates", "Check for Updates…")
             .accelerator("CmdOrCtrl+U")
             .build(app)?;
-        let help_bug = MenuItemBuilder::with_id("help_bug_report", "Report a Bug…")
-            .build(app)?;
-        let help_site = MenuItemBuilder::with_id("help_website", "Visit Website")
-            .build(app)?;
+        let help_bug = MenuItemBuilder::with_id("help_bug_report", "Report a Bug…").build(app)?;
+        let help_site = MenuItemBuilder::with_id("help_website", "Visit Website").build(app)?;
 
         let help_menu = SubmenuBuilder::new(app, "Help")
             .item(&help_release)

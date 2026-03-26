@@ -8,8 +8,11 @@ import { getWebAppBaseUrl } from "@/lib/web-app-url";
 import { setWebDataPlaneBearerToken } from "@/lib/web-data-plane-token";
 import { getWebAccountJwt, setWebAccountJwt } from "@/lib/web-account-jwt";
 
+/** JWT for control-plane APIs (survey, feedback): Tauri keychain on desktop, stored account JWT on web. */
 export async function runtimeAuthGetToken(): Promise<string | null> {
-    if (!isTauri()) return null;
+    if (!isTauri()) {
+        return getWebAccountJwt();
+    }
     const { authGetToken } = await import("@/lib/tauri");
     return authGetToken();
 }

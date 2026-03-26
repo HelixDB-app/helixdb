@@ -37,14 +37,13 @@ struct ItunesLookupResult {
 }
 
 fn parse_version_segments(value: &str) -> Vec<u32> {
-    let cleaned = value.trim().trim_start_matches(|c: char| c == 'v' || c == 'V');
+    let cleaned = value
+        .trim()
+        .trim_start_matches(|c: char| c == 'v' || c == 'V');
     cleaned
         .split(|c| c == '.' || c == '-' || c == '+')
         .filter_map(|part| {
-            let digits: String = part
-                .chars()
-                .take_while(|c| c.is_ascii_digit())
-                .collect();
+            let digits: String = part.chars().take_while(|c| c.is_ascii_digit()).collect();
             if digits.is_empty() {
                 None
             } else {
@@ -78,7 +77,8 @@ fn build_lookup_url(bundle_id: &str, country: &str) -> String {
 #[tauri::command]
 pub async fn app_store_check_update(app: AppHandle) -> Result<AppStoreUpdateCheck, String> {
     let bundle_id = app.config().identifier.clone();
-    let country = std::env::var("PGSTUDIO_APPSTORE_COUNTRY").unwrap_or_else(|_| DEFAULT_COUNTRY.to_string());
+    let country =
+        std::env::var("PGSTUDIO_APPSTORE_COUNTRY").unwrap_or_else(|_| DEFAULT_COUNTRY.to_string());
     let lookup_url = build_lookup_url(&bundle_id, &country);
 
     let client = reqwest::Client::builder()
@@ -94,7 +94,10 @@ pub async fn app_store_check_update(app: AppHandle) -> Result<AppStoreUpdateChec
         .map_err(|e| format!("App Store lookup failed: {e}"))?;
 
     if !response.status().is_success() {
-        return Err(format!("App Store lookup failed with status {}", response.status()));
+        return Err(format!(
+            "App Store lookup failed with status {}",
+            response.status()
+        ));
     }
 
     let payload = response

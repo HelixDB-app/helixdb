@@ -1506,6 +1506,7 @@ export function DataTable({ schema, table }: { schema: string; table: string }) 
                 schema={selectedSchema ?? ""}
                 table={selectedTable ?? ""}
                 columns={tableColumns ?? []}
+                resultColumns={result?.columns ?? null}
                 onSuccess={fetchData}
             />
             <SeedDataDialog

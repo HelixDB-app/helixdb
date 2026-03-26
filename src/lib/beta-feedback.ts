@@ -1,7 +1,6 @@
 import type { SurveyTokenGetter } from "@/lib/survey";
-
-const WEB_BASE_URL =
-  process.env.NEXT_PUBLIC_WEB_APP_URL ?? "https://pgstudio-web.vercel.app";
+import { getWebAppBaseUrl } from "@/lib/web-app-url";
+import { getWebAccountJwt } from "@/lib/web-account-jwt";
 
 export const BETA_FEEDBACK_CATEGORIES = [
   "general",
@@ -34,9 +33,14 @@ function headersWithToken(token: string | null): HeadersInit {
 }
 
 async function resolveToken(getToken?: SurveyTokenGetter): Promise<string | null> {
-  if (getToken) return getToken();
+  if (getToken) {
+    const t = await getToken();
+    if (t) return t;
+  }
   if (typeof window !== "undefined") {
-    return localStorage.getItem("pgstudio_jwt");
+    const legacy = localStorage.getItem("pgstudio_jwt")?.trim();
+    if (legacy) return legacy;
+    return getWebAccountJwt();
   }
   return null;
 }
@@ -46,7 +50,7 @@ export async function submitBetaFeedback(
   options?: BetaFeedbackOptions
 ): Promise<{ id: string }> {
   const token = await resolveToken(options?.getToken);
-  const res = await fetch(`${WEB_BASE_URL}/api/feedback`, {
+  const res = await fetch(`${getWebAppBaseUrl()}/api/feedback`, {
     method: "POST",
     headers: headersWithToken(token),
     body: JSON.stringify({

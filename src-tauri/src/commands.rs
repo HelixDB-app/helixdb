@@ -1,12 +1,11 @@
+use serde::Serialize;
 use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Mutex;
-use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::account_security_storage;
 use crate::connections_storage::{self, SavedConnection, SshTunnelConfig};
-use crate::ssh_tunnel::SshTunnelManager;
 use crate::db::types::{ColumnStats, FilterCondition};
 use crate::db::{
     cache::MetadataCache,
@@ -18,6 +17,7 @@ use crate::db::{
 };
 use crate::local_postgres::{self, LocalPostgresStatus};
 use crate::query_history_storage::{self, QueryHistoryRecordInput};
+use crate::ssh_tunnel::SshTunnelManager;
 
 /// Application state shared across all Tauri commands
 pub struct AppState {
@@ -156,12 +156,10 @@ pub async fn db_connect(
                 })
                 .unwrap_or_else(|| "localhost".to_string());
             let db_port = cfg.get_ports().first().copied().unwrap_or(5432);
-            let local_port = state.ssh_tunnel_manager.start(
-                &connection_id,
-                config,
-                &db_host,
-                db_port,
-            )?;
+            let local_port =
+                state
+                    .ssh_tunnel_manager
+                    .start(&connection_id, config, &db_host, db_port)?;
             connection_string_with_host_port(&connection_string, "127.0.0.1", local_port)?
         }
     } else {
@@ -281,6 +279,16 @@ pub async fn db_get_schema_topology(
 ) -> Result<TopologyData, String> {
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::get_schema_topology(&pool, &schema).await
+}
+
+/// All user-visible schemas in one topology payload (cross-schema FKs included). Not cached.
+#[tauri::command]
+pub async fn db_get_database_topology(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<TopologyData, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::get_all_user_schemas_topology(&pool).await
 }
 
 /// Build an ALTER TABLE preview with a dependency graph, risk assessment, and alternatives.
@@ -1901,8 +1909,8 @@ fn av_media_status(scope: &str) -> Result<MediaPermissionState, String> {
 #[cfg(target_os = "macos")]
 fn request_av_media_access(scope: &str) -> Result<MediaPermissionState, String> {
     use block2::RcBlock;
-    use objc2::{class, msg_send};
     use objc2::runtime::Bool;
+    use objc2::{class, msg_send};
     use objc2_foundation::ns_string;
     use std::sync::mpsc;
     use std::time::Duration;
@@ -1988,7 +1996,9 @@ pub async fn get_media_permission_status() -> Result<MediaPermissionSnapshot, St
 ///
 /// Supported scopes: "camera", "microphone", "screen". If omitted, all are requested.
 #[tauri::command]
-pub async fn request_media_permissions(scopes: Option<Vec<String>>) -> Result<MediaPermissionSnapshot, String> {
+pub async fn request_media_permissions(
+    scopes: Option<Vec<String>>,
+) -> Result<MediaPermissionSnapshot, String> {
     #[cfg(target_os = "macos")]
     {
         let mut camera = av_media_status("camera")?;
@@ -2045,8 +2055,12 @@ pub async fn open_media_permission_settings(scope: Option<String>) -> Result<(),
     {
         let target = match scope.unwrap_or_else(|| "general".to_string()).as_str() {
             "camera" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera",
-            "microphone" => "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone",
-            "screen" => "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture",
+            "microphone" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+            }
+            "screen" => {
+                "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+            }
             _ => "x-apple.systempreferences:com.apple.preference.security?Privacy",
         };
 
@@ -2101,11 +2115,12 @@ pub fn create_app_window<R: tauri::Runtime>(app: &AppHandle<R>) {
     #[cfg(desktop)]
     {
         let label = format!("window_{}", uuid::Uuid::new_v4().simple());
-        if let Err(e) = tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("/".into()))
-            .title("pgStudio")
-            .inner_size(1400.0, 900.0)
-            .min_inner_size(900.0, 600.0)
-            .build()
+        if let Err(e) =
+            tauri::WebviewWindowBuilder::new(app, label, tauri::WebviewUrl::App("/".into()))
+                .title("pgStudio")
+                .inner_size(1400.0, 900.0)
+                .min_inner_size(900.0, 600.0)
+                .build()
         {
             log::error!("Failed to create new window: {e}");
         }

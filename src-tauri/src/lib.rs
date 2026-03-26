@@ -1,7 +1,8 @@
 mod account_security_storage;
 mod ai_suggestions_worker;
 mod auth;
-mod web_config;
+mod backup;
+mod backup_storage;
 mod commands;
 mod connections_storage;
 mod db;
@@ -10,14 +11,15 @@ mod git;
 mod git_storage;
 mod github;
 mod local_postgres;
+mod native_menu;
 mod notes_storage;
 mod query_history_storage;
 mod schema_designer_storage;
-mod ssh_tunnel;
 mod sql_lint;
-mod native_menu;
+mod ssh_tunnel;
 mod trial;
 mod updates;
+mod web_config;
 
 use commands::AppState;
 use git::GitState;
@@ -63,7 +65,9 @@ pub fn run() {
                                 } else if url.starts_with("pgstudio://collab/join") {
                                     log::info!("[deep-link] emitting pgstudio-collab-join");
                                     if let Err(e) = handle.emit("pgstudio-collab-join", &url) {
-                                        log::error!("[deep-link] failed to emit collaboration event: {e}");
+                                        log::error!(
+                                            "[deep-link] failed to emit collaboration event: {e}"
+                                        );
                                     }
                                 } else {
                                     log::debug!("[deep-link] ignored url: {url}");
@@ -80,10 +84,21 @@ pub fn run() {
                 });
 
             native_menu::install_native_menu(app)?;
+            backup::start_scheduler(app.handle().clone());
 
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
+            backup::backup_get_module_state,
+            backup::backup_estimate_size,
+            backup::backup_run_now,
+            backup::backup_restore,
+            backup::backup_upsert_schedule,
+            backup::backup_delete_schedule,
+            backup::backup_delete_record,
+            backup::backup_connect_google_drive,
+            backup::backup_save_google_drive_config,
+            backup::backup_clear_google_drive_config,
             commands::db_connect,
             commands::db_disconnect,
             commands::db_list_schemas,
@@ -91,6 +106,7 @@ pub fn run() {
             commands::db_track_recent_table_open,
             commands::db_list_recent_tables,
             commands::db_get_schema_topology,
+            commands::db_get_database_topology,
             commands::db_preview_alter_table,
             commands::db_get_columns,
             commands::db_get_documentation_context,

@@ -59,7 +59,9 @@ impl LineIndex {
                 starts.push(idx + 1);
             }
         }
-        Self { line_starts: starts }
+        Self {
+            line_starts: starts,
+        }
     }
 
     fn line_col(&self, sql: &str, offset: usize) -> (usize, usize) {
@@ -75,7 +77,8 @@ impl LineIndex {
 }
 
 static SELECT_PROJECTION_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?is)\bselect\b(?P<projection>.+?)\bfrom\b").expect("valid SELECT projection regex")
+    Regex::new(r"(?is)\bselect\b(?P<projection>.+?)\bfrom\b")
+        .expect("valid SELECT projection regex")
 });
 
 static FROM_CLAUSE_RE: Lazy<Regex> = Lazy::new(|| {
@@ -121,10 +124,8 @@ static IMPLICIT_CAST_LEFT_RE: Lazy<Regex> = Lazy::new(|| {
 });
 
 static CORRELATED_SUBQUERY_RE: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
-        r"(?is)\(\s*select\b[\s\S]*?\bwhere\b[\s\S]*?\b[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*",
-    )
-    .expect("valid N+1 regex")
+    Regex::new(r"(?is)\(\s*select\b[\s\S]*?\bwhere\b[\s\S]*?\b[a-z_][a-z0-9_]*\.[a-z_][a-z0-9_]*")
+        .expect("valid N+1 regex")
 });
 
 static WHERE_WORD_RE: Lazy<Regex> =
@@ -201,7 +202,10 @@ pub fn db_lint_sql(
     Ok(run_sql_lint(&sql, schema_context.as_ref()))
 }
 
-fn run_sql_lint(sql: &str, schema_context: Option<&SqlLintSchemaContext>) -> Vec<SqlLintDiagnostic> {
+fn run_sql_lint(
+    sql: &str,
+    schema_context: Option<&SqlLintSchemaContext>,
+) -> Vec<SqlLintDiagnostic> {
     if sql.trim().is_empty() {
         return Vec::new();
     }
@@ -239,7 +243,11 @@ fn run_sql_lint(sql: &str, schema_context: Option<&SqlLintSchemaContext>) -> Vec
     diagnostics
 }
 
-fn lint_delimiter_errors(sql: &str, line_index: &LineIndex, diagnostics: &mut Vec<SqlLintDiagnostic>) {
+fn lint_delimiter_errors(
+    sql: &str,
+    line_index: &LineIndex,
+    diagnostics: &mut Vec<SqlLintDiagnostic>,
+) {
     let bytes = sql.as_bytes();
     let len = bytes.len();
     let mut i = 0;
@@ -841,7 +849,10 @@ fn lint_ambiguous_columns(
         if SQL_KEYWORDS.contains(token_lower.as_str()) {
             continue;
         }
-        if alias_to_table.iter().any(|(alias, _)| alias == &token_lower) {
+        if alias_to_table
+            .iter()
+            .any(|(alias, _)| alias == &token_lower)
+        {
             continue;
         }
         if !column_alias_map.contains_key(&token_lower) {
