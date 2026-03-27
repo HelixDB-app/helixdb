@@ -13,6 +13,7 @@ import {
     Info,
     Loader2,
     MonitorUp,
+    PanelLeftClose,
     PencilLine,
     Play,
     PlugZap,
@@ -69,8 +70,11 @@ import {
     dbExecuteQuery,
     dbGetColumns,
     dbGetTableData,
+    dbListEventTriggers,
+    dbListFunctions,
     dbListSchemas,
     dbListTables,
+    dbListTypes,
     dbSearchTableDataMulti,
 } from "@/lib/db-platform";
 import { isEditableTarget } from "@/lib/shortcut-keys";
@@ -95,6 +99,9 @@ import type {
     SavedConnection,
     TableInfo,
 } from "@/lib/types";
+import { formatCellValue } from "@/lib/types";
+import { cn } from "@/lib/utils";
+import { useSearchStore } from "@/stores/search-store";
 
 function connectionSummaryLine(conn: DesktopConnectedConnection): string {
     return `${conn.database_name} · ${conn.host}`;
@@ -131,9 +138,6 @@ function inspectorResultFooterText(result: QueryResult): string {
     }
     return `${shown.toLocaleString()} rows · ${ms.toLocaleString()} ms`;
 }
-import { formatCellValue } from "@/lib/types";
-import { cn } from "@/lib/utils";
-import { useSearchStore } from "@/stores/search-store";
 
 type InspectorContext =
     | {
@@ -240,12 +244,27 @@ function hasFilterValue(operator: string): boolean {
     return operator !== "IS NULL" && operator !== "IS NOT NULL";
 }
 
+const QS_PANEL_BROWSE = { width: 980, height: 720 } as const;
+const QS_PANEL_INSPECT = { width: 1240, height: 820 } as const;
+
 async function hideCurrentDesktopPanel() {
     try {
         const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
         await getCurrentWebviewWindow().hide();
     } catch {
         await desktopHideQuickSearchPanel().catch(() => {});
+    }
+}
+
+async function setQuickSearchWindowLayout(inspect: boolean) {
+    try {
+        const { getCurrentWebviewWindow } = await import("@tauri-apps/api/webviewWindow");
+        const { LogicalSize } = await import("@tauri-apps/api/window");
+        const win = getCurrentWebviewWindow();
+        const dim = inspect ? QS_PANEL_INSPECT : QS_PANEL_BROWSE;
+        await win.setSize(new LogicalSize(dim.width, dim.height));
+    } catch {
+        /* Not running inside Tauri */
     }
 }
 
@@ -278,6 +297,13 @@ export function DesktopSearchPanel() {
     const [isSavingCell, setIsSavingCell] = useState(false);
     const [deletingRowIndex, setDeletingRowIndex] = useState<number | null>(null);
     const [connectingSavedId, setConnectingSavedId] = useState<string | null>(null);
+    const [debouncedTableFilter, setDebouncedTableFilter] = useState("");
+    const [catalogStats, setCatalogStats] = useState<{
+        functions: number;
+        types: number;
+        triggers: number;
+    } | null>(null);
+    const [catalogStatsLoading, setCatalogStatsLoading] = useState(false);
 
     const columnCacheRef = useRef<Record<string, ColumnInfo[]>>({});
     columnCacheRef.current = columnCache;
@@ -296,14 +322,20 @@ export function DesktopSearchPanel() {
     );
 
     const normalizedInput = input.trim().toLowerCase();
-    const searchTokens = useMemo(
-        () => tokenizeCommandSearchInput(normalizedInput),
-        [normalizedInput]
-    );
+    const debouncedNormalized = debouncedTableFilter.trim().toLowerCase();
     const parsed = useMemo<CommandSearchStage>(
         () => parseCommandSearchInput(input, tables),
         [input, tables]
     );
+
+    useEffect(() => {
+        if (parsed.type !== "table" && parsed.type !== "init") {
+            setDebouncedTableFilter(input);
+            return;
+        }
+        const id = window.setTimeout(() => setDebouncedTableFilter(input), 160);
+        return () => window.clearTimeout(id);
+    }, [input, parsed.type]);
 
     const savedBySignature = useMemo(() => {
         const map = new Map<string, { id: string; label: string }>();
@@ -338,26 +370,50 @@ export function DesktopSearchPanel() {
         }
     }, []);
 
+    const hydrateCatalogStats = useCallback(async (connId: string, mergedTables: TableInfo[]) => {
+        setCatalogStatsLoading(true);
+        setCatalogStats(null);
+        try {
+            const schemaNames = Array.from(new Set(mergedTables.map((t) => t.schema))).sort();
+            const [triggers, fnLists, typeLists] = await Promise.all([
+                dbListEventTriggers(connId).catch(() => []),
+                mapWithConcurrency(schemaNames, 4, async (schema) => {
+                    try {
+                        return await dbListFunctions(connId, schema);
+                    } catch {
+                        return [];
+                    }
+                }),
+                mapWithConcurrency(schemaNames, 4, async (schema) => {
+                    try {
+                        return await dbListTypes(connId, schema);
+                    } catch {
+                        return [];
+                    }
+                }),
+            ]);
+            const functions = fnLists.reduce((acc, xs) => acc + xs.length, 0);
+            const types = typeLists.reduce((acc, xs) => acc + xs.length, 0);
+            setCatalogStats({
+                functions,
+                types,
+                triggers: triggers.length,
+            });
+        } finally {
+            setCatalogStatsLoading(false);
+        }
+    }, []);
+
     useEffect(() => {
         void refreshDesktopContext();
     }, [refreshDesktopContext]);
-
-    useEffect(() => {
-        const handler = (event: KeyboardEvent) => {
-            if (event.key !== "Escape" || isEditableTarget(event.target)) return;
-            event.preventDefault();
-            void hideCurrentDesktopPanel();
-        };
-
-        window.addEventListener("keydown", handler);
-        return () => window.removeEventListener("keydown", handler);
-    }, []);
 
     useEffect(() => {
         if (!selectedConnectionId) {
             setTables([]);
             setCatalogError(null);
             setIsLoadingCatalog(false);
+            setCatalogStats(null);
             setInspectorContext(null);
             setResult(null);
             setResultColumns([]);
@@ -393,6 +449,7 @@ export function DesktopSearchPanel() {
                     );
 
                 setTables(mergedTables);
+                void hydrateCatalogStats(selectedConnectionId, mergedTables);
             } catch (error) {
                 if (!cancelled) {
                     setCatalogError(String(error));
@@ -406,7 +463,7 @@ export function DesktopSearchPanel() {
         return () => {
             cancelled = true;
         };
-    }, [selectedConnectionId]);
+    }, [selectedConnectionId, hydrateCatalogStats]);
 
     const ensureColumns = useCallback(
         async (schema: string, table: string) => {
@@ -446,7 +503,12 @@ export function DesktopSearchPanel() {
 
     const filteredTables = useMemo(() => {
         if (tables.length === 0) return [] as TableInfo[];
-        if (!normalizedInput || parsed.type !== "table") {
+        const stageNormalized =
+            parsed.type === "table" || parsed.type === "init"
+                ? debouncedNormalized
+                : normalizedInput;
+        const stageTokens = tokenizeCommandSearchInput(stageNormalized);
+        if (!stageNormalized || parsed.type !== "table") {
             return tables.slice(0, 18);
         }
 
@@ -454,20 +516,33 @@ export function DesktopSearchPanel() {
             .map((table) => {
                 const primary = `${table.schema}.${table.name}`.toLowerCase();
                 const searchText = `${table.schema} ${table.name} ${table.table_comment ?? ""}`.toLowerCase();
-                if (!allTokensMatch(searchTokens, searchText)) {
+                if (!allTokensMatch(stageTokens, searchText)) {
                     return { table, score: 0 };
                 }
 
                 return {
                     table,
-                    score: scoreMatch(normalizedInput, searchTokens, primary, searchText),
+                    score: scoreMatch(stageNormalized, stageTokens, primary, searchText),
                 };
             })
-            .filter((item) => item.score > 0 || item.table.name.toLowerCase().includes(normalizedInput))
+            .filter(
+                (item) =>
+                    item.score > 0 || item.table.name.toLowerCase().includes(stageNormalized)
+            )
             .sort((left, right) => right.score - left.score)
             .slice(0, 24)
             .map((item) => item.table);
-    }, [normalizedInput, parsed.type, searchTokens, tables]);
+    }, [debouncedNormalized, normalizedInput, parsed.type, tables]);
+
+    const filteredTablesBySchema = useMemo(() => {
+        const m = new Map<string, TableInfo[]>();
+        for (const t of filteredTables) {
+            const list = m.get(t.schema) ?? [];
+            list.push(t);
+            m.set(t.schema, list);
+        }
+        return Array.from(m.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    }, [filteredTables]);
 
     const displayColumns = useMemo(() => {
         if (parsed.type === "column") {
@@ -567,6 +642,37 @@ export function DesktopSearchPanel() {
     useEffect(() => {
         void loadInspector();
     }, [loadInspector]);
+
+    const backToBrowse = useCallback(() => {
+        setInspectorContext(null);
+        setResult(null);
+        setResultColumns([]);
+        setResultError(null);
+        setPage(1);
+        setEditingCell(null);
+        setEditingValue("");
+    }, []);
+
+    const isInspectMode = inspectorContext !== null;
+
+    useEffect(() => {
+        void setQuickSearchWindowLayout(isInspectMode);
+    }, [isInspectMode]);
+
+    useEffect(() => {
+        const handler = (event: KeyboardEvent) => {
+            if (event.key !== "Escape" || isEditableTarget(event.target)) return;
+            event.preventDefault();
+            if (inspectorContext) {
+                backToBrowse();
+                return;
+            }
+            void hideCurrentDesktopPanel();
+        };
+
+        window.addEventListener("keydown", handler);
+        return () => window.removeEventListener("keydown", handler);
+    }, [inspectorContext, backToBrowse]);
 
     const openTable = useCallback(
         async (schema: string, table: string, label?: string) => {
@@ -872,6 +978,17 @@ export function DesktopSearchPanel() {
                 : inspectorContext.sql
             : "";
 
+    const footerStatsText = useMemo(() => {
+        const n = tables.length;
+        if (catalogStatsLoading) {
+            return `${n} tables · …`;
+        }
+        if (!catalogStats) {
+            return `${n} tables`;
+        }
+        return `${n} tables · ${catalogStats.functions} functions · ${catalogStats.types} types · ${catalogStats.triggers} triggers`;
+    }, [tables.length, catalogStats, catalogStatsLoading]);
+
     return (
         <div className="box-border flex h-screen w-screen overflow-hidden bg-transparent p-0 text-foreground antialiased [isolation:isolate]">
             <div
@@ -888,7 +1005,72 @@ export function DesktopSearchPanel() {
                     <div className="absolute inset-x-0 top-0 h-24 bg-[radial-gradient(ellipse_100%_100%_at_50%_-30%,rgba(94,234,212,0.08),transparent_72%)]" />
                 </div>
 
-                <div className="relative z-[1] flex w-[420px] min-w-[22rem] max-w-[26rem] shrink-0 flex-col border-r border-white/[0.05] bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))] backdrop-blur-xl">
+                <div
+                    className={cn(
+                        "relative z-[1] flex shrink-0 flex-col border-r border-white/[0.05] bg-[linear-gradient(180deg,rgba(255,255,255,0.04),rgba(255,255,255,0.01))] backdrop-blur-xl transition-[width,min-width,max-width] duration-300 ease-out",
+                        isInspectMode
+                            ? "w-[92px] min-w-[92px] max-w-[92px]"
+                            : "w-[420px] min-w-[22rem] max-w-[26rem]"
+                    )}
+                >
+                    {isInspectMode ? (
+                        <div className="flex h-full min-h-0 flex-col items-center gap-3 py-4">
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-10 w-10 shrink-0 rounded-full border border-white/10 bg-white/5 text-muted-foreground hover:bg-white/10 hover:text-foreground"
+                                        onClick={backToBrowse}
+                                        aria-label="Back to search"
+                                    >
+                                        <PanelLeftClose className="h-5 w-5" />
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent side="right" className="text-xs">
+                                    Back to search
+                                </TooltipContent>
+                            </Tooltip>
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-10 w-10 shrink-0 rounded-full border border-white/10 bg-white/5 text-muted-foreground hover:bg-white/10 hover:text-foreground"
+                                        onClick={() => void refreshDesktopContext(selectedConnectionId)}
+                                        disabled={isBootstrapping}
+                                        aria-label="Refresh connections"
+                                    >
+                                        <RefreshCw className={cn("h-5 w-5", isBootstrapping && "animate-spin")} />
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent side="right" className="text-xs">
+                                    Refresh
+                                </TooltipContent>
+                            </Tooltip>
+                            <div className="min-h-0 flex-1" />
+                            <Tooltip>
+                                <TooltipTrigger asChild>
+                                    <Button
+                                        type="button"
+                                        variant="ghost"
+                                        size="icon"
+                                        className="h-10 w-10 shrink-0 rounded-full border border-white/10 bg-white/5 text-muted-foreground hover:bg-white/10 hover:text-foreground"
+                                        onClick={() => void hideCurrentDesktopPanel()}
+                                        aria-label="Hide quick search panel"
+                                    >
+                                        <X className="h-5 w-5" />
+                                    </Button>
+                                </TooltipTrigger>
+                                <TooltipContent side="right" className="text-xs">
+                                    Close panel
+                                </TooltipContent>
+                            </Tooltip>
+                        </div>
+                    ) : (
+                    <>
                     <div className="border-b border-white/10 px-5 py-5">
                         <div className="flex items-start justify-between gap-3">
                             <div>
@@ -1048,31 +1230,33 @@ export function DesktopSearchPanel() {
                                 <>
                                     <CommandSeparator className="my-2 bg-white/8" />
 
-                                    {(parsed.type === "init" || parsed.type === "table") && filteredTables.length > 0 && (
-                                        <CommandGroup heading="Tables">
-                                            {filteredTables.map((table) => (
-                                                <CommandItem
-                                                    key={tableKey(table.schema, table.name)}
-                                                    value={tableKey(table.schema, table.name)}
-                                                    onSelect={() => void openTable(table.schema, table.name)}
-                                                    className="cursor-pointer rounded-[14px] px-3 py-3.5"
-                                                >
-                                                    <Table2 className="h-5 w-5 text-cyan-300/80" />
-                                                    <div className="min-w-0 flex-1">
-                                                        <p className="truncate text-sm font-medium text-foreground/90">
-                                                            {table.schema}.{table.name}
-                                                        </p>
-                                                        <p className="truncate text-xs text-muted-foreground/75">
-                                                            {table.table_comment || table.table_type}
-                                                        </p>
-                                                    </div>
-                                                    <CommandShortcut className="tracking-normal">
-                                                        Browse
-                                                    </CommandShortcut>
-                                                </CommandItem>
-                                            ))}
-                                        </CommandGroup>
-                                    )}
+                                    {(parsed.type === "init" || parsed.type === "table") &&
+                                        filteredTablesBySchema.length > 0 &&
+                                        filteredTablesBySchema.map(([schemaName, schemaTables]) => (
+                                            <CommandGroup key={schemaName} heading={schemaName}>
+                                                {schemaTables.map((table) => (
+                                                    <CommandItem
+                                                        key={tableKey(table.schema, table.name)}
+                                                        value={tableKey(table.schema, table.name)}
+                                                        onSelect={() => void openTable(table.schema, table.name)}
+                                                        className="cursor-pointer rounded-[14px] px-3 py-3.5"
+                                                    >
+                                                        <Table2 className="h-5 w-5 text-cyan-300/80" />
+                                                        <div className="min-w-0 flex-1">
+                                                            <p className="truncate text-sm font-medium text-foreground/90">
+                                                                {table.name}
+                                                            </p>
+                                                            <p className="truncate text-xs text-muted-foreground/75">
+                                                                {table.table_comment || table.table_type}
+                                                            </p>
+                                                        </div>
+                                                        <CommandShortcut className="tracking-normal">
+                                                            Browse
+                                                        </CommandShortcut>
+                                                    </CommandItem>
+                                                ))}
+                                            </CommandGroup>
+                                        ))}
 
                                     {parsed.type === "column" && displayColumns.length > 0 && (
                                         <CommandGroup heading="Columns">
@@ -1260,6 +1444,21 @@ export function DesktopSearchPanel() {
                                 </div>
                             )}
                         </CommandList>
+                        <div className="flex items-center justify-between gap-2 border-t border-white/10 px-3 py-1.5">
+                            <div className="flex flex-wrap gap-x-2 gap-y-0.5 text-[10px] text-muted-foreground/40">
+                                <span>↑↓ navigate</span>
+                                <span>↵ select</span>
+                                <span>esc back or close</span>
+                            </div>
+                            {selectedConnectionId ? (
+                                <span
+                                    className="max-w-[55%] shrink-0 truncate text-[10px] font-mono text-muted-foreground/35"
+                                    title={footerStatsText}
+                                >
+                                    {footerStatsText}
+                                </span>
+                            ) : null}
+                        </div>
                     </Command>
 
                     <div className="border-t border-white/10 px-4 py-3">
@@ -1272,9 +1471,16 @@ export function DesktopSearchPanel() {
                             Open full workspace
                         </Button>
                     </div>
+                    </>
+                    )}
                 </div>
 
-                <div className="relative z-[1] flex min-w-0 flex-1 flex-col">
+                <div
+                    className={cn(
+                        "relative z-[1] flex min-w-0 flex-1 flex-col transition-[flex-grow] duration-300 ease-out",
+                        isInspectMode && "min-w-0"
+                    )}
+                >
                     <div className="border-b border-white/[0.06] px-7 pb-5 pt-7 sm:px-8 sm:pt-8">
                         <div className="flex items-start justify-between gap-5">
                             <div className="min-w-0 flex-1 pr-2">
@@ -1309,6 +1515,17 @@ export function DesktopSearchPanel() {
                             </div>
 
                             <div className="flex shrink-0 items-center gap-2.5 pt-0.5 sm:gap-3">
+                                {isInspectMode ? (
+                                    <Button
+                                        variant="ghost"
+                                        size="sm"
+                                        className="h-10 rounded-full border border-white/[0.08] bg-white/[0.06] px-4 text-sm hover:bg-white/[0.1]"
+                                        onClick={backToBrowse}
+                                    >
+                                        <PanelLeftClose className="mr-2 h-4 w-4" />
+                                        Search
+                                    </Button>
+                                ) : null}
                                 {inspectorContext && (
                                     <Button
                                         variant="ghost"
@@ -1418,19 +1635,19 @@ export function DesktopSearchPanel() {
                                         <table className="w-full caption-bottom border-separate border-spacing-0 text-sm">
                                             <TableHeader>
                                                 <TableRow className="border-b-0 hover:bg-transparent">
-                                                    <TableHead className="sticky top-0 z-10 border-b border-white/10 bg-[#101924] px-4 py-3 text-left text-xs font-medium text-muted-foreground">
+                                                    <TableHead className="sticky top-0 z-10 border-b border-white/10 bg-[#101924] px-4 py-3 text-left font-mono text-xs font-medium text-muted-foreground">
                                                         #
                                                     </TableHead>
                                                     {result.columns.map((column) => (
                                                         <TableHead
                                                             key={column.name}
-                                                            className="sticky top-0 z-10 border-b border-white/10 bg-[#101924] px-4 py-3 text-left text-xs font-medium text-muted-foreground"
+                                                            className="sticky top-0 z-10 border-b border-white/10 bg-[#101924] px-4 py-3 text-left font-mono text-xs font-medium text-muted-foreground"
                                                         >
                                                             {column.name}
                                                         </TableHead>
                                                     ))}
                                                     {canEditRows ? (
-                                                        <TableHead className="sticky top-0 z-10 border-b border-white/10 bg-[#101924] px-4 py-3 text-right text-xs font-medium text-muted-foreground">
+                                                        <TableHead className="sticky top-0 z-10 border-b border-white/10 bg-[#101924] px-4 py-3 text-right font-mono text-xs font-medium text-muted-foreground">
                                                             Row
                                                         </TableHead>
                                                     ) : null}
