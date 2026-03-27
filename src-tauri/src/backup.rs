@@ -1012,8 +1012,7 @@ fn base64_url_encode(bytes: &[u8]) -> String {
     let mut output = String::with_capacity((bytes.len() * 4).div_ceil(3));
     let mut chunks = bytes.chunks_exact(3);
     for chunk in &mut chunks {
-        let value =
-            ((chunk[0] as u32) << 16) | ((chunk[1] as u32) << 8) | (chunk[2] as u32);
+        let value = ((chunk[0] as u32) << 16) | ((chunk[1] as u32) << 8) | (chunk[2] as u32);
         output.push(TABLE[((value >> 18) & 0x3f) as usize] as char);
         output.push(TABLE[((value >> 12) & 0x3f) as usize] as char);
         output.push(TABLE[((value >> 6) & 0x3f) as usize] as char);
@@ -1334,13 +1333,7 @@ async fn ensure_google_drive_root_folder(
         return Ok(folder_id);
     }
 
-    create_drive_folder(
-        client,
-        access_token,
-        None,
-        GOOGLE_DRIVE_ROOT_FOLDER_NAME,
-    )
-    .await
+    create_drive_folder(client, access_token, None, GOOGLE_DRIVE_ROOT_FOLDER_NAME).await
 }
 
 async fn ensure_google_access_token(
@@ -1632,7 +1625,10 @@ async fn upload_drive_file_resumable(
             .bearer_auth(access_token)
             .header("Content-Length", bytes_read.to_string())
             .header("Content-Type", mime_type)
-            .header("Content-Range", format!("bytes {}-{}/{}", start, end, file_size))
+            .header(
+                "Content-Range",
+                format!("bytes {}-{}/{}", start, end, file_size),
+            )
             .body(buffer[..bytes_read].to_vec())
             .send()
             .await
@@ -2662,12 +2658,8 @@ pub async fn backup_connect_google_drive(
             Ok(status)
         }
         Err(err) => {
-            reply_google_oauth_page(
-                &mut callback.stream,
-                "Google Drive Connection Failed",
-                &err,
-            )
-            .await;
+            reply_google_oauth_page(&mut callback.stream, "Google Drive Connection Failed", &err)
+                .await;
             Err(err)
         }
     }

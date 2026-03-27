@@ -59,7 +59,8 @@ compose-up:
 # Source: public/logo.png — transparent margins + inner squircle art: do NOT letterbox on a square first
 # (that leaves a huge dark halo in the Dock). Trim alpha, overscale ~12%, center-crop 1024², flatten.
 # Tune APP_ICON_ZOOM if the glyph clips (lower) or still feels small (raise).
-APP_ICON_ZOOM := 336
+# ~400+ reads clearly in the macOS Dock; 336 left the mark visually tiny in the squircle.
+APP_ICON_ZOOM := 400
 icons:
 	magick public/logo.png -trim +repage \
 		-filter Lanczos -resize $(APP_ICON_ZOOM)% \

@@ -2788,6 +2788,13 @@ pub async fn create_database_user(
         }
     }
 
+    if all_roles.contains(&username) {
+        return Err(format!(
+            "A role named '{}' already exists. Choose a different username.",
+            username
+        ));
+    }
+
     let mut client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
     let tx = client
         .transaction()
@@ -2826,46 +2833,51 @@ pub async fn create_database_user(
         "NOBYPASSRLS"
     });
 
+    // Use quoted literals for PASSWORD / VALID UNTIL instead of prepared parameters. Some hosts
+    // and poolers mishandle extended-query Prepare/Bind on CREATE ROLE; literals are standard here.
+    let password_lit = quote_literal(&request.password);
     let mut create_sql = format!(
-        "CREATE ROLE {} WITH {} PASSWORD $1",
+        "CREATE ROLE {} WITH {} PASSWORD {}",
         quote_ident(&username),
-        options.join(" ")
+        options.join(" "),
+        password_lit
     );
-    if request
+    if let Some(v) = request
         .valid_until
         .as_ref()
-        .is_some_and(|v| !v.trim().is_empty())
+        .map(|s| s.trim())
+        .filter(|s| !s.is_empty())
     {
-        create_sql.push_str(" VALID UNTIL $2");
+        create_sql.push_str(&format!(" VALID UNTIL {}", quote_literal(v)));
     }
 
-    match request
-        .valid_until
-        .as_ref()
-        .filter(|v| !v.trim().is_empty())
-    {
-        Some(valid_until) => {
-            tx.execute(&create_sql, &[&request.password, valid_until])
-                .await
-                .map_err(|e| format!("Failed to create role '{}': {}", username, e))?;
-        }
-        None => {
-            tx.execute(&create_sql, &[&request.password])
-                .await
-                .map_err(|e| format!("Failed to create role '{}': {}", username, e))?;
-        }
-    }
+    tx.execute(&create_sql, &[])
+        .await
+        .map_err(|e| {
+            format!(
+                "Failed to create role '{}': {}",
+                username,
+                format_pg_error(&e)
+            )
+        })?;
 
     for role in memberships {
         let grant_sql = format!("GRANT {} TO {}", quote_ident(&role), quote_ident(&username));
         tx.execute(&grant_sql, &[])
             .await
-            .map_err(|e| format!("Failed to grant '{}' to '{}': {}", role, username, e))?;
+            .map_err(|e| {
+                format!(
+                    "Failed to grant '{}' to '{}': {}",
+                    role,
+                    username,
+                    format_pg_error(&e)
+                )
+            })?;
     }
 
     tx.commit()
         .await
-        .map_err(|e| format!("Failed to finalize user creation: {}", e))?;
+        .map_err(|e| format!("Failed to finalize user creation: {}", format_pg_error(&e)))?;
 
     Ok(())
 }
@@ -3225,11 +3237,21 @@ pub async fn set_database_user_password(
     let _ = validate_target_user_action(pool, &username, true).await?;
 
     let client = pool.get().await.map_err(|e| format!("Pool error: {}", e))?;
-    let sql = format!("ALTER ROLE {} PASSWORD $1", quote_ident(&username));
+    let sql = format!(
+        "ALTER ROLE {} PASSWORD {}",
+        quote_ident(&username),
+        quote_literal(password)
+    );
     client
-        .execute(&sql, &[&password])
+        .execute(&sql, &[])
         .await
-        .map_err(|e| format!("Failed to update password for '{}': {}", username, e))?;
+        .map_err(|e| {
+            format!(
+                "Failed to update password for '{}': {}",
+                username,
+                format_pg_error(&e)
+            )
+        })?;
     Ok(())
 }
 

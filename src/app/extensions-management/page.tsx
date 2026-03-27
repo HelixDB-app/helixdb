@@ -42,6 +42,7 @@ import { toast } from "sonner";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Separator } from "@/components/ui/separator";
 import {
@@ -635,6 +636,10 @@ export default function ExtensionsManagementPage() {
         if (!connectionId || !accessProfile?.is_admin) return;
         if (!createUserForm.username.trim() || !createUserForm.password) {
             toast.error("Username and password are required.");
+            return;
+        }
+        if (createUserForm.password.length < 8) {
+            toast.error("Password must be at least 8 characters.");
             return;
         }
 
@@ -1552,46 +1557,78 @@ export default function ExtensionsManagementPage() {
                                         </p>
                                     ) : (
                                         <>
-                                            <div className="mt-2 grid gap-2 sm:grid-cols-2">
-                                                <Input
-                                                    value={createUserForm.username}
-                                                    onChange={(event) =>
-                                                        setCreateUserForm((current) => ({
-                                                            ...current,
-                                                            username: event.target.value,
-                                                        }))
-                                                    }
-                                                    placeholder="username"
-                                                    className="h-8 text-xs"
-                                                />
-                                                <Input
-                                                    type="password"
-                                                    value={createUserForm.password}
-                                                    onChange={(event) =>
-                                                        setCreateUserForm((current) => ({
-                                                            ...current,
-                                                            password: event.target.value,
-                                                        }))
-                                                    }
-                                                    placeholder="password"
-                                                    className="h-8 text-xs"
-                                                />
-                                                <Input
-                                                    value={createUserForm.validUntil}
-                                                    onChange={(event) =>
-                                                        setCreateUserForm((current) => ({
-                                                            ...current,
-                                                            validUntil: event.target.value,
-                                                        }))
-                                                    }
-                                                    placeholder="valid until (optional)"
-                                                    className="h-8 text-xs sm:col-span-2"
-                                                />
+                                            <div className="mt-2 grid gap-3 sm:grid-cols-2">
+                                                <div className="space-y-1">
+                                                    <Label htmlFor="create-user-username" className="text-[11px]">
+                                                        Username
+                                                    </Label>
+                                                    <Input
+                                                        id="create-user-username"
+                                                        autoComplete="off"
+                                                        value={createUserForm.username}
+                                                        onChange={(event) =>
+                                                            setCreateUserForm((current) => ({
+                                                                ...current,
+                                                                username: event.target.value,
+                                                            }))
+                                                        }
+                                                        placeholder="app_user"
+                                                        className="h-8 text-xs"
+                                                    />
+                                                </div>
+                                                <div className="space-y-1">
+                                                    <Label htmlFor="create-user-password" className="text-[11px]">
+                                                        Password
+                                                    </Label>
+                                                    <Input
+                                                        id="create-user-password"
+                                                        type="password"
+                                                        autoComplete="new-password"
+                                                        value={createUserForm.password}
+                                                        onChange={(event) =>
+                                                            setCreateUserForm((current) => ({
+                                                                ...current,
+                                                                password: event.target.value,
+                                                            }))
+                                                        }
+                                                        placeholder="min. 8 characters"
+                                                        className="h-8 text-xs"
+                                                    />
+                                                </div>
+                                                <div className="space-y-1 sm:col-span-2">
+                                                    <Label htmlFor="create-user-valid-until" className="text-[11px]">
+                                                        Valid until{" "}
+                                                        <span className="font-normal text-muted-foreground">
+                                                            (optional)
+                                                        </span>
+                                                    </Label>
+                                                    <Input
+                                                        id="create-user-valid-until"
+                                                        value={createUserForm.validUntil}
+                                                        onChange={(event) =>
+                                                            setCreateUserForm((current) => ({
+                                                                ...current,
+                                                                validUntil: event.target.value,
+                                                            }))
+                                                        }
+                                                        placeholder='e.g. 2026-12-31 23:59:59+00 or "infinity"'
+                                                        className="h-8 font-mono text-xs"
+                                                    />
+                                                    <p className="text-[10px] text-muted-foreground">
+                                                        PostgreSQL timestamp string; leave empty for no expiry.
+                                                    </p>
+                                                </div>
                                             </div>
 
                                             <div className="mt-2 rounded border border-border/30 p-2">
                                                 <p className="text-[10px] font-medium uppercase tracking-wide text-muted-foreground">
                                                     Role attributes
+                                                </p>
+                                                <p className="mt-1 text-[10px] leading-snug text-muted-foreground">
+                                                    Managed providers sometimes disallow{" "}
+                                                    <span className="font-mono">CREATEDB</span> /{" "}
+                                                    <span className="font-mono">CREATEROLE</span> on new roles—uncheck
+                                                    those if creation fails with a permission error.
                                                 </p>
                                                 <div className="mt-1 grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
                                                     <ToggleCheckbox
@@ -1680,17 +1717,26 @@ export default function ExtensionsManagementPage() {
                                                 </ScrollArea>
                                             </div>
 
-                                            <Input
-                                                value={createUserForm.passwordReminder}
-                                                onChange={(event) =>
-                                                    setCreateUserForm((current) => ({
-                                                        ...current,
-                                                        passwordReminder: event.target.value,
-                                                    }))
-                                                }
-                                                placeholder="Password reminder (local only)"
-                                                className="mt-2 h-8 text-xs"
-                                            />
+                                            <div className="mt-2 space-y-1">
+                                                <Label htmlFor="create-user-reminder" className="text-[11px]">
+                                                    Password reminder{" "}
+                                                    <span className="font-normal text-muted-foreground">
+                                                        (stored only on this device)
+                                                    </span>
+                                                </Label>
+                                                <Input
+                                                    id="create-user-reminder"
+                                                    value={createUserForm.passwordReminder}
+                                                    onChange={(event) =>
+                                                        setCreateUserForm((current) => ({
+                                                            ...current,
+                                                            passwordReminder: event.target.value,
+                                                        }))
+                                                    }
+                                                    placeholder="Optional note — not sent to the database"
+                                                    className="h-8 text-xs"
+                                                />
+                                            </div>
 
                                             <Button
                                                 className="mt-2 h-8 w-full gap-1.5 text-xs"
