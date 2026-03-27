@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
+use tauri_plugin_shell::ShellExt;
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -83,7 +84,7 @@ fn get_github_client_secret() -> Result<String, String> {
 /// Open the user's browser to GitHub's OAuth authorization page.
 /// Reads GITHUB_CLIENT_ID from the .env file loaded at app startup.
 #[tauri::command]
-pub async fn github_start_oauth(_app: AppHandle) -> Result<(), String> {
+pub async fn github_start_oauth(app: AppHandle) -> Result<(), String> {
     let client_id = get_github_client_id()?;
     let url = format!(
         "https://github.com/login/oauth/authorize\
@@ -92,7 +93,9 @@ pub async fn github_start_oauth(_app: AppHandle) -> Result<(), String> {
          &scope=repo%20user%3Aemail\
          &state=pgstudio_git"
     );
-    opener::open(&url).map_err(|e| format!("Failed to open browser: {e}"))
+    app.shell()
+        .open(url, None)
+        .map_err(|e| format!("Failed to open browser: {e}"))
 }
 
 /// Exchange the temporary code from GitHub's redirect for an access token.

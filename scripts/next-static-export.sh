@@ -20,4 +20,8 @@ if [ -d "$API_DIR" ]; then
     mv "$API_DIR" "$STASH_DIR/api"
 fi
 
+# distDir is `out` (see next.config.ts). Old `out/dev/types/validator.ts` can still list stashed
+# API routes; `tsc` then cannot resolve ../../../src/app/api/... — clear before build.
+rm -rf "$ROOT/out"
+
 (cd "$ROOT" && pnpm exec next build)

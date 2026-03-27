@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type {
     ConnectionResponse,
+    DesktopConnectedConnection,
+    DesktopQuickSearchContext,
     ConnectionEnvironment,
     CreateColumnDef,
     CreateDatabaseRoleRequest,
@@ -854,6 +856,83 @@ export async function updateSavedConnectionDatabaseName(
     });
 }
 
+type RawDesktopConnectedConnection = Partial<DesktopConnectedConnection> & {
+    connectionId?: string;
+    databaseName?: string;
+    serverVersion?: string;
+    isActive?: boolean;
+};
+
+type RawDesktopQuickSearchContext = Partial<DesktopQuickSearchContext> & {
+    activeConnectionId?: string | null;
+    connectedConnections?: RawDesktopConnectedConnection[] | null;
+    connected_connections?: RawDesktopConnectedConnection[] | null;
+};
+
+function normalizeDesktopConnectedConnection(
+    connection: RawDesktopConnectedConnection
+): DesktopConnectedConnection {
+    return {
+        connection_id: connection.connection_id ?? connection.connectionId ?? "",
+        database_name: connection.database_name ?? connection.databaseName ?? "postgres",
+        server_version: connection.server_version ?? connection.serverVersion ?? "",
+        host: connection.host ?? "localhost",
+        port: typeof connection.port === "number" ? connection.port : 5432,
+        user: connection.user ?? "postgres",
+        is_active: Boolean(connection.is_active ?? connection.isActive),
+    };
+}
+
+function normalizeDesktopQuickSearchContext(
+    payload: RawDesktopQuickSearchContext | null | undefined
+): DesktopQuickSearchContext {
+    const connectedConnections = Array.isArray(payload?.connected_connections)
+        ? payload.connected_connections
+        : Array.isArray(payload?.connectedConnections)
+            ? payload.connectedConnections
+            : [];
+
+    return {
+        active_connection_id:
+            payload?.active_connection_id ?? payload?.activeConnectionId ?? null,
+        connected_connections: connectedConnections.map(
+            normalizeDesktopConnectedConnection
+        ),
+    };
+}
+
+/** Load the shared desktop quick-search connection context from the Rust host. */
+export async function desktopGetQuickSearchContext(): Promise<DesktopQuickSearchContext> {
+    const payload = await invoke<RawDesktopQuickSearchContext>(
+        "desktop_get_quick_search_context"
+    );
+    return normalizeDesktopQuickSearchContext(payload);
+}
+
+/** Keep the Rust host aware of the currently active connection across windows. */
+export async function desktopSetActiveConnection(
+    connectionId: string | null
+): Promise<void> {
+    return invoke<void>("desktop_set_active_connection", {
+        connectionId,
+    });
+}
+
+/** Focus the main workspace window from desktop utility surfaces. */
+export async function desktopFocusMainWindow(): Promise<void> {
+    return invoke<void>("desktop_focus_main_window");
+}
+
+/** Toggle the desktop quick-search panel. */
+export async function desktopToggleQuickSearchPanel(): Promise<void> {
+    return invoke<void>("desktop_toggle_quick_search_panel");
+}
+
+/** Hide the desktop quick-search panel if it is visible. */
+export async function desktopHideQuickSearchPanel(): Promise<void> {
+    return invoke<void>("desktop_hide_quick_search_panel");
+}
+
 // ─── Backup & Restore ────────────────────────────────────────────────────
 
 /** Load backup history, schedules, local storage root, cloud sync status, and CLI capabilities. */
@@ -1319,6 +1398,40 @@ export async function schemaDesignerDeleteProject(id: string): Promise<SchemaPro
 
 // ─── Authentication ────────────────────────────────────────────────────────
 
+/** Must match `NEXT_PUBLIC_WEB_APP_URL` / Rust `PGSTUDIO_WEB_APP_URL` (login URL fallback). */
+const DESKTOP_WEB_APP_ORIGIN = (
+    typeof process !== "undefined" && process.env.NEXT_PUBLIC_WEB_APP_URL
+        ? process.env.NEXT_PUBLIC_WEB_APP_URL
+        : "https://pgstudio-web.vercel.app"
+).replace(/\/$/, "");
+
+async function copyUrlForManualOpen(url: string): Promise<boolean> {
+    if (typeof navigator === "undefined" || !navigator.clipboard?.writeText) {
+        return false;
+    }
+    try {
+        await navigator.clipboard.writeText(url);
+        return true;
+    } catch {
+        return false;
+    }
+}
+
+function browserOpenError(cause: unknown, copied: boolean): Error {
+    const base =
+        cause instanceof Error
+            ? cause.message
+            : "Could not open your default browser from the app.";
+    if (copied) {
+        return new Error(
+            `${base} The link was copied — paste it into your browser (⌘V or Ctrl+V), then continue.`
+        );
+    }
+    return new Error(
+        `${base} Set a default browser in System Settings, or open this site manually in a browser window.`
+    );
+}
+
 export interface UserProfile {
     id: string;
     name: string;
@@ -1330,7 +1443,13 @@ export interface UserProfile {
 
 /** Open the system browser at the pgstudio-web login page with a CSRF state nonce. */
 export async function authOpenLogin(state: string): Promise<void> {
-    return invoke<void>("auth_open_login", { state });
+    const fallbackUrl = `${DESKTOP_WEB_APP_ORIGIN}/login?source=desktop&state=${encodeURIComponent(state)}`;
+    try {
+        await invoke<void>("auth_open_login", { state });
+    } catch (e) {
+        const copied = await copyUrlForManualOpen(fallbackUrl);
+        throw browserOpenError(e, copied);
+    }
 }
 
 /** Exchange desktop OAuth `code` for an access token (control plane `POST /api/auth/desktop-exchange`). */
@@ -1340,7 +1459,12 @@ export async function authExchangeDesktopCode(code: string): Promise<string> {
 
 /** Open the system browser at any URL (e.g. the web profile page). */
 export async function authOpenBrowser(url: string): Promise<void> {
-    return invoke<void>("auth_open_url", { url });
+    try {
+        await invoke<void>("auth_open_url", { url });
+    } catch (e) {
+        const copied = await copyUrlForManualOpen(url);
+        throw browserOpenError(e, copied);
+    }
 }
 
 /** Store a JWT in the OS keychain. */

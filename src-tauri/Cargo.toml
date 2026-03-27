@@ -21,12 +21,15 @@ serde_json = "1.0"
 once_cell = "1.21"
 regex = "1.11"
 log = "0.4"
-tauri = { version = "2.10.0", features = ["devtools", "protocol-asset"] }
+tauri = { version = "2.10.0", features = ["devtools", "protocol-asset", "tray-icon", "macos-private-api"] }
 tauri-plugin-log = "2"
 tauri-plugin-notification = "2"
 tauri-plugin-shell = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-dialog = "2"
+
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-global-shortcut = "2"
 
 # Async runtime
 tokio = { version = "1", features = ["full"] }
@@ -43,7 +46,6 @@ native-tls = "0.2"
 
 # Utilities
 uuid = { version = "1", features = ["v4", "serde"] }
-opener = "0.8"
 flate2 = "1.0"
 dashmap = "6"
 chrono = { version = "0.4", features = ["serde"] }
@@ -63,7 +65,24 @@ hex = "0.4"
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
 objc2 = "0.6"
+objc2-app-kit = { version = "0.3", default-features = false, features = [
+    "NSApplication",
+    "NSImage",
+    "NSMenu",
+    "NSMenuItem",
+] }
 objc2-foundation = "0.3"
+objc2-local-authentication = "0.3"
+dispatch = "0.2"
+resvg = { version = "0.47", default-features = false }
+usvg = { version = "0.47", default-features = false }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+  "Foundation",
+  "Security_Credentials_UI",
+] }
+windows-future = "0.3"
 
 # Patched: objc2-system-configuration + SCDynamicStore are macOS-only (see third-party/whoami).
 [patch.crates-io]

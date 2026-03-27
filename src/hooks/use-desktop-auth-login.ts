@@ -165,7 +165,11 @@ export function useDesktopAuthLogin(options: UseDesktopAuthLoginOptions = {}) {
         } catch (err) {
             cleanupListeners();
             setPendingState(null);
-            setErrorMsg(err instanceof Error ? err.message : "Failed to open the browser");
+            setErrorMsg(
+                err instanceof Error
+                    ? err.message
+                    : "Could not reach your browser. Use Retry or open the pricing page in a browser manually."
+            );
             setPhase("error");
         }
     }, [phase, cleanupListeners, setUser, setPendingState, associateUser]);

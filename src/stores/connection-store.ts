@@ -30,6 +30,7 @@ import {
     dbRefreshCache,
 } from "@/lib/db-platform";
 import {
+    desktopSetActiveConnection,
     dbListRecentTables,
     dbTrackRecentTableOpen,
     updateSavedConnectionDatabaseName,
@@ -632,6 +633,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
         setActiveConnection: (connectionId) => {
             set({ activeConnectionId: connectionId });
             syncCurrent();
+            void desktopSetActiveConnection(connectionId).catch(() => {});
             if (connectionId) {
                 void get().loadRecentTables(connectionId);
             }
@@ -699,6 +701,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                         byConnectionId: { ...s.byConnectionId, [connId]: per },
                     }),
                 }));
+                void desktopSetActiveConnection(connId).catch(() => {});
                 void get().loadRecentTables(connId);
 
                 if (savedConnectionId) {
@@ -773,6 +776,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                 };
                 return next;
             });
+            void desktopSetActiveConnection(get().activeConnectionId).catch(() => {});
         },
 
         loadEventTriggers: async (connectionIdArg?, force = false) => {
@@ -920,6 +924,7 @@ export const useConnectionStore = create<ConnectionState>((set, get) => {
                         ...syncCurrentFromActive({ activeConnectionId, connections, byConnectionId }),
                     };
                 });
+                void desktopSetActiveConnection(get().activeConnectionId).catch(() => {});
                 void get().loadRecentTables(newId);
             } catch (error) {
                 set((s) => {

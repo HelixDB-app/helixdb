@@ -18,6 +18,7 @@ use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 use std::process::Command as StdCommand;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_shell::ShellExt;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::process::Command;
@@ -2579,7 +2580,9 @@ pub async fn backup_connect_google_drive(
     let (code_verifier, code_challenge) = build_google_pkce_pair();
     let auth_url = build_google_oauth_url(&client_id, &redirect_uri, &state, &code_challenge)?;
 
-    opener::open_browser(&auth_url).map_err(|e| format!("Failed to open browser: {}", e))?;
+    app.shell()
+        .open(auth_url, None)
+        .map_err(|e| format!("Failed to open browser: {}", e))?;
 
     let mut callback = wait_for_google_oauth_callback(listener, &state).await?;
 

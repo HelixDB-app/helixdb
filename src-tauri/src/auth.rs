@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 use tauri::AppHandle;
+use tauri_plugin_shell::ShellExt;
 
 use crate::web_config::{CONTROL_PLANE_HTTP, WEB_APP_URL};
 
@@ -72,16 +73,20 @@ pub async fn auth_exchange_desktop_code(code: String) -> Result<String, String> 
 /// Open the system browser at the pgstudio-web login page.
 /// `state` is a random nonce that the frontend generates to prevent CSRF.
 #[tauri::command]
-pub async fn auth_open_login(_app: AppHandle, state: String) -> Result<(), String> {
+pub async fn auth_open_login(app: AppHandle, state: String) -> Result<(), String> {
     let url = format!("{WEB_APP_URL}/login?source=desktop&state={state}");
-    opener::open_browser(&url).map_err(|e| format!("Failed to open browser: {e}"))?;
+    app.shell()
+        .open(url, None)
+        .map_err(|e| format!("Failed to open browser: {e}"))?;
     Ok(())
 }
 
 /// Open any URL in the system browser (used to open the web profile page, etc.)
 #[tauri::command]
-pub async fn auth_open_url(_app: AppHandle, url: String) -> Result<(), String> {
-    opener::open_browser(&url).map_err(|e| format!("Failed to open browser: {e}"))?;
+pub async fn auth_open_url(app: AppHandle, url: String) -> Result<(), String> {
+    app.shell()
+        .open(url, None)
+        .map_err(|e| format!("Failed to open browser: {e}"))?;
     Ok(())
 }
 

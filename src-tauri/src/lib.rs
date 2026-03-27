@@ -1,4 +1,5 @@
 mod account_security_storage;
+mod biometric;
 mod ai_suggestions_worker;
 mod auth;
 mod backup;
@@ -7,14 +8,20 @@ mod commands;
 mod connections_storage;
 mod db;
 mod device_fingerprint;
+mod desktop_panel;
 mod git;
 mod git_storage;
 mod github;
 mod local_postgres;
 mod native_menu;
+#[cfg(all(desktop, target_os = "macos"))]
+mod quick_search_icon;
 mod notes_storage;
 mod query_history_storage;
 mod schema_designer_storage;
+mod sql_sensitive;
+mod security_commands;
+mod security_prefs;
 mod sql_lint;
 mod ssh_tunnel;
 mod trial;
@@ -84,7 +91,45 @@ pub fn run() {
                 });
 
             native_menu::install_native_menu(app)?;
+            desktop_panel::install_desktop_quick_access(app)?;
             backup::start_scheduler(app.handle().clone());
+
+            #[cfg(not(any(target_os = "android", target_os = "ios")))]
+            {
+                use tauri_plugin_global_shortcut::{Builder, ShortcutState};
+
+                let shortcut_label = "CmdOrCtrl+Shift+K";
+                match Builder::new().with_shortcuts([shortcut_label]) {
+                    Ok(builder) => {
+                        let plugin = builder
+                            .with_handler(move |app, _shortcut, event| {
+                                if event.state != ShortcutState::Pressed {
+                                    return;
+                                }
+                                if let Err(error) =
+                                    desktop_panel::toggle_quick_search_panel(app, None)
+                                {
+                                    log::warn!(
+                                        "[global-shortcut] quick search toggle failed: {error}"
+                                    );
+                                }
+                            })
+                            .build();
+                        if let Err(error) = app.handle().plugin(plugin) {
+                            log::warn!(
+                                "[global-shortcut] failed to register {shortcut_label}: {error}"
+                            );
+                        } else {
+                            log::info!(
+                                "[global-shortcut] quick search hotkey active system-wide ({shortcut_label})"
+                            );
+                        }
+                    }
+                    Err(error) => {
+                        log::warn!("[global-shortcut] invalid shortcut {shortcut_label}: {error}");
+                    }
+                }
+            }
 
             Ok(())
         })
@@ -216,6 +261,18 @@ pub fn run() {
             commands::app_log_write,
             commands::app_log_path,
             commands::open_new_window,
+            security_commands::security_get_biometric_lock,
+            security_commands::security_set_biometric_lock,
+            security_commands::security_get_biometric_sensitive_ops,
+            security_commands::security_set_biometric_sensitive_ops,
+            security_commands::biometric_get_status,
+            security_commands::biometric_authenticate,
+            security_commands::biometric_authenticate_sensitive_action,
+            desktop_panel::desktop_focus_main_window,
+            desktop_panel::desktop_get_quick_search_context,
+            desktop_panel::desktop_hide_quick_search_panel,
+            desktop_panel::desktop_set_active_connection,
+            desktop_panel::desktop_toggle_quick_search_panel,
             commands::db_import_schema,
             // Auth commands
             auth::auth_open_login,

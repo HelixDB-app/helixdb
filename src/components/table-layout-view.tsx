@@ -8,7 +8,7 @@ import { eventMatchesCombo, isEditableTarget } from "@/lib/shortcut-keys";
 import { DataTable, SchemaObjectTabContent } from "@/components/data-table";
 import { ResizablePanelGroup, ResizablePanel, ResizableHandle } from "@/components/ui/resizable";
 import { cn } from "@/lib/utils";
-import { X, LayoutPanelLeft, Columns, Rows, Plus, Database, Table2 } from "lucide-react";
+import { X,  Columns, Rows,  Table2 } from "lucide-react";
 import * as ContextMenu from "@radix-ui/react-context-menu";
 
 function formatRecentAge(timestamp: number | string) {

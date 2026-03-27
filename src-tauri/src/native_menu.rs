@@ -6,10 +6,56 @@
 #[cfg(desktop)]
 mod desktop {
     use crate::commands;
+    use crate::desktop_panel;
     use crate::web_config::{WEB_APP_URL, WEB_CHANGELOG_URL};
     use serde::Serialize;
     use tauri::menu::{AboutMetadata, MenuBuilder, MenuItemBuilder, SubmenuBuilder};
+    #[cfg(target_os = "macos")]
+    use objc2::MainThreadMarker;
+    #[cfg(target_os = "macos")]
+    use objc2_app_kit::NSApplication;
+    #[cfg(target_os = "macos")]
+    use objc2_foundation::NSString;
+    #[cfg(target_os = "macos")]
+    use tauri::image::Image;
+    #[cfg(target_os = "macos")]
+    use tauri::menu::IconMenuItemBuilder;
     use tauri::{App, Emitter, Runtime};
+
+    #[cfg(target_os = "macos")]
+    fn quick_search_menu_icon() -> Image<'static> {
+        crate::quick_search_icon::raster_quick_search_icon()
+    }
+
+    /// Marks the Quick Search image as a template so macOS tints it correctly in light & dark menus.
+    #[cfg(target_os = "macos")]
+    fn mark_quick_search_menu_image_template() {
+        let Some(mtm) = MainThreadMarker::new() else {
+            log::warn!("[menu] cannot set template icon off main thread");
+            return;
+        };
+        let app = NSApplication::sharedApplication(mtm);
+        let Some(main_menu) = app.mainMenu() else {
+            return;
+        };
+        let view_title = NSString::from_str("View");
+        let Some(view_item) = main_menu.itemWithTitle(&*view_title) else {
+            log::warn!("[menu] View submenu not found; template icon skipped");
+            return;
+        };
+        let Some(view_menu) = view_item.submenu() else {
+            return;
+        };
+        let item_title = NSString::from_str("Quick Search Panel");
+        let Some(qs_item) = view_menu.itemWithTitle(&*item_title) else {
+            log::warn!("[menu] Quick Search Panel item not found; template icon skipped");
+            return;
+        };
+        let Some(img) = qs_item.image() else {
+            return;
+        };
+        img.setTemplate(true);
+    }
 
     #[derive(Clone, Serialize)]
     struct OpenExternalPayload {
@@ -108,6 +154,23 @@ mod desktop {
                 .accelerator("CmdOrCtrl+K")
                 .build(app)?;
 
+        // macOS: custom search glyph (system has no dedicated menu search template in `NativeIcon`).
+        // Global shortcut stays in lib.rs — no menu accelerator — avoids double-toggle when focused.
+        #[cfg(target_os = "macos")]
+        let quick_search_panel_item = IconMenuItemBuilder::with_id(
+            "open_quick_search_panel",
+            "Quick Search Panel",
+        )
+        .icon(quick_search_menu_icon())
+        .build(app)?;
+
+        #[cfg(not(target_os = "macos"))]
+        let quick_search_panel_item = MenuItemBuilder::with_id(
+            "open_quick_search_panel",
+            "Quick Search Panel",
+        )
+        .build(app)?;
+
         #[cfg(target_os = "macos")]
         let edit_menu = SubmenuBuilder::new(app, "Edit")
             .undo()
@@ -130,6 +193,7 @@ mod desktop {
         let view_menu = SubmenuBuilder::new(app, "View")
             .item(&reload_item)
             .item(&command_palette_item)
+            .item(&quick_search_panel_item)
             .build()?;
 
         let help_release =
@@ -253,11 +317,19 @@ mod desktop {
 
         app.set_menu(menu)?;
 
+        #[cfg(target_os = "macos")]
+        mark_quick_search_menu_image_template();
+
         app.on_menu_event(move |app, event| {
             let id = event.id().as_ref();
             match id {
                 "new_window" => commands::create_app_window(app),
                 "reload_window" => commands::reload_focused_webview(app),
+                "open_quick_search_panel" => {
+                    if let Err(error) = desktop_panel::toggle_quick_search_panel(app, None) {
+                        log::warn!("[menu] open quick search panel failed: {error}");
+                    }
+                }
                 "nav_home" => emit_navigate(app, "/"),
                 "help_release_notes" => emit_open_url(app, WEB_CHANGELOG_URL.to_string()),
                 "help_bug_report" => emit_navigate(app, "/bug-report"),

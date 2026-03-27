@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useMemo } from "react";
 import { useTheme } from "next-themes";
 import {
     useSettingsStore,
@@ -34,6 +34,14 @@ import { APP_NAME, APP_VERSION } from "@/lib/app-config";
 import { useUpdateStore } from "@/stores/update-store";
 import { isTauriRuntime } from "@/lib/runtime";
 import {
+    biometricGetStatus,
+    type BiometricStatusPayload,
+    securityGetBiometricLock,
+    securityGetBiometricSensitiveOps,
+    securitySetBiometricLock,
+    securitySetBiometricSensitiveOps,
+} from "@/lib/security-biometric";
+import {
     Sun,
     Moon,
     Monitor,
@@ -43,6 +51,7 @@ import {
     Terminal,
     Keyboard,
     Info,
+    Fingerprint,
     RotateCcw,
     Check,
     Minus,
@@ -71,15 +80,17 @@ export type SettingsSection =
     | "query"
     | "ai"
     | "shortcuts"
+    | "security"
     | "about";
 
-const SECTIONS: { id: SettingsSection; label: string; icon: React.ReactNode }[] = [
+const ALL_SECTIONS: { id: SettingsSection; label: string; icon: React.ReactNode }[] = [
     { id: "appearance", label: "Appearance", icon: <Palette className="h-3.5 w-3.5" /> },
     { id: "editor", label: "Editor", icon: <Code2 className="h-3.5 w-3.5" /> },
     { id: "data", label: "Data", icon: <Table2 className="h-3.5 w-3.5" /> },
     { id: "query", label: "Query", icon: <Terminal className="h-3.5 w-3.5" /> },
     { id: "ai", label: "AI", icon: <Sparkles className="h-3.5 w-3.5" /> },
     { id: "shortcuts", label: "Shortcuts", icon: <Keyboard className="h-3.5 w-3.5" /> },
+    { id: "security", label: "Security", icon: <Fingerprint className="h-3.5 w-3.5" /> },
     { id: "about", label: "About", icon: <Info className="h-3.5 w-3.5" /> },
 ];
 
@@ -984,6 +995,115 @@ function AISection() {
     );
 }
 
+function SecuritySection() {
+    const [lockOn, setLockOn] = useState(false);
+    const [sensitiveOn, setSensitiveOn] = useState(false);
+    const [status, setStatus] = useState<BiometricStatusPayload | null>(null);
+    const [loading, setLoading] = useState(true);
+
+    useEffect(() => {
+        let cancelled = false;
+        (async () => {
+            try {
+                const [on, sensitive, st] = await Promise.all([
+                    securityGetBiometricLock(),
+                    securityGetBiometricSensitiveOps(),
+                    biometricGetStatus(),
+                ]);
+                if (!cancelled) {
+                    setLockOn(on);
+                    setSensitiveOn(sensitive);
+                    setStatus(st);
+                }
+            } catch {
+                if (!cancelled) {
+                    setLockOn(false);
+                    setSensitiveOn(false);
+                    setStatus({ kind: "unavailable", message: "Could not load security status." });
+                }
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        })();
+        return () => {
+            cancelled = true;
+        };
+    }, []);
+
+    const canEnable = status?.kind === "available";
+    const statusNote = loading
+        ? "Loading device security status…"
+        : status?.kind === "available"
+          ? "Touch ID, Face ID, and Windows Hello work on this device."
+          : status?.kind === "unavailable"
+            ? status.message ?? "Biometrics are not available."
+            : status?.message ?? "Not supported on this platform.";
+
+    const onToggleLaunch = async (enabled: boolean) => {
+        if (enabled && !canEnable) {
+            toast.error("Biometric authentication is not available on this device.");
+            return;
+        }
+        try {
+            await securitySetBiometricLock(enabled);
+            setLockOn(enabled);
+            toast.success(enabled ? "App lock enabled." : "App lock disabled.");
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : String(e));
+        }
+    };
+
+    const onToggleSensitive = async (enabled: boolean) => {
+        if (enabled && !canEnable) {
+            toast.error("Biometric authentication is not available on this device.");
+            return;
+        }
+        try {
+            await securitySetBiometricSensitiveOps(enabled);
+            setSensitiveOn(enabled);
+            toast.success(
+                enabled
+                    ? "Biometric confirmation enabled for destructive actions."
+                    : "Biometric confirmation for destructive actions disabled.",
+            );
+        } catch (e) {
+            toast.error(e instanceof Error ? e.message : String(e));
+        }
+    };
+
+    const destructiveDescription =
+        "Requires your fingerprint or device PIN (via the system prompt) before risky work: SQL that updates, deletes, alters, drops, or truncates; deleting many rows at once (10+); bulk inserts (50+ rows); dropping or truncating tables; major schema changes; dropping databases or indexes; committing sandbox transactions.";
+
+    return (
+        <div className="space-y-5">
+            <SettingSection title="App lock">
+                <SettingRow
+                    label="Require biometrics at launch"
+                    description={`${statusNote} Adds an unlock step when you open the app; it does not encrypt local data.`}
+                >
+                    <Switch
+                        checked={lockOn}
+                        onCheckedChange={(v) => void onToggleLaunch(v)}
+                        disabled={loading || (!canEnable && !lockOn)}
+                    />
+                </SettingRow>
+            </SettingSection>
+            <SettingSection title="Destructive actions">
+                <SettingRow
+                    label="Confirm bulk deletes, updates & schema changes"
+                    description={destructiveDescription}
+                >
+                    <Switch
+                        checked={sensitiveOn}
+                        onCheckedChange={(v) => void onToggleSensitive(v)}
+                        disabled={loading || (!canEnable && !sensitiveOn)}
+                    />
+                </SettingRow>
+            </SettingSection>
+        </div>
+    );
+}
+
 function AboutSection({
     onOpenSurvey,
     onOpenBetaFeedback,
@@ -1203,27 +1323,40 @@ export function SettingsDialog({
     const [activeSection, setActiveSection] = useState<SettingsSection>("appearance");
     const { resetSettings } = useSettingsStore();
     const { setTheme } = useTheme();
+    const isDesktop = isTauriRuntime();
+    const sections = useMemo(
+        () => ALL_SECTIONS.filter((s) => s.id !== "security" || isDesktop),
+        [isDesktop]
+    );
 
     const handleReset = () => {
         resetSettings();
         setTheme("dark");
+        if (isDesktop) {
+            void securitySetBiometricLock(false).catch(() => {});
+            void securitySetBiometricSensitiveOps(false).catch(() => {});
+        }
         toast.success("Settings reset to defaults", { duration: 2000 });
     };
 
     useEffect(() => {
-        if (open && seedSection) {
-            setActiveSection(seedSection);
-        }
+        if (!open || !seedSection) return;
+        const id = requestAnimationFrame(() => setActiveSection(seedSection));
+        return () => cancelAnimationFrame(id);
     }, [open, seedSection]);
 
+    const displaySection: SettingsSection =
+        isDesktop || activeSection !== "security" ? activeSection : "appearance";
+
     const renderSection = () => {
-        switch (activeSection) {
+        switch (displaySection) {
             case "appearance": return <AppearanceSection />;
             case "editor": return <EditorSection />;
             case "data": return <DataSection />;
             case "query": return <QuerySection />;
             case "ai": return <AISection />;
             case "shortcuts": return <ShortcutsSection />;
+            case "security": return <SecuritySection />;
             case "about": return (
                 <AboutSection
                     onOpenSurvey={onOpenSurvey}
@@ -1248,20 +1381,20 @@ export function SettingsDialog({
                             <p className="text-sm font-semibold text-foreground/90">Settings</p>
                         </div>
                         <nav className="flex-1 p-2 space-y-0.5">
-                            {SECTIONS.map((section) => (
+                            {sections.map((section) => (
                                 <button
                                     key={section.id}
                                     type="button"
                                     onClick={() => setActiveSection(section.id)}
                                     className={cn(
                                         "w-full flex items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-all text-left",
-                                        activeSection === section.id
+                                        displaySection === section.id
                                             ? "bg-background text-foreground shadow-sm font-medium"
                                             : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
                                     )}
                                 >
                                     <span className={cn(
-                                        activeSection === section.id
+                                        displaySection === section.id
                                             ? "text-emerald-400"
                                             : "text-muted-foreground/60"
                                     )}>
@@ -1288,10 +1421,10 @@ export function SettingsDialog({
                     <div className="flex-1 flex flex-col min-w-0">
                         <div className="flex items-center gap-2 px-5 py-3.5 border-b border-border/20 shrink-0">
                             <span className="text-emerald-400">
-                                {SECTIONS.find((s) => s.id === activeSection)?.icon}
+                                {sections.find((s) => s.id === displaySection)?.icon}
                             </span>
                             <h2 className="text-sm font-semibold text-foreground/90 capitalize">
-                                {activeSection}
+                                {displaySection}
                             </h2>
                         </div>
 

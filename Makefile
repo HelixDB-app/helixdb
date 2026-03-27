@@ -56,16 +56,14 @@ data-plane:
 compose-up:
 	docker compose up --build
 
-# Source: public/logo.png — transparent margins + inner squircle art: do NOT letterbox on a square first
-# (that leaves a huge dark halo in the Dock). Trim alpha, overscale ~12%, center-crop 1024², flatten.
-# Tune APP_ICON_ZOOM if the glyph clips (lower) or still feels small (raise).
-# ~400+ reads clearly in the macOS Dock; 336 left the mark visually tiny in the squircle.
-APP_ICON_ZOOM := 400
+# Source: public/logo.png — treat as final art (padding, squircle, scale are already correct).
+# Fit inside 1024² with Lanczos, letterbox on #0f172a only if aspect ratio ≠ 1:1. No trim/crop/zoom.
 icons:
-	magick public/logo.png -trim +repage \
-		-filter Lanczos -resize $(APP_ICON_ZOOM)% \
-		-gravity center -crop 1024x1024+0+0 +repage \
-		-background '#0f172a' -flatten -strip \
+	magick public/logo.png \
+		-background '#0f172a' -flatten \
+		-filter Lanczos -gravity center -resize 1024x1024 \
+		-background '#0f172a' -extent 1024x1024 \
+		-strip \
 		src-tauri/icons/app-icon-source.png
 	cd src-tauri && cargo tauri icon icons/app-icon-source.png --ios-color '#0f172a'
 	cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/

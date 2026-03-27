@@ -61,93 +61,13 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
-
-interface Operator {
-    label: string;
-    description: string;
-    noValue?: boolean;
-}
-
-const OPERATORS: Operator[] = [
-    { label: "=", description: "Equals" },
-    { label: "!=", description: "Not equals" },
-    { label: ">", description: "Greater than" },
-    { label: "<", description: "Less than" },
-    { label: ">=", description: "Greater or equal" },
-    { label: "<=", description: "Less or equal" },
-    { label: "LIKE", description: "Pattern match - use % as wildcard" },
-    { label: "NOT LIKE", description: "Inverse pattern match" },
-    { label: "ILIKE", description: "Case-insensitive pattern match" },
-    { label: "IS NULL", description: "Value is null", noValue: true },
-    { label: "IS NOT NULL", description: "Value is not null", noValue: true },
-];
-
-type SearchStage =
-    | { type: "init" }
-    | { type: "table"; filter: string }
-    | { type: "column"; schema: string; table: string; filter: string }
-    | { type: "operator"; schema: string; table: string; col: string; opFilter: string }
-    | { type: "value"; schema: string; table: string; col: string; op: string; value: string }
-    | { type: "raw_sql"; sql: string }
-    | { type: "ai_nl"; query: string };
-
-const SQL_KEYWORDS = [
-    "SELECT", "WITH", "INSERT", "UPDATE", "DELETE",
-    "CREATE", "DROP", "ALTER", "EXPLAIN", "TABLE", "SHOW",
-];
-
-function parseInput(input: string, tables: TableInfo[]): SearchStage {
-    const trimmed = input.trim();
-    if (!trimmed) return { type: "init" };
-
-    if (trimmed.startsWith("?")) {
-        const query = trimmed.slice(1).trim();
-        return { type: "ai_nl", query };
-    }
-
-    const upper = trimmed.toUpperCase();
-    if (SQL_KEYWORDS.some((kw) => upper.startsWith(kw)) || trimmed.includes(";")) {
-        return { type: "raw_sql", sql: trimmed };
-    }
-
-    const dotIdx = trimmed.indexOf(".");
-    if (dotIdx === -1) return { type: "table", filter: trimmed };
-
-    const tablePart = trimmed.substring(0, dotIdx).toLowerCase();
-    const rest = trimmed.substring(dotIdx + 1);
-
-    const matchedTable = tables.find((t) => t.name.toLowerCase() === tablePart);
-    const schema = matchedTable?.schema ?? "public";
-
-    const sortedOps = [...OPERATORS].sort((a, b) => b.label.length - a.label.length);
-    for (const op of sortedOps) {
-        const needle = " " + op.label.toUpperCase();
-        const idx = rest.toUpperCase().indexOf(needle);
-        if (idx !== -1) {
-            const col = rest.substring(0, idx);
-            const afterOp = rest.substring(idx + needle.length);
-            if (afterOp === "" || afterOp.startsWith(" ")) {
-                return {
-                    type: "value",
-                    schema,
-                    table: tablePart,
-                    col,
-                    op: op.label,
-                    value: afterOp.trimStart(),
-                };
-            }
-        }
-    }
-
-    const spaceIdx = rest.indexOf(" ");
-    if (spaceIdx !== -1) {
-        const col = rest.substring(0, spaceIdx);
-        const opFilter = rest.substring(spaceIdx + 1);
-        return { type: "operator", schema, table: tablePart, col, opFilter };
-    }
-
-    return { type: "column", schema, table: tablePart, filter: rest };
-}
+import {
+    buildStructuredCommandSearchSQL,
+    COMMAND_SEARCH_OPERATORS,
+    parseCommandSearchInput,
+    tokenizeCommandSearchInput,
+    type CommandSearchStage,
+} from "@/lib/command-search";
 
 function formatCount(n: number): string {
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
@@ -163,30 +83,6 @@ function formatAge(timestamp: number): string {
     const hours = Math.floor(minutes / 60);
     if (hours < 24) return `${hours}h ago`;
     return `${Math.floor(hours / 24)}d ago`;
-}
-
-function buildStructuredSQL(
-    schema: string,
-    table: string,
-    col: string,
-    op: string,
-    value: string
-): string {
-    const noValue = op === "IS NULL" || op === "IS NOT NULL";
-    if (noValue) {
-        return `SELECT * FROM "${schema}"."${table}" WHERE "${col}" ${op} LIMIT 200`;
-    }
-    const escaped = value.replace(/'/g, "''");
-    return `SELECT * FROM "${schema}"."${table}" WHERE "${col}" ${op} '${escaped}' LIMIT 200`;
-}
-
-function tokenize(input: string): string[] {
-    return input
-        .toLowerCase()
-        .split(/[^a-z0-9_]+/)
-        .map((s) => s.trim())
-        .filter(Boolean)
-        .slice(0, 8);
 }
 
 function scoreMatch(query: string, tokens: string[], primary: string, searchText: string): number {
@@ -355,7 +251,7 @@ function matchesRowFilter(candidate: CatalogCandidate, rowFilter: RowFilter): bo
 
 function collectHighlightRanges(text: string, query: string): Array<[number, number]> {
     const lower = text.toLowerCase();
-    const tokens = tokenize(query);
+    const tokens = tokenizeCommandSearchInput(query);
     if (!tokens.length) return [];
     const ranges: Array<[number, number]> = [];
 
@@ -585,10 +481,10 @@ export function CommandPalette({
     }, [open, isConnected, connectionId, catalogConnectionId, schemas, tables]);
 
     const visibleTables = allTables.length > 0 ? allTables : tables;
-    const parsed = parseInput(input, visibleTables);
+    const parsed: CommandSearchStage = parseCommandSearchInput(input, visibleTables);
 
     const normalizedInput = input.trim().toLowerCase();
-    const searchTokens = useMemo(() => tokenize(normalizedInput), [normalizedInput]);
+    const searchTokens = useMemo(() => tokenizeCommandSearchInput(normalizedInput), [normalizedInput]);
     const activeCategorySet = useMemo(() => new Set(activeCategories), [activeCategories]);
     const aiQuery = parsed.type === "ai_nl" ? parsed.query : null;
 
@@ -1067,7 +963,7 @@ export function CommandPalette({
                 onNavigateToQuery();
                 onOpenChange(false);
             } catch {
-                const sql = buildStructuredSQL(schema, table, col, op, value);
+                const sql = buildStructuredCommandSearchSQL(schema, table, col, op, value);
                 await executeSearch(sql, label);
             }
         }
@@ -1101,19 +997,19 @@ export function CommandPalette({
         if (parsed.type === "operator") {
             const filter = parsed.opFilter.toLowerCase();
             return filter
-                ? OPERATORS.filter(
+                ? COMMAND_SEARCH_OPERATORS.filter(
                     (op) =>
                         op.label.toLowerCase().startsWith(filter) ||
                         op.description.toLowerCase().includes(filter)
                 )
-                : OPERATORS;
+                : COMMAND_SEARCH_OPERATORS;
         }
         return [];
     })();
 
     const previewSQL =
         parsed.type === "value"
-            ? buildStructuredSQL(parsed.schema, parsed.table, parsed.col, parsed.op, parsed.value)
+            ? buildStructuredCommandSearchSQL(parsed.schema, parsed.table, parsed.col, parsed.op, parsed.value)
             : "";
 
     const allCategoriesSelected = activeCategories.length === ALL_CATEGORIES.length;

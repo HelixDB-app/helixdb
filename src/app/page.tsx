@@ -38,6 +38,7 @@ function parseMenuSettingsSection(raw: string | null): SettingsSection | null {
         "query",
         "ai",
         "shortcuts",
+        "security",
         "about",
     ];
     return allowed.includes(raw as SettingsSection) ? (raw as SettingsSection) : null;

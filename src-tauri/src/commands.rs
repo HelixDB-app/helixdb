@@ -3,6 +3,7 @@ use std::collections::HashMap;
 use std::io::Write;
 use std::sync::Mutex;
 use tauri::{AppHandle, Emitter, Manager, State};
+use tauri_plugin_shell::ShellExt;
 
 use crate::account_security_storage;
 use crate::connections_storage::{self, SavedConnection, SshTunnelConfig};
@@ -17,6 +18,11 @@ use crate::db::{
 };
 use crate::local_postgres::{self, LocalPostgresStatus};
 use crate::query_history_storage::{self, QueryHistoryRecordInput};
+use crate::security_prefs::{
+    require_sensitive_biometric, SENSITIVE_BULK_DELETE_ROW_THRESHOLD,
+    SENSITIVE_BULK_INSERT_ROW_THRESHOLD,
+};
+use crate::sql_sensitive;
 use crate::ssh_tunnel::SshTunnelManager;
 
 /// Application state shared across all Tauri commands
@@ -27,6 +33,7 @@ pub struct AppState {
     pub sandbox_manager: SandboxManager,
     pub ssh_tunnel_manager: SshTunnelManager,
     pub recent_tables: Mutex<HashMap<String, Vec<RecentTableOpen>>>,
+    pub active_connection_id: Mutex<Option<String>>,
 }
 
 impl AppState {
@@ -38,6 +45,7 @@ impl AppState {
             sandbox_manager: SandboxManager::new(),
             ssh_tunnel_manager: SshTunnelManager::new(),
             recent_tables: Mutex::new(HashMap::new()),
+            active_connection_id: Mutex::new(None),
         }
     }
 
@@ -79,6 +87,21 @@ impl AppState {
         if list.len() > MAX_RECENT_TABLES {
             list.truncate(MAX_RECENT_TABLES);
         }
+    }
+
+    pub fn set_active_connection_id(&self, connection_id: Option<String>) {
+        let mut active = self
+            .active_connection_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        *active = connection_id;
+    }
+
+    pub fn active_connection_id(&self) -> Option<String> {
+        self.active_connection_id
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone()
     }
 }
 
@@ -175,6 +198,7 @@ pub async fn db_connect(
     let pool = state.conn_manager.get_pool(&connection_id)?;
     let (db_name, version) = queries::get_server_info(&pool).await?;
     let pg_version_num = state.conn_manager.get_pg_version(&connection_id);
+    state.set_active_connection_id(Some(connection_id.clone()));
 
     Ok(ConnectionResponse {
         connection_id,
@@ -193,7 +217,12 @@ pub async fn db_disconnect(
     state.watch_manager.stop_all_for_connection(&connection_id);
     state.cache.invalidate(&connection_id);
     state.ssh_tunnel_manager.stop(&connection_id);
-    Ok(state.conn_manager.disconnect(&connection_id))
+    let disconnected = state.conn_manager.disconnect(&connection_id);
+    if state.active_connection_id().as_deref() == Some(connection_id.as_str()) {
+        let fallback = state.conn_manager.list_connection_ids().into_iter().next();
+        state.set_active_connection_id(fallback);
+    }
+    Ok(disconnected)
 }
 
 /// List schemas (with caching)
@@ -523,6 +552,12 @@ pub async fn db_execute_query(
         &connection_id,
     );
     let app_data_dir = app.path().app_data_dir().ok();
+
+    if sql_sensitive::sql_script_requires_biometric_gate(&sql) {
+        require_sensitive_biometric(
+            "Confirm running this SQL — it includes UPDATE, DELETE, ALTER, DROP, or TRUNCATE.",
+        )?;
+    }
 
     match queries::execute_query(&pool, &sql).await {
         Ok(result) => {
@@ -870,6 +905,7 @@ pub async fn db_drop_database(
     connection_id: String,
     name: String,
 ) -> Result<(), String> {
+    require_sensitive_biometric("Confirm dropping a database.")?;
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::drop_database(&pool, &name).await
 }
@@ -964,6 +1000,7 @@ pub async fn db_alter_enum_values(
     renames: Vec<(String, String)>,
     additions: Vec<(String, Option<String>)>,
 ) -> Result<(), String> {
+    require_sensitive_biometric("Confirm altering enum values.")?;
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::alter_enum_values(&pool, &schema, &name, &renames, &additions).await
 }
@@ -998,6 +1035,12 @@ pub async fn db_insert_table_rows_bulk(
     table: String,
     rows: Vec<Vec<UpdateItem>>,
 ) -> Result<u64, String> {
+    if rows.len() >= SENSITIVE_BULK_INSERT_ROW_THRESHOLD {
+        require_sensitive_biometric(&format!(
+            "Confirm bulk insert ({} rows).",
+            rows.len()
+        ))?;
+    }
     let pool = state.conn_manager.get_pool(&connection_id)?;
     let rows_tuples: Vec<Vec<(String, Option<String>)>> = rows
         .into_iter()
@@ -1041,6 +1084,12 @@ pub async fn db_delete_table_rows(
     pk_columns: Vec<String>,
     rows_pk_values: Vec<Vec<Option<String>>>,
 ) -> Result<u64, String> {
+    if rows_pk_values.len() >= SENSITIVE_BULK_DELETE_ROW_THRESHOLD {
+        require_sensitive_biometric(&format!(
+            "Confirm deleting {} rows.",
+            rows_pk_values.len()
+        ))?;
+    }
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::delete_table_rows(&pool, &schema, &table, &pk_columns, &rows_pk_values).await
 }
@@ -1107,6 +1156,7 @@ pub async fn db_rename_table(
     table: String,
     new_name: String,
 ) -> Result<(), String> {
+    require_sensitive_biometric("Confirm renaming a table.")?;
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::rename_table(&pool, &schema, &table, &new_name).await?;
     // Invalidate cache so sidebar refreshes
@@ -1124,6 +1174,7 @@ pub async fn db_rename_column(
     column: String,
     new_name: String,
 ) -> Result<(), String> {
+    require_sensitive_biometric("Confirm renaming a column.")?;
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::rename_column(&pool, &schema, &table, &column, &new_name).await?;
     state
@@ -1144,6 +1195,7 @@ pub async fn db_alter_column(
     new_default: Option<String>,
     nullable: Option<bool>,
 ) -> Result<(), String> {
+    require_sensitive_biometric("Confirm altering a column.")?;
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::alter_column(
         &pool,
@@ -1173,6 +1225,7 @@ pub async fn db_add_column(
     is_nullable: bool,
     default_value: Option<String>,
 ) -> Result<(), String> {
+    require_sensitive_biometric("Confirm adding a column.")?;
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::add_column(
         &pool,
@@ -1199,6 +1252,7 @@ pub async fn db_drop_column(
     table: String,
     column: String,
 ) -> Result<(), String> {
+    require_sensitive_biometric("Confirm dropping a column.")?;
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::drop_column(&pool, &schema, &table, &column).await?;
     state
@@ -1215,6 +1269,7 @@ pub async fn db_truncate_table(
     schema: String,
     table: String,
 ) -> Result<(), String> {
+    require_sensitive_biometric("Confirm truncating a table (all rows removed).")?;
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::truncate_table(&pool, &schema, &table).await?;
     state.cache.invalidate_tables(&connection_id, &schema);
@@ -1248,6 +1303,7 @@ pub async fn db_drop_table(
     table: String,
     cascade: bool,
 ) -> Result<(), String> {
+    require_sensitive_biometric("Confirm dropping a table.")?;
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::drop_table(&pool, &schema, &table, cascade).await?;
     state.cache.invalidate_tables(&connection_id, &schema);
@@ -1509,6 +1565,11 @@ pub async fn db_sandbox_execute(
     sandbox_id: String,
     sql: String,
 ) -> Result<SandboxResult, String> {
+    if sql_sensitive::sql_script_requires_biometric_gate(&sql) {
+        require_sensitive_biometric(
+            "Confirm sandbox SQL — it includes UPDATE, DELETE, ALTER, DROP, or TRUNCATE.",
+        )?;
+    }
     state.sandbox_manager.execute(&sandbox_id, &sql).await
 }
 
@@ -1518,6 +1579,7 @@ pub async fn db_sandbox_commit(
     state: State<'_, AppState>,
     sandbox_id: String,
 ) -> Result<(), String> {
+    require_sensitive_biometric("Confirm committing sandbox changes (they become permanent).")?;
     state.sandbox_manager.commit(&sandbox_id).await
 }
 
@@ -1636,6 +1698,7 @@ pub async fn db_drop_index(
     schema: String,
     index_name: String,
 ) -> Result<bool, String> {
+    require_sensitive_biometric("Confirm dropping an index.")?;
     let pool = state.conn_manager.get_pool(&connection_id)?;
     queries::drop_index(&pool, &schema, &index_name)
         .await
@@ -1840,7 +1903,7 @@ pub async fn query_history_export_csv(
 
 /// Open the given path in the system file manager (e.g. reveal in Finder). Pass a file path to open its parent folder.
 #[tauri::command]
-pub async fn open_path(path: String) -> Result<(), String> {
+pub async fn open_path(app: AppHandle, path: String) -> Result<(), String> {
     let path = std::path::Path::new(&path);
     let to_open = if path.is_file() {
         path.parent()
@@ -1849,7 +1912,9 @@ pub async fn open_path(path: String) -> Result<(), String> {
     } else {
         path.to_path_buf()
     };
-    opener::open(to_open).map_err(|e| format!("Failed to open path: {}", e))
+    app.shell()
+        .open(to_open.to_string_lossy(), None)
+        .map_err(|e| format!("Failed to open path: {}", e))
 }
 
 #[derive(Debug, Clone, Copy, Serialize)]

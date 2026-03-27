@@ -432,6 +432,21 @@ export interface SavedConnection {
     ssh_tunnel?: SshTunnelConfig | null;
 }
 
+export interface DesktopConnectedConnection {
+    connection_id: string;
+    database_name: string;
+    server_version: string;
+    host: string;
+    port: number;
+    user: string;
+    is_active: boolean;
+}
+
+export interface DesktopQuickSearchContext {
+    active_connection_id: string | null;
+    connected_connections: DesktopConnectedConnection[];
+}
+
 export type BackupScope = "database" | "cluster";
 export type BackupRecordStatus = "running" | "success" | "failed";
 export type BackupCloudSyncStatus =

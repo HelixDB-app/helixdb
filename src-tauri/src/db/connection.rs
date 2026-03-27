@@ -132,6 +132,14 @@ impl ConnectionManager {
             .map(|entry| entry.value().2.clone())
     }
 
+    /// List all active connection IDs currently held by the manager.
+    pub fn list_connection_ids(&self) -> Vec<String> {
+        self.pools
+            .iter()
+            .map(|entry| entry.key().clone())
+            .collect()
+    }
+
     /// Disconnect and drop the pool for a connection.
     pub fn disconnect(&self, connection_id: &str) -> bool {
         self.pools.remove(connection_id).is_some()

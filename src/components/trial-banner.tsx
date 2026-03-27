@@ -13,6 +13,7 @@ import { useDesktopAuthLogin } from "@/hooks/use-desktop-auth-login";
 import { useCountdown } from "@/lib/use-countdown";
 import { isTauriRuntime } from "@/lib/runtime";
 import { cn } from "@/lib/utils";
+import { toast } from "sonner";
 import {
     X,
     Timer,
@@ -162,9 +163,19 @@ export function TrialExpiredGate() {
                             </div>
                         )}
                         {authPhase === "error" && authErrorMsg && (
-                            <div className="flex items-start gap-2 rounded-xl border border-destructive/25 bg-destructive/10 px-3 py-2 text-xs text-destructive">
-                                <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0" />
-                                {authErrorMsg}
+                            <div
+                                role="alert"
+                                className="rounded-xl border border-destructive/20 bg-destructive/5 px-3 py-2.5 text-xs text-destructive/95"
+                            >
+                                <div className="flex items-start gap-2">
+                                    <AlertCircle className="h-3.5 w-3.5 mt-0.5 shrink-0 opacity-90" />
+                                    <div className="space-y-1 leading-relaxed">
+                                        <p className="font-medium text-foreground/90">
+                                            Sign-in could not open in your browser
+                                        </p>
+                                        <p className="text-muted-foreground">{authErrorMsg}</p>
+                                    </div>
+                                </div>
                             </div>
                         )}
                         {authPhase === "waiting" && (
@@ -211,7 +222,15 @@ export function TrialExpiredGate() {
                                     </button>
                                     <button
                                         type="button"
-                                        onClick={() => authOpenBrowser(`${WEB_APP_URL}/pricing`)}
+                                        onClick={() =>
+                                            void authOpenBrowser(`${WEB_APP_URL}/pricing`).catch((err) =>
+                                                toast.error(
+                                                    err instanceof Error
+                                                        ? err.message
+                                                        : "Could not open the pricing page."
+                                                )
+                                            )
+                                        }
                                         className="h-10 rounded-xl border border-border/60 px-4 text-xs text-muted-foreground hover:border-border hover:text-foreground transition-colors"
                                     >
                                         View All Plans

@@ -10,6 +10,7 @@
     "beforeBuildCommand": "pnpm build"
   },
   "app": {
+    "macOSPrivateApi": true,
     "windows": [
       {
         "title": "pgStudio",
@@ -47,7 +48,7 @@
     "macOS": {
       "entitlements": "./Entitlements.plist",
       "minimumSystemVersion": "12.0",
-      "bundleVersion": "40",
+      "bundleVersion": "43",
       "files": {
         "embedded.provisionprofile": "../apple/pgstudio.provisionprofile"
       }
