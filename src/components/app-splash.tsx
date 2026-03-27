@@ -19,6 +19,12 @@ export function AppSplash() {
     const pathname = usePathname();
     const reducedMotionSetting = useSettingsStore((s) => s.reducedMotion);
     const [reduceMotion, setReduceMotion] = useState(false);
+    /** Must stay false for the first client paint so SSR HTML matches hydration (Tauri is only known in the browser). */
+    const [clientReady, setClientReady] = useState(false);
+
+    useEffect(() => {
+        setClientReady(true);
+    }, []);
 
     useEffect(() => {
         const mq = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -30,9 +36,10 @@ export function AppSplash() {
 
     const shouldRender = useMemo(
         () =>
+            clientReady &&
             isTauriRuntime() &&
             pathname !== "/desktop-search",
-        [pathname]
+        [clientReady, pathname]
     );
 
     const [lockEnabled, setLockEnabled] = useState<boolean | null>(null);
@@ -46,13 +53,10 @@ export function AppSplash() {
         lockEnabled !== null && !showBiometricGate;
 
     const revealWindow = useCallback(() => {
-        import("@tauri-apps/api/webviewWindow")
-            .then(({ getCurrentWebviewWindow }) => {
-                getCurrentWebviewWindow().show();
-            })
+        void import("@tauri-apps/api/webviewWindow")
+            .then(({ getCurrentWebviewWindow }) => getCurrentWebviewWindow().show())
             .catch(() => {
-                (window as unknown as { __TAURI__?: { window?: { appWindow?: { show?: () => void } } } })
-                    .__TAURI__?.window?.appWindow?.show?.();
+                /* Missing capability or non-Tauri — window may already be visible */
             });
     }, []);
 

@@ -106,7 +106,7 @@ export default function RootLayout({
                   <NotificationRTDBProvider>
                     <SubscriptionProvider>
                       <TrialProvider>
-                        {/* <TrialGate /> */}
+                        <TrialGate />
                         <TrialBanner />
                         <AppUpdateManager />
                         <WhatsNewModal />
