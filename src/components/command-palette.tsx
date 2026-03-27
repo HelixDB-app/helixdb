@@ -1,6 +1,13 @@
 "use client";
 
-import { useEffect, useState, useCallback, useMemo, useRef } from "react";
+import {
+    useCallback,
+    useEffect,
+    useLayoutEffect,
+    useMemo,
+    useRef,
+    useState,
+} from "react";
 import { useTheme } from "next-themes";
 import {
     Command,
@@ -53,7 +60,6 @@ import {
     BookmarkCheck,
     Moon,
     Sun,
-    SlidersHorizontal,
     ArrowUpDown,
     ArrowUpAZ,
     Rows3,
@@ -178,6 +184,8 @@ const ROW_FILTERS: Array<{ value: RowFilter; label: string; min: number }> = [
     { value: "1k", label: "Rows >= 1K", min: 1_000 },
     { value: "100k", label: "Rows >= 100K", min: 100_000 },
 ];
+
+const TABLES_VIEWS_DISPLAY_CAP = 48;
 
 type CatalogCandidate =
     | {
@@ -398,34 +406,93 @@ export function CommandPalette({
     const catalogRunRef = useRef(0);
 
     const [activeCategories, setActiveCategories] = useState<SearchCategory[]>(ALL_CATEGORIES);
-    const [schemaFilter, setSchemaFilter] = useState<string>("all");
     const [sortMode, setSortMode] = useState<SortMode>("relevance");
     const [rowFilter, setRowFilter] = useState<RowFilter>("any");
 
     const searchInputRef = useRef<HTMLInputElement>(null);
+    const isConnectedEffectiveRef = useRef(isConnectedEffective);
+    isConnectedEffectiveRef.current = isConnectedEffective;
+
+    const focusSearchInput = useCallback(() => {
+        const el = searchInputRef.current;
+        if (!el) return;
+        try {
+            el.focus({ preventScroll: true });
+        } catch {
+            el.focus();
+        }
+    }, []);
 
     useEffect(() => {
         columnCacheRef.current = columnCache;
     }, [columnCache]);
 
+    // Run before paint so we beat cmdk / layout timing when the connection id first appears.
+    useLayoutEffect(() => {
+        if (!open || !isConnectedEffective) return;
+        focusSearchInput();
+    }, [open, isConnectedEffective, effectiveConnectionId, focusSearchInput]);
+
     useEffect(() => {
         if (!open || !isConnectedEffective) return;
         let cancelled = false;
-        const focusSearch = () => {
-            if (!cancelled) searchInputRef.current?.focus({ preventScroll: true });
+        const run = () => {
+            if (!cancelled) focusSearchInput();
         };
-        focusSearch();
-        const rafId = requestAnimationFrame(focusSearch);
-        const lateIds =
-            embedded
-                ? [window.setTimeout(focusSearch, 0), window.setTimeout(focusSearch, 75)]
-                : [];
+        run();
+        const rafId = requestAnimationFrame(run);
+        const delays = embedded ? [0, 75, 150, 280, 450] : [0, 120];
+        const timeoutIds = delays.map((ms) => window.setTimeout(run, ms));
         return () => {
             cancelled = true;
             cancelAnimationFrame(rafId);
-            for (const id of lateIds) window.clearTimeout(id);
+            for (const id of timeoutIds) window.clearTimeout(id);
         };
-    }, [open, isConnectedEffective, effectiveConnectionId, embedded]);
+    }, [open, isConnectedEffective, effectiveConnectionId, embedded, focusSearchInput]);
+
+    // After catalog hydration, cmdk often moves focus into the list — pull it back to the input (desktop HUD).
+    useEffect(() => {
+        if (!embedded || !open || !isConnectedEffective || isHydratingCatalog) return;
+        let cancelled = false;
+        const run = () => {
+            if (cancelled) return;
+            const el = searchInputRef.current;
+            if (!el) return;
+            if (document.activeElement === el) return;
+            focusSearchInput();
+        };
+        let innerRaf = 0;
+        const outerRaf = requestAnimationFrame(() => {
+            innerRaf = requestAnimationFrame(run);
+        });
+        const t0 = window.setTimeout(run, 0);
+        const t1 = window.setTimeout(run, 40);
+        const t2 = window.setTimeout(run, 160);
+        return () => {
+            cancelled = true;
+            cancelAnimationFrame(outerRaf);
+            cancelAnimationFrame(innerRaf);
+            window.clearTimeout(t0);
+            window.clearTimeout(t1);
+            window.clearTimeout(t2);
+        };
+    }, [embedded, open, isConnectedEffective, isHydratingCatalog, focusSearchInput]);
+
+    // Quick Search webview: refocus when the window / tab becomes active (intermittent OS focus timing).
+    useEffect(() => {
+        if (!embedded || !open) return;
+        const bump = () => {
+            if (document.visibilityState === "hidden") return;
+            if (!isConnectedEffectiveRef.current) return;
+            window.setTimeout(focusSearchInput, 0);
+        };
+        window.addEventListener("focus", bump);
+        document.addEventListener("visibilitychange", bump);
+        return () => {
+            window.removeEventListener("focus", bump);
+            document.removeEventListener("visibilitychange", bump);
+        };
+    }, [embedded, open, focusSearchInput]);
 
     useEffect(() => {
         if (!open) return;
@@ -448,7 +515,6 @@ export function CommandPalette({
             setAiError(null);
             setLastAiQuery(null);
             setIsAiLoading(false);
-            setSchemaFilter("all");
             setSortMode("relevance");
             setRowFilter("any");
             setActiveCategories(ALL_CATEGORIES);
@@ -567,14 +633,6 @@ export function CommandPalette({
     const searchTokens = useMemo(() => tokenizeCommandSearchInput(normalizedInput), [normalizedInput]);
     const activeCategorySet = useMemo(() => new Set(activeCategories), [activeCategories]);
     const aiQuery = parsed.type === "ai_nl" ? parsed.query : null;
-
-    const schemaOptions = useMemo(() => {
-        const out = new Set<string>();
-        for (const table of visibleTables) out.add(table.schema);
-        for (const fn of allFunctions) out.add(fn.schema);
-        for (const typeItem of allTypes) out.add(typeItem.schema);
-        return Array.from(out).sort((a, b) => a.localeCompare(b));
-    }, [visibleTables, allFunctions, allTypes]);
 
     const tableByKey = useMemo(() => {
         const out = new Map<string, TableInfo>();
@@ -802,7 +860,6 @@ export function CommandPalette({
 
         for (const candidate of catalogCandidates) {
             if (!activeCategorySet.has(candidate.kind)) continue;
-            if (schemaFilter !== "all" && "schema" in candidate && candidate.schema !== schemaFilter) continue;
             if (!matchesRowFilter(candidate, rowFilter)) continue;
 
             if (!query) {
@@ -850,7 +907,7 @@ export function CommandPalette({
         });
 
         return out.slice(0, 220);
-    }, [catalogCandidates, activeCategorySet, schemaFilter, rowFilter, normalizedInput, searchTokens, sortMode]);
+    }, [catalogCandidates, activeCategorySet, rowFilter, normalizedInput, searchTokens, sortMode]);
 
     const savedBySignature = useMemo(() => {
         const map = new Map<string, { id: string; label: string; query: string; sql: string }>();
@@ -919,27 +976,49 @@ export function CommandPalette({
     }, [rankedCatalogResults, filteredRecentSearches.length, filteredSavedSearches.length]);
 
     const groupedCatalog = useMemo(() => {
+        const tableViewRows = rankedCatalogResults.filter(
+            (entry) => entry.candidate.kind === "table" || entry.candidate.kind === "view"
+        );
+        const tablesAndViewsFlat = tableViewRows.slice(0, TABLES_VIEWS_DISPLAY_CAP);
+
+        let tablesAndViewsBrowseGroups: Array<{ schema: string; items: RankedCatalogResult[] }> | null = null;
+        if (normalizedInput === "") {
+            const bySchema = new Map<string, RankedCatalogResult[]>();
+            for (const row of tablesAndViewsFlat) {
+                const c = row.candidate;
+                if (c.kind !== "table" && c.kind !== "view") continue;
+                if (!bySchema.has(c.schema)) bySchema.set(c.schema, []);
+                bySchema.get(c.schema)!.push(row);
+            }
+            const keys = Array.from(bySchema.keys()).sort((a, b) => a.localeCompare(b));
+            tablesAndViewsBrowseGroups = keys.map((schema) => ({
+                schema,
+                items: bySchema.get(schema)!,
+            }));
+        }
+
         return {
-            tablesAndViews: rankedCatalogResults.filter((entry) => entry.candidate.kind === "table" || entry.candidate.kind === "view").slice(0, 14),
+            tablesAndViewsFlat,
+            tablesAndViewsBrowseGroups,
             columns: rankedCatalogResults.filter((entry) => entry.candidate.kind === "column").slice(0, 14),
             functions: rankedCatalogResults.filter((entry) => entry.candidate.kind === "function").slice(0, 12),
             types: rankedCatalogResults.filter((entry) => entry.candidate.kind === "type").slice(0, 12),
             eventTriggers: rankedCatalogResults.filter((entry) => entry.candidate.kind === "event_trigger").slice(0, 8),
         };
-    }, [rankedCatalogResults]);
+    }, [rankedCatalogResults, normalizedInput]);
 
     const liveSuggestions = useMemo(() => {
         if (!normalizedInput) return [] as string[];
         const out: string[] = [];
 
-        for (const result of groupedCatalog.tablesAndViews.slice(0, 4)) {
+        for (const result of groupedCatalog.tablesAndViewsFlat.slice(0, 4)) {
             if (result.candidate.kind === "table" || result.candidate.kind === "view") {
-                out.push(`${result.candidate.name}.`);
+                out.push(`${result.candidate.schema}.${result.candidate.name}.`);
             }
         }
         for (const result of groupedCatalog.columns.slice(0, 3)) {
             if (result.candidate.kind === "column") {
-                out.push(`${result.candidate.table}.${result.candidate.name} `);
+                out.push(`${result.candidate.schema}.${result.candidate.table}.${result.candidate.name} `);
             }
         }
         for (const saved of filteredSavedSearches.slice(0, 2)) {
@@ -1293,35 +1372,6 @@ export function CommandPalette({
                                         embedded ? "border-t-0 pt-0" : "border-t border-border/20 pt-2"
                                     )}
                                 >
-                                    <Select value={schemaFilter} onValueChange={setSchemaFilter}>
-                                        <SelectTrigger
-                                            size="sm"
-                                            className={cn(
-                                                embedded
-                                                    ? "h-6 min-h-6 w-[min(6.75rem,26vw)] max-w-[36vw] rounded-full border-border/20 bg-muted/10 px-2 text-[11px] font-normal shadow-none gap-1 [&_svg:not([class*='size-])]:size-3"
-                                                    : "h-8 w-[140px] rounded-lg border-border/40 bg-background/60 text-xs font-medium"
-                                            )}
-                                        >
-                                            {!embedded && (
-                                                <SlidersHorizontal className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
-                                            )}
-                                            <SelectValue placeholder="Schema" />
-                                        </SelectTrigger>
-                                        <SelectContent className={embedded ? "text-xs" : undefined}>
-                                            <SelectItem value="all" className={embedded ? "text-xs py-1.5" : undefined}>
-                                                All schemas
-                                            </SelectItem>
-                                            {schemaOptions.map((schema) => (
-                                                <SelectItem
-                                                    key={schema}
-                                                    value={schema}
-                                                    className={embedded ? "text-xs py-1.5" : undefined}
-                                                >
-                                                    {schema}
-                                                </SelectItem>
-                                            ))}
-                                        </SelectContent>
-                                    </Select>
                                     <Select value={sortMode} onValueChange={(value) => setSortMode(value as SortMode)}>
                                         <SelectTrigger
                                             size="sm"
@@ -1550,43 +1600,84 @@ export function CommandPalette({
                                     <CommandSeparator className="my-1" />
                                 )}
 
-                                {groupedCatalog.tablesAndViews.length > 0 && (
-                                    <CommandGroup heading="Tables & views">
-                                        {groupedCatalog.tablesAndViews.map(({ candidate }) => {
-                                            if (candidate.kind !== "table" && candidate.kind !== "view") return null;
-                                            return (
-                                                <CommandItem
-                                                    key={candidate.key}
-                                                    value={candidate.key}
-                                                    onSelect={() => {
-                                                        if (isDesktopMode && onDesktopTableSelect) {
-                                                            onDesktopTableSelect(candidate.schema, candidate.name);
-                                                            return;
-                                                        }
-                                                        onNavigateToTable(candidate.schema, candidate.name);
-                                                        onOpenChange(false);
-                                                    }}
-                                                    className="group flex items-start gap-2.5 rounded-md px-2.5 py-2 cursor-pointer"
-                                                >
-                                                    <Table2 className="mt-0.5 h-3.5 w-3.5 text-emerald-400/70 shrink-0" />
-                                                    <div className="min-w-0 flex-1">
-                                                        <p className="truncate text-sm font-medium text-foreground/90">
-                                                            <HighlightedText text={`${candidate.schema}.${candidate.name}`} query={input} />
-                                                        </p>
-                                                        <p className="truncate text-[11px] text-muted-foreground/55">
-                                                            {candidate.kind === "view" ? "View" : "Table"}
-                                                            {candidate.tableComment ? ` - ${candidate.tableComment}` : ""}
-                                                        </p>
-                                                    </div>
-                                                    <Badge variant="outline" className="h-4 px-1.5 text-[9px] border-border/20 text-muted-foreground/45">
-                                                        {formatCount(candidate.rowCount)} rows
-                                                    </Badge>
-                                                    <ChevronRight className="h-3 w-3 text-muted-foreground/25 ml-0.5" />
-                                                </CommandItem>
-                                            );
-                                        })}
-                                    </CommandGroup>
-                                )}
+                                {groupedCatalog.tablesAndViewsFlat.length > 0 &&
+                                    (groupedCatalog.tablesAndViewsBrowseGroups ? (
+                                        <>
+                                            {groupedCatalog.tablesAndViewsBrowseGroups.map(({ schema, items }) => (
+                                                <CommandGroup key={schema} heading={schema}>
+                                                    {items.map(({ candidate }) => {
+                                                        if (candidate.kind !== "table" && candidate.kind !== "view") return null;
+                                                        return (
+                                                            <CommandItem
+                                                                key={candidate.key}
+                                                                value={candidate.key}
+                                                                onSelect={() => {
+                                                                    if (isDesktopMode && onDesktopTableSelect) {
+                                                                        onDesktopTableSelect(candidate.schema, candidate.name);
+                                                                        return;
+                                                                    }
+                                                                    onNavigateToTable(candidate.schema, candidate.name);
+                                                                    onOpenChange(false);
+                                                                }}
+                                                                className="group flex items-start gap-2.5 rounded-md px-2.5 py-2 cursor-pointer"
+                                                            >
+                                                                <Table2 className="mt-0.5 h-3.5 w-3.5 text-emerald-400/70 shrink-0" />
+                                                                <div className="min-w-0 flex-1">
+                                                                    <p className="truncate text-sm font-medium text-foreground/90">
+                                                                        <HighlightedText text={`${candidate.schema}.${candidate.name}`} query={input} />
+                                                                    </p>
+                                                                    <p className="truncate text-[11px] text-muted-foreground/55">
+                                                                        {candidate.kind === "view" ? "View" : "Table"}
+                                                                        {candidate.tableComment ? ` - ${candidate.tableComment}` : ""}
+                                                                    </p>
+                                                                </div>
+                                                                <Badge variant="outline" className="h-4 px-1.5 text-[9px] border-border/20 text-muted-foreground/45">
+                                                                    {formatCount(candidate.rowCount)} rows
+                                                                </Badge>
+                                                                <ChevronRight className="h-3 w-3 text-muted-foreground/25 ml-0.5" />
+                                                            </CommandItem>
+                                                        );
+                                                    })}
+                                                </CommandGroup>
+                                            ))}
+                                        </>
+                                    ) : (
+                                        <CommandGroup heading="Tables & views">
+                                            {groupedCatalog.tablesAndViewsFlat.map(({ candidate }) => {
+                                                if (candidate.kind !== "table" && candidate.kind !== "view") return null;
+                                                return (
+                                                    <CommandItem
+                                                        key={candidate.key}
+                                                        value={candidate.key}
+                                                        onSelect={() => {
+                                                            if (isDesktopMode && onDesktopTableSelect) {
+                                                                onDesktopTableSelect(candidate.schema, candidate.name);
+                                                                return;
+                                                            }
+                                                            onNavigateToTable(candidate.schema, candidate.name);
+                                                            onOpenChange(false);
+                                                        }}
+                                                        className="group flex items-start gap-2.5 rounded-md px-2.5 py-2 cursor-pointer"
+                                                    >
+                                                        <Table2 className="mt-0.5 h-3.5 w-3.5 text-emerald-400/70 shrink-0" />
+                                                        <div className="min-w-0 flex-1">
+                                                            <p className="truncate text-sm font-medium text-foreground/90">
+                                                                <HighlightedText text={`${candidate.schema}.${candidate.name}`} query={input} />
+                                                            </p>
+                                                            <p className="truncate text-[11px] text-muted-foreground/55">
+                                                                {candidate.kind === "view" ? "View" : "Table"}
+                                                                {candidate.tableComment ? ` - ${candidate.tableComment}` : ""}
+                                                            </p>
+                                                        </div>
+                                                        <Badge variant="outline" className="h-4 px-1.5 text-[9px] border-border/20 text-muted-foreground/45">
+                                                            {formatCount(candidate.rowCount)} rows
+                                                        </Badge>
+                                                        <ChevronRight className="h-3 w-3 text-muted-foreground/25 ml-0.5" />
+                                                    </CommandItem>
+                                                );
+                                            })}
+                                        </CommandGroup>
+                                    ))}
 
                                 {groupedCatalog.columns.length > 0 && (
                                     <CommandGroup heading="Columns">
@@ -1596,7 +1687,9 @@ export function CommandPalette({
                                                 <CommandItem
                                                     key={candidate.key}
                                                     value={candidate.key}
-                                                    onSelect={() => setInput(`${candidate.table}.${candidate.name} `)}
+                                                    onSelect={() =>
+                                                        setInput(`${candidate.schema}.${candidate.table}.${candidate.name} `)
+                                                    }
                                                     className="group flex items-center gap-2.5 rounded-md px-2.5 py-2 cursor-pointer"
                                                 >
                                                     {candidate.isPrimaryKey ? (
@@ -1747,7 +1840,7 @@ export function CommandPalette({
 
                                 {filteredSavedSearches.length === 0 &&
                                     filteredRecentSearches.length === 0 &&
-                                    groupedCatalog.tablesAndViews.length === 0 &&
+                                    groupedCatalog.tablesAndViewsFlat.length === 0 &&
                                     groupedCatalog.columns.length === 0 &&
                                     groupedCatalog.functions.length === 0 &&
                                     groupedCatalog.types.length === 0 &&
@@ -1780,7 +1873,9 @@ export function CommandPalette({
                                             key={col.name}
                                             col={col}
                                             input={input}
-                                            onSelect={() => setInput(`${parsed.table}.${col.name} `)}
+                                            onSelect={() =>
+                                                setInput(`${parsed.schema}.${parsed.table}.${col.name} `)
+                                            }
                                         />
                                     ))
                                 ) : (
@@ -1807,7 +1902,9 @@ export function CommandPalette({
                                     <CommandItem
                                         key={op.label}
                                         value={`op-${op.label}`}
-                                        onSelect={() => setInput(`${parsed.table}.${parsed.col} ${op.label} `)}
+                                        onSelect={() =>
+                                            setInput(`${parsed.schema}.${parsed.table}.${parsed.col} ${op.label} `)
+                                        }
                                         className="flex items-center gap-3 rounded-md px-2.5 py-2 cursor-pointer"
                                     >
                                         <span className="w-20 font-mono text-sm font-semibold text-emerald-400/80 shrink-0">
@@ -1920,7 +2017,9 @@ export function CommandPalette({
                                                             key={col.name}
                                                             col={col}
                                                             input={input}
-                                                            onSelect={() => setInput(`${parsed.table}.${col.name} `)}
+                                                            onSelect={() =>
+                                                                setInput(`${parsed.schema}.${parsed.table}.${col.name} `)
+                                                            }
                                                             compact
                                                         />
                                                     ))}

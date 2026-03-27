@@ -4,7 +4,7 @@
 
 import { callGeminiSync, type GeminiModelId } from "@/lib/ai-chat-engine";
 import { withGeminiLogging } from "@/lib/gemini-logger";
-import { useSettingsStore } from "@/stores/settings-store";
+import { resolveGeminiApiKey, useSettingsStore } from "@/stores/settings-store";
 import type { ColumnInfo, TableDetails } from "@/lib/types";
 import { buildSchemaForSeed, coerceValue, type SeedDataRow } from "@/lib/seed-data-engine";
 
@@ -37,7 +37,7 @@ export interface GenerateRowFormFillOptions {
 function getApiKeyAndModel(): { apiKey: string; model: GeminiModelId } {
     const settings = useSettingsStore.getState();
     return {
-        apiKey: settings.geminiApiKey ?? "",
+        apiKey: resolveGeminiApiKey(settings.geminiApiKey),
         model: (settings.defaultAiModel ?? "gemini-2.5-flash") as GeminiModelId,
     };
 }

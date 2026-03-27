@@ -23,7 +23,7 @@ import { toast } from "sonner";
 import { RowFormFields, hasColumnDefault } from "@/components/row-form-fields";
 import { generateRowFormFill } from "@/lib/row-form-ai";
 import { cn } from "@/lib/utils";
-import { useSettingsStore } from "@/stores/settings-store";
+import { useResolvedGeminiApiKey } from "@/stores/settings-store";
 
 function validateCellValue(
     value: string,
@@ -103,7 +103,7 @@ export function InsertRowDialog({
     const [aiRailOpen, setAiRailOpen] = useState(true);
     const abortRef = useRef<AbortController | null>(null);
 
-    const geminiApiKey = useSettingsStore((s) => s.geminiApiKey);
+    const geminiApiKey = useResolvedGeminiApiKey();
 
     const insertableColumns = useMemo(() => writableInsertColumns(columns), [columns]);
 

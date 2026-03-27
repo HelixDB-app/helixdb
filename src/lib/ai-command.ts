@@ -4,7 +4,7 @@ import { geminiLogger, withGeminiLogging } from "@/lib/gemini-logger";
 import { notifyNoInternetDetected } from "@/lib/network-errors";
 import { isTauriRuntime } from "@/lib/runtime";
 import { aiSuggestionsWorkerPost } from "@/lib/tauri";
-import { useSettingsStore } from "@/stores/settings-store";
+import { resolveGeminiApiKey, useSettingsStore } from "@/stores/settings-store";
 
 export type AiCommandModel = "auto" | "cloudflare" | GeminiModelId;
 
@@ -214,9 +214,14 @@ async function runGeminiCommand(
     signal?: AbortSignal
 ): Promise<string> {
     const settings = useSettingsStore.getState();
-    const apiKey = settings.geminiApiKey?.trim() ?? "";
+    const apiKey = resolveGeminiApiKey(settings.geminiApiKey);
     if (!apiKey) {
-        throw new AIError(0, "No API key", "Add your Gemini API key in Settings → AI to use Gemini.", false);
+        throw new AIError(
+            0,
+            "No API key",
+            "Add your Gemini API key in Settings → AI or set NEXT_PUBLIC_GEMINI_API_KEY to use Gemini.",
+            false
+        );
     }
     const systemPrompt = buildSystemPrompt(Boolean(selectionText), language);
     const userPrompt = buildUserPrompt(instruction, fullText, selectionText);
@@ -269,7 +274,7 @@ export async function runAiCommand(context: AiCommandContext): Promise<AiCommand
         }
 
         if (context.model === "auto") {
-            const apiKey = settings.geminiApiKey?.trim() ?? "";
+            const apiKey = resolveGeminiApiKey(settings.geminiApiKey);
             if (!apiKey && settings.aiWorkerUrl?.trim()) {
                 const text = await runCloudflareCommand(instruction, resolvedFullText, selectionText, language, context.signal);
                 return { text, modelUsed: "cloudflare" };

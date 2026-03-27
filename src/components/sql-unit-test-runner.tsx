@@ -49,7 +49,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { cn } from "@/lib/utils";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useQueryStore } from "@/stores/query-store";
-import { useSettingsStore } from "@/stores/settings-store";
+import { resolveGeminiApiKey, useSettingsStore } from "@/stores/settings-store";
 import { generateSqlUnitTestScriptWithAI } from "@/lib/sql-unit-test-ai";
 import {
     formatTestCaseSnippet,
@@ -539,7 +539,7 @@ export function SqlUnitTestRunner() {
                 prompt: aiPrompt,
                 schemaSummary: schemaSummaryForAi,
                 existingScript: source,
-                apiKey: geminiApiKey,
+                apiKey: resolveGeminiApiKey(geminiApiKey),
                 model: defaultAiModel,
             });
 

@@ -1,6 +1,21 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 
+/** Optional build-time key from `.env.local` (`NEXT_PUBLIC_GEMINI_API_KEY`). Prefer server secrets only if you add a proxy API route — client AI calls need a user key in Settings or this public env for local/dev builds. */
+export function readGeminiApiKeyFromEnv(): string {
+    if (typeof process === "undefined" || !process.env.NEXT_PUBLIC_GEMINI_API_KEY) {
+        return "";
+    }
+    return process.env.NEXT_PUBLIC_GEMINI_API_KEY.trim();
+}
+
+/** User setting overrides env when non-empty. */
+export function resolveGeminiApiKey(userOverride: string | undefined | null): string {
+    const fromUser = (userOverride ?? "").trim();
+    if (fromUser) return fromUser;
+    return readGeminiApiKeyFromEnv();
+}
+
 export type AppTheme = "dark" | "light" | "system";
 export type UIDensity = "compact" | "comfortable";
 export type EditorTabSize = 2 | 4;
@@ -94,7 +109,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     aiReviewComplexLineThreshold: 10,
     notificationsEnabled: true,
     lastSeenVersion: "",
-    geminiApiKey: "AIzaSyCtgJ0ORZ-Bd7tnFoqYK4IHUIHpMExqgKM",
+    geminiApiKey: "",
     defaultAiModel: "gemini-2.5-flash",
     aiAutocompleteEnabled: true,
     aiInlineSuggestions: true,
@@ -130,3 +145,13 @@ export const useSettingsStore = create<SettingsStore>()(
         }
     )
 );
+
+export function getResolvedGeminiApiKey(): string {
+    return resolveGeminiApiKey(useSettingsStore.getState().geminiApiKey);
+}
+
+/** Effective key for AI calls (Settings override, else `NEXT_PUBLIC_GEMINI_API_KEY`). */
+export function useResolvedGeminiApiKey(): string {
+    const override = useSettingsStore((s) => s.geminiApiKey);
+    return resolveGeminiApiKey(override);
+}

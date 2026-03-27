@@ -16,7 +16,7 @@ import {
     type ImageAttachment,
 } from "@/lib/ai-chat-engine";
 import { useConnectionStore } from "@/stores/connection-store";
-import { useSettingsStore } from "@/stores/settings-store";
+import { getResolvedGeminiApiKey, useSettingsStore } from "@/stores/settings-store";
 import { useQueryStore } from "@/stores/query-store";
 
 // ── Types ────────────────────────────────────────────────────────────────────
@@ -202,7 +202,7 @@ export const useAIChatStore = create<AIChatState>()(
                     convId = get().createConversation();
                 }
 
-                const apiKey = useSettingsStore.getState().geminiApiKey ?? "";
+                const apiKey = getResolvedGeminiApiKey();
                 const conv = get().conversations.find((c) => c.id === convId);
                 if (!conv) return;
 
@@ -329,7 +329,7 @@ export const useAIChatStore = create<AIChatState>()(
                 const conv = state.conversations.find((c) => c.id === convId);
                 if (!conv) return;
 
-                const apiKey = useSettingsStore.getState().geminiApiKey ?? "";
+                const apiKey = getResolvedGeminiApiKey();
                 const schema = get().cachedSchema ?? "No schema available.";
                 const msgIndex = conv.messages.findIndex((m) => m.id === messageId);
                 if (msgIndex < 0) return;
@@ -401,7 +401,7 @@ export const useAIChatStore = create<AIChatState>()(
                 const msgIndex = conv.messages.findIndex((m) => m.id === messageId);
                 if (msgIndex < 0) return;
 
-                const apiKey = useSettingsStore.getState().geminiApiKey ?? "";
+                const apiKey = getResolvedGeminiApiKey();
                 const schema = get().cachedSchema ?? "No schema available.";
 
                 const trimmedMessages = conv.messages.slice(0, msgIndex);

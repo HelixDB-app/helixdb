@@ -14,7 +14,7 @@ import { formatDbError } from "@/lib/db-errors";
 import { formatCellValue, writableInsertColumns, type CellValue, type ResultColumn, type ColumnInfo, type TableDetails } from "@/lib/types";
 import { RowFormFields } from "@/components/row-form-fields";
 import { generateRowFormFill } from "@/lib/row-form-ai";
-import { useSettingsStore } from "@/stores/settings-store";
+import { useResolvedGeminiApiKey } from "@/stores/settings-store";
 
 interface RowEditorPanelProps {
     connectionId: string | null;
@@ -75,7 +75,7 @@ export function RowEditorPanel({
     editValuesRef.current = editValues;
     const abortRef = useRef<AbortController | null>(null);
 
-    const geminiApiKey = useSettingsStore((s) => s.geminiApiKey);
+    const geminiApiKey = useResolvedGeminiApiKey();
 
     const formColumns: ColumnInfo[] = useMemo(() => {
         const genByName = new Map<string, boolean>();

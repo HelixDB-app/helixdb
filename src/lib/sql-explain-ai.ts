@@ -7,7 +7,7 @@
 import { callGeminiSync } from "@/lib/ai-chat-engine";
 import type { GeminiModelId } from "@/lib/ai-chat-engine";
 import { AIError } from "@/lib/ai-chat-engine";
-import { useSettingsStore } from "@/stores/settings-store";
+import { resolveGeminiApiKey, useSettingsStore } from "@/stores/settings-store";
 import { withGeminiLogging } from "@/lib/gemini-logger";
 import type { SchemaContext } from "@/lib/ai-suggestions";
 
@@ -198,7 +198,7 @@ export async function explainSql(
     if (cached) return cached;
 
     const settings = useSettingsStore.getState();
-    const apiKey = settings.geminiApiKey?.trim() ?? "";
+    const apiKey = resolveGeminiApiKey(settings.geminiApiKey);
     const model: GeminiModelId = (
         options?.model ??
         settings.defaultAiModel ??

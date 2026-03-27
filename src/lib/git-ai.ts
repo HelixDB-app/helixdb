@@ -1,6 +1,6 @@
 import { callGeminiSync, type GeminiModelId } from "@/lib/ai-chat-engine";
 import { withGeminiLogging } from "@/lib/gemini-logger";
-import { useSettingsStore } from "@/stores/settings-store";
+import { getResolvedGeminiApiKey, resolveGeminiApiKey, useSettingsStore } from "@/stores/settings-store";
 import type { GitAiProvider } from "@/stores/settings-store";
 
 interface CommitMessageInput {
@@ -28,9 +28,9 @@ const CLOUDFLARE_DEFAULT_MODEL = "@cf/meta/llama-3.1-8b-instruct";
 
 function getGeminiConfig(): { model: GeminiModelId; apiKey: string } {
     const settings = useSettingsStore.getState();
-    const apiKey = settings.geminiApiKey?.trim();
+    const apiKey = resolveGeminiApiKey(settings.geminiApiKey);
     if (!apiKey) {
-        throw new Error("Gemini API key is missing. Add it in Settings.");
+        throw new Error("Gemini API key is missing. Add it in Settings or set NEXT_PUBLIC_GEMINI_API_KEY.");
     }
     const model = (settings.defaultAiModel ?? "gemini-2.5-flash") as GeminiModelId;
     return { model, apiKey };
@@ -238,7 +238,7 @@ async function runGitPrompt(prompt: string, maxOutputTokens: number): Promise<st
             return await runCloudflarePrompt(prompt, maxOutputTokens);
         } catch (cloudflareError) {
             // Fallback to Gemini if the user already has Gemini configured.
-            const hasGemini = Boolean(useSettingsStore.getState().geminiApiKey?.trim());
+            const hasGemini = Boolean(getResolvedGeminiApiKey());
             if (!hasGemini) throw cloudflareError;
             return runGeminiPrompt(prompt, maxOutputTokens);
         }

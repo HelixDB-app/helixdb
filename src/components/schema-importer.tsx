@@ -34,7 +34,7 @@ import { toast } from "sonner";
 import { createDefaultDocData, markdownToDocData, serializeDocData } from "@/lib/doc-editor";
 import { generateSchemaDocContent } from "@/lib/schema-doc-ai";
 import { notifySchemaDocFileUpdated } from "@/stores/schema-doc-gen-store";
-import { useSettingsStore } from "@/stores/settings-store";
+import { getResolvedGeminiApiKey, useSettingsStore } from "@/stores/settings-store";
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -485,7 +485,7 @@ export function SchemaImporter({ open, onClose, connectionId, databaseName }: Sc
             );
 
             // Background: generate AI schema docs for each README.doc
-            const apiKey = useSettingsStore.getState().geminiApiKey?.trim();
+            const apiKey = getResolvedGeminiApiKey();
             if (apiKey && readmeNodeIds.length > 0) {
                 const { updateContent } = useIdeFsStore.getState();
                 const schemaByName = new Map(result.schemas.map((s) => [s.schema, s]));

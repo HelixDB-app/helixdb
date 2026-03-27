@@ -755,7 +755,7 @@ function AISection() {
             <SettingSection title="API Configuration">
                 <SettingRow
                     label="Gemini API Key"
-                    description="Your personal API key for Google Gemini."
+                    description="Optional override. Leave empty to use NEXT_PUBLIC_GEMINI_API_KEY from .env.local (dev/build). Otherwise paste your Google AI Studio key — it is stored only in this browser."
                 >
                     <div className="flex items-center gap-1.5">
                         <input

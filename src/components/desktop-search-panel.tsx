@@ -128,7 +128,7 @@ type SqlInspectorContext = {
 };
 
 /** Logical size for Tauri `desktop_resize_quick_search_panel` — keep in sync with `desktop_panel.rs` `quick_search_sizes`. */
-const QS_SEARCH = { width: 580, height: 720 } as const;
+const QS_SEARCH = { width: 580, height: 920 } as const;
 const QS_TABLE = { width: 1480, height: 920 } as const;
 const QS_SQL_SPLIT = { width: 1080, height: 800 } as const;
 

@@ -6,7 +6,7 @@ import type { QueryHistoryEntry, QueryTab } from "@/stores/query-store";
 import { useSandboxStore } from "@/stores/sandbox-store";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useNotesStore } from "@/stores/notes-store";
-import { useSettingsStore } from "@/stores/settings-store";
+import { resolveGeminiApiKey, useSettingsStore } from "@/stores/settings-store";
 import { useQueryFilesStore } from "@/stores/query-files-store";
 import { useIdeFsStore } from "@/stores/ide-fs-store";
 import { useSchemaDocGenStore } from "@/stores/schema-doc-gen-store";
@@ -1575,7 +1575,12 @@ export function QueryEditor() {
                 const report = await runSqlSafetyReview(
                     sql,
                     { tableColumns: tableColumnsForReview, tableRowCounts, schemaSummary: schemaContextForAi },
-                    { enableGemini: aiReviewUseGemini, geminiApiKey: geminiApiKey.trim(), geminiModel: aiReviewModel, complexLineThreshold: aiReviewComplexLineThreshold }
+                    {
+                        enableGemini: aiReviewUseGemini,
+                        geminiApiKey: resolveGeminiApiKey(geminiApiKey),
+                        geminiModel: aiReviewModel,
+                        complexLineThreshold: aiReviewComplexLineThreshold,
+                    }
                 );
                 setReviewReport(report);
                 if (trigger === "manual") {

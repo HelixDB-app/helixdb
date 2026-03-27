@@ -36,6 +36,10 @@ const SQL_KEYWORDS = [
     "CREATE", "DROP", "ALTER", "EXPLAIN", "TABLE", "SHOW",
 ];
 
+function schemaMatchesCatalog(schema: string, t: TableInfo): boolean {
+    return t.schema === schema || t.schema.toLowerCase() === schema.toLowerCase();
+}
+
 export function parseCommandSearchInput(
     input: string,
     tables: TableInfo[]
@@ -56,11 +60,32 @@ export function parseCommandSearchInput(
     const dotIdx = trimmed.indexOf(".");
     if (dotIdx === -1) return { type: "table", filter: trimmed };
 
-    const tablePart = trimmed.substring(0, dotIdx).toLowerCase();
-    const rest = trimmed.substring(dotIdx + 1);
+    const head = trimmed.substring(0, dotIdx);
+    const tail = trimmed.substring(dotIdx + 1);
+    const tailDotIdx = tail.indexOf(".");
+    const tableSegment = tailDotIdx === -1 ? tail : tail.substring(0, tailDotIdx);
+    const afterTable = tailDotIdx === -1 ? "" : tail.substring(tailDotIdx + 1);
 
-    const matchedTable = tables.find((t) => t.name.toLowerCase() === tablePart);
-    const schema = matchedTable?.schema ?? "public";
+    const qualifiedMatches = tables.filter(
+        (t) =>
+            schemaMatchesCatalog(head, t) && t.name.toLowerCase() === tableSegment.toLowerCase()
+    );
+
+    let schema: string;
+    let table: string;
+    let rest: string;
+
+    if (qualifiedMatches.length === 1) {
+        schema = qualifiedMatches[0].schema;
+        table = qualifiedMatches[0].name;
+        rest = afterTable;
+    } else {
+        const tablePart = head.toLowerCase();
+        const matchedTable = tables.find((t) => t.name.toLowerCase() === tablePart);
+        schema = matchedTable?.schema ?? "public";
+        table = tablePart;
+        rest = tail;
+    }
 
     const sortedOps = [...COMMAND_SEARCH_OPERATORS].sort((a, b) => b.label.length - a.label.length);
     for (const op of sortedOps) {
@@ -73,7 +98,7 @@ export function parseCommandSearchInput(
                 return {
                     type: "value",
                     schema,
-                    table: tablePart,
+                    table,
                     col,
                     op: op.label,
                     value: afterOp.trimStart(),
@@ -86,10 +111,10 @@ export function parseCommandSearchInput(
     if (spaceIdx !== -1) {
         const col = rest.substring(0, spaceIdx);
         const opFilter = rest.substring(spaceIdx + 1);
-        return { type: "operator", schema, table: tablePart, col, opFilter };
+        return { type: "operator", schema, table, col, opFilter };
     }
 
-    return { type: "column", schema, table: tablePart, filter: rest };
+    return { type: "column", schema, table, filter: rest };
 }
 
 export function buildStructuredCommandSearchSQL(

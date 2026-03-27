@@ -5,7 +5,7 @@
 
 import { callGeminiSync } from "@/lib/ai-chat-engine";
 import type { GeminiModelId } from "@/lib/ai-chat-engine";
-import { useSettingsStore } from "@/stores/settings-store";
+import { getResolvedGeminiApiKey, useSettingsStore } from "@/stores/settings-store";
 import { AIError } from "@/lib/ai-chat-engine";
 import { withGeminiLogging } from "@/lib/gemini-logger";
 
@@ -60,14 +60,14 @@ export async function explainQueryErrorWithAI(
     options?: ExplainErrorOptions
 ): Promise<string> {
     const settings = useSettingsStore.getState();
-    const apiKey = settings.geminiApiKey?.trim() ?? "";
+    const apiKey = getResolvedGeminiApiKey();
     const model: GeminiModelId = (options?.model ?? settings.defaultAiModel ?? "gemini-2.5-flash-lite") as GeminiModelId;
 
     if (!apiKey) {
         throw new AIError(
             0,
             "No API key",
-            "Add your Gemini API key in Settings → AI to use AI Explain.",
+            "Add your Gemini API key in Settings → AI or set NEXT_PUBLIC_GEMINI_API_KEY to use AI Explain.",
             false
         );
     }
