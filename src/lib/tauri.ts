@@ -933,6 +933,19 @@ export async function desktopHideQuickSearchPanel(): Promise<void> {
     return invoke<void>("desktop_hide_quick_search_panel");
 }
 
+/** Resize the quick-search floating window (logical pixels). Prefer this over JS `setSize` from the panel webview. */
+export async function desktopResizeQuickSearchPanel(
+    width: number,
+    height: number
+): Promise<void> {
+    return invoke<void>("desktop_resize_quick_search_panel", { width, height });
+}
+
+/** Re-apply quick-search window position (center + top 10%) without resizing. */
+export async function desktopRepositionQuickSearchPanel(): Promise<void> {
+    return invoke<void>("desktop_reposition_quick_search_panel");
+}
+
 // ─── Backup & Restore ────────────────────────────────────────────────────
 
 /** Load backup history, schedules, local storage root, cloud sync status, and CLI capabilities. */

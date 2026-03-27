@@ -9,7 +9,27 @@ pub const QUICK_SEARCH_PANEL_LABEL: &str = "desktop_search_panel";
 
 /// macOS: native window corner radius (points). Matches `NSVisualEffectView` / `window_vibrancy` mask.
 #[cfg(target_os = "macos")]
-pub(crate) const QUICK_SEARCH_PANEL_CORNER_RADIUS: f64 = 20.0;
+pub(crate) const QUICK_SEARCH_PANEL_CORNER_RADIUS: f64 = 22.0;
+
+/// Default / mode sizes for the quick-search webview (logical px).
+/// **Keep in sync** with `src/components/desktop-search-panel.tsx` (`QS_SEARCH`, `QS_TABLE`, `QS_SQL_SPLIT`).
+/// The React layer calls `setSize` on mode changes; these values define creation-time size and documentation for Rust callers.
+/// Placement: horizontally centered in the monitor work area; top edge at `QUICK_SEARCH_WORK_AREA_TOP_FRACTION` of work-area height (see below).
+#[allow(dead_code)]
+pub(crate) mod quick_search_sizes {
+    /// Initial / compact search + empty state (matches HUD width in CSS).
+    pub const PICK_W: f64 = 580.0;
+    pub const PICK_H: f64 = 720.0;
+    pub const SEARCH_W: f64 = 580.0;
+    pub const SEARCH_H: f64 = 720.0;
+    pub const TABLE_W: f64 = 1480.0;
+    pub const TABLE_H: f64 = 920.0;
+    pub const SQL_SPLIT_W: f64 = 1280.0;
+    pub const SQL_SPLIT_H: f64 = 800.0;
+    /// Allow slightly narrower resize; table/SQL modes clamp up from JS.
+    pub const MIN_W: f64 = 380.0;
+    pub const MIN_H: f64 = 420.0;
+}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -152,6 +172,146 @@ pub fn desktop_hide_quick_search_panel(app: AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// Resize the quick-search webview (logical px). Used from JS when browse vs table/SQL-split layouts change.
+/// Host-side `set_size` is more reliable than calling the Webview API from the child webview on some platforms.
+#[tauri::command]
+pub fn desktop_resize_quick_search_panel(
+    app: AppHandle,
+    width: f64,
+    height: f64,
+) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        let Some(window) = app.get_webview_window(QUICK_SEARCH_PANEL_LABEL) else {
+            return Err("Quick search panel window not found".into());
+        };
+        let w = width.max(quick_search_sizes::MIN_W);
+        let h = height.max(quick_search_sizes::MIN_H);
+        window
+            .set_size(tauri::LogicalSize::new(w, h))
+            .map_err(|e| e.to_string())?;
+        recenter_quick_search_panel_after_resize(&window).map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = (app, width, height);
+        Ok(())
+    }
+}
+
+/// Re-apply quick-search geometry (center + top 10%) without changing size. Used when JS falls back to `setSize`.
+#[tauri::command]
+pub fn desktop_reposition_quick_search_panel(app: AppHandle) -> Result<(), String> {
+    #[cfg(desktop)]
+    {
+        let Some(window) = app.get_webview_window(QUICK_SEARCH_PANEL_LABEL) else {
+            return Err("Quick search panel window not found".into());
+        };
+        apply_quick_search_panel_placement(&window).map_err(|e| e.to_string())
+    }
+    #[cfg(not(desktop))]
+    {
+        let _ = app;
+        Ok(())
+    }
+}
+
+/// Margin from work-area edges (physical px).
+const PANEL_WORK_AREA_MARGIN: i32 = 24;
+
+/// Top edge of the panel aligns below the work-area top by this fraction of work-area height (10% = HUD below menu bar).
+const QUICK_SEARCH_WORK_AREA_TOP_FRACTION: f64 = 0.1;
+
+#[cfg(desktop)]
+fn quick_search_panel_outer_top_left(
+    work_area: &tauri::PhysicalRect<i32, u32>,
+    outer_width: u32,
+    outer_height: u32,
+    margin: i32,
+    top_inset_fraction: f64,
+) -> (i32, i32) {
+    let wx = work_area.position.x;
+    let wy = work_area.position.y;
+    let wa_w = work_area.size.width as i32;
+    let wa_h = work_area.size.height as i32;
+    let pw = outer_width as i32;
+    let ph = outer_height as i32;
+
+    // Horizontal: centered in work area.
+    let mut x = wx + (wa_w - pw) / 2;
+    // Vertical: top of window at (work-area top) + fraction * height.
+    let inset_y = (wa_h as f64 * top_inset_fraction).round() as i32;
+    let mut y = wy + inset_y;
+
+    let min_x = wx + margin;
+    let min_y = wy + margin;
+    let max_x = wx + wa_w - pw - margin;
+    let max_y = wy + wa_h - ph - margin;
+
+    if max_x >= min_x {
+        x = x.clamp(min_x, max_x);
+    } else {
+        x = min_x.max(wx);
+    }
+    if max_y >= min_y {
+        y = y.clamp(min_y, max_y);
+    } else {
+        y = min_y.max(wy);
+    }
+    (x, y)
+}
+
+#[cfg(desktop)]
+fn pick_monitor_for_panel_at_point<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    x: f64,
+    y: f64,
+) -> tauri::Result<Option<tauri::Monitor>> {
+    Ok(window
+        .monitor_from_point(x, y)?
+        .or(window.current_monitor()?))
+}
+
+#[cfg(desktop)]
+fn apply_quick_search_panel_on_monitor<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+    monitor: &tauri::Monitor,
+) -> tauri::Result<()> {
+    let outer_size = window.outer_size()?;
+    let (x, y) = quick_search_panel_outer_top_left(
+        monitor.work_area(),
+        outer_size.width,
+        outer_size.height,
+        PANEL_WORK_AREA_MARGIN,
+        QUICK_SEARCH_WORK_AREA_TOP_FRACTION,
+    );
+    window.set_position(tauri::PhysicalPosition::new(x, y))?;
+    Ok(())
+}
+
+/// Horizontally center + top 10% placement on the monitor that contains the window center.
+#[cfg(desktop)]
+fn apply_quick_search_panel_placement<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> tauri::Result<()> {
+    let outer_pos = window.outer_position()?;
+    let outer_size = window.outer_size()?;
+    let cx = f64::from(outer_pos.x) + f64::from(outer_size.width as i32) / 2.0;
+    let cy = f64::from(outer_pos.y) + f64::from(outer_size.height as i32) / 2.0;
+    let Some(monitor) = pick_monitor_for_panel_at_point(window, cx, cy)? else {
+        return Ok(());
+    };
+    apply_quick_search_panel_on_monitor(window, &monitor)
+}
+
+#[cfg(desktop)]
+fn recenter_quick_search_panel_after_resize<R: tauri::Runtime>(
+    window: &tauri::WebviewWindow<R>,
+) -> tauri::Result<()> {
+    apply_quick_search_panel_placement(window)
+}
+
 #[cfg(desktop)]
 fn ensure_quick_search_panel<R: tauri::Runtime>(
     app: &AppHandle<R>,
@@ -171,8 +331,8 @@ fn ensure_quick_search_panel<R: tauri::Runtime>(
         tauri::WebviewUrl::App("/desktop-search".into()),
     )
     .title("Quick Search")
-    .inner_size(980.0, 720.0)
-    .min_inner_size(720.0, 480.0)
+    .inner_size(quick_search_sizes::PICK_W, quick_search_sizes::PICK_H)
+    .min_inner_size(quick_search_sizes::MIN_W, quick_search_sizes::MIN_H)
     .resizable(true)
     .maximizable(false)
     .minimizable(false)
@@ -211,6 +371,9 @@ fn ensure_quick_search_panel<R: tauri::Runtime>(
         tauri::WindowEvent::Focused(false) => {
             let _ = panel_window.hide();
         }
+        tauri::WindowEvent::Resized(_) => {
+            let _ = apply_quick_search_panel_placement(&panel_window);
+        }
         _ => {}
     });
 
@@ -229,55 +392,17 @@ fn position_quick_search_panel<R: tauri::Runtime>(
     window: &tauri::WebviewWindow<R>,
     anchor: Option<tauri::PhysicalPosition<f64>>,
 ) -> tauri::Result<()> {
-    let outer_size = window.outer_size()?;
-    let panel_width = outer_size.width as i32;
-    let panel_height = outer_size.height as i32;
-    let margin = 14;
+    let monitor = if let Some(pos) = anchor.as_ref() {
+        pick_monitor_for_panel_at_point(window, pos.x, pos.y)?
+    } else {
+        window.current_monitor()?
+    };
 
-    let fallback = window.current_monitor()?.map(|monitor| {
-        let work_area = monitor.work_area();
-        let position = work_area.position;
-        let size = work_area.size;
-        tauri::PhysicalPosition::new(
-            f64::from(position.x + (size.width as i32 / 2)),
-            f64::from(position.y + margin),
-        )
-    });
+    let Some(monitor) = monitor else {
+        return Ok(());
+    };
 
-    let anchor = anchor.or(fallback).unwrap_or_else(|| tauri::PhysicalPosition::new(80.0, 80.0));
-    let monitor = window
-        .monitor_from_point(anchor.x, anchor.y)?
-        .or(window.current_monitor()?);
-
-    let mut x = anchor.x.round() as i32 - panel_width + 48;
-    let mut y = anchor.y.round() as i32 + margin;
-
-    #[cfg(target_os = "windows")]
-    {
-        y = anchor.y.round() as i32 - panel_height - margin;
-    }
-
-    if let Some(monitor) = monitor {
-        let work_area = monitor.work_area();
-        let min_x = work_area.position.x + margin;
-        let min_y = work_area.position.y + margin;
-        let max_x = work_area.position.x + work_area.size.width as i32 - panel_width - margin;
-        let max_y = work_area.position.y + work_area.size.height as i32 - panel_height - margin;
-
-        if max_x >= min_x {
-            x = x.clamp(min_x, max_x);
-        }
-
-        if max_y >= min_y {
-            if y < min_y {
-                y = anchor.y.round() as i32 + margin;
-            }
-            y = y.clamp(min_y, max_y);
-        }
-    }
-
-    window.set_position(tauri::PhysicalPosition::new(x, y))?;
-    Ok(())
+    apply_quick_search_panel_on_monitor(window, &monitor)
 }
 
 #[cfg(not(desktop))]

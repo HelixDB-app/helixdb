@@ -3,7 +3,7 @@
 import { useEffect, type ReactNode } from "react";
 
 /**
- * Quick-search webview uses a transparent Tauri window on macOS (`transparent` + `effects.radius`).
+ * Quick-search webview uses a transparent Tauri window on macOS (`transparent` + `effects.radius`, ~55pt).
  * Clear root backgrounds so vibrancy and rounded corners are visible at the window edge.
  */
 export default function DesktopSearchLayout({

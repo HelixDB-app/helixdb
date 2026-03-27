@@ -20,9 +20,10 @@ import {
     dbGetColumns,
     dbListEventTriggers,
     dbListFunctions,
+    dbListSchemas,
     dbListTypes,
 } from "@/lib/db-platform";
-import { dbListTables, dbSearchTableData } from "@/lib/tauri";
+import { dbListTables, dbSearchTableData, desktopFocusMainWindow } from "@/lib/tauri";
 import type {
     ColumnInfo,
     EventTriggerInfo,
@@ -61,6 +62,8 @@ import {
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
+import { isEditableTarget } from "@/lib/shortcut-keys";
+import { toast } from "sonner";
 import {
     buildStructuredCommandSearchSQL,
     COMMAND_SEARCH_OPERATORS,
@@ -320,6 +323,17 @@ interface CommandPaletteProps {
     onNavigateToQuery: () => void;
     onNavigateToTable: (schema: string, table: string) => void;
     onNavigateToData: () => void;
+    /** Quick Search window: use this live connection instead of the layout store */
+    desktopConnectionId?: string | null;
+    /** Quick Table / view picks open the side inspector instead of the main workspace */
+    onDesktopTableSelect?: (schema: string, table: string) => void;
+    /** Run SQL in the Quick Search inspector */
+    onDesktopSqlRun?: (sql: string, label: string) => void;
+    /** Omit Dialog chrome; palette fills parent (desktop split layout) */
+    embedded?: boolean;
+    /** Embedded desktop + SQL results split: hide shortcut footer to reclaim vertical space */
+    embeddedSuppressFooter?: boolean;
+    className?: string;
 }
 
 export function CommandPalette({
@@ -328,11 +342,21 @@ export function CommandPalette({
     onNavigateToQuery,
     onNavigateToTable,
     onNavigateToData,
+    desktopConnectionId = null,
+    onDesktopTableSelect,
+    onDesktopSqlRun,
+    embedded = false,
+    embeddedSuppressFooter = false,
+    className,
 }: CommandPaletteProps) {
-    const connectionId = useConnectionStore((state) => state.connectionId);
+    const storeConnectionId = useConnectionStore((state) => state.connectionId);
     const tables = useConnectionStore((state) => state.tables);
     const schemas = useConnectionStore((state) => state.schemas);
     const isConnected = useConnectionStore((state) => state.isConnected);
+
+    const isDesktopMode = Boolean(desktopConnectionId);
+    const effectiveConnectionId = desktopConnectionId ?? storeConnectionId;
+    const isConnectedEffective = isDesktopMode ? Boolean(desktopConnectionId) : isConnected;
     const selectPreview = useConnectionStore((state) => state.selectPreview);
     const loadEventTriggers = useConnectionStore((state) => state.loadEventTriggers);
 
@@ -378,9 +402,42 @@ export function CommandPalette({
     const [sortMode, setSortMode] = useState<SortMode>("relevance");
     const [rowFilter, setRowFilter] = useState<RowFilter>("any");
 
+    const searchInputRef = useRef<HTMLInputElement>(null);
+
     useEffect(() => {
         columnCacheRef.current = columnCache;
     }, [columnCache]);
+
+    useEffect(() => {
+        if (!open || !isConnectedEffective) return;
+        let cancelled = false;
+        const focusSearch = () => {
+            if (!cancelled) searchInputRef.current?.focus({ preventScroll: true });
+        };
+        focusSearch();
+        const rafId = requestAnimationFrame(focusSearch);
+        const lateIds =
+            embedded
+                ? [window.setTimeout(focusSearch, 0), window.setTimeout(focusSearch, 75)]
+                : [];
+        return () => {
+            cancelled = true;
+            cancelAnimationFrame(rafId);
+            for (const id of lateIds) window.clearTimeout(id);
+        };
+    }, [open, isConnectedEffective, effectiveConnectionId, embedded]);
+
+    useEffect(() => {
+        if (!open) return;
+        const handler = (event: KeyboardEvent) => {
+            if (event.key !== "/" || event.metaKey || event.ctrlKey || event.altKey) return;
+            if (isEditableTarget(event.target)) return;
+            event.preventDefault();
+            searchInputRef.current?.focus();
+        };
+        window.addEventListener("keydown", handler);
+        return () => window.removeEventListener("keydown", handler);
+    }, [open]);
 
     useEffect(() => {
         if (!open) {
@@ -406,45 +463,60 @@ export function CommandPalette({
         setAllEventTriggers([]);
         setColumnCache({});
         pendingColumnsRef.current.clear();
-    }, [connectionId]);
+    }, [effectiveConnectionId]);
 
     useEffect(() => {
+        if (isDesktopMode) return;
         if (tables.length === 0) return;
         setAllTables((prev) => mergeTables([...prev, ...tables]));
-    }, [tables]);
+    }, [tables, isDesktopMode]);
 
     useEffect(() => {
-        if (!open || !isConnected || !connectionId) return;
-        if (catalogConnectionId === connectionId) return;
+        if (!open || !isConnectedEffective || !effectiveConnectionId) return;
+        if (catalogConnectionId === effectiveConnectionId) return;
 
         let cancelled = false;
         const runId = catalogRunRef.current + 1;
         catalogRunRef.current = runId;
         const isStale = () => cancelled || catalogRunRef.current !== runId;
 
-        const schemaNames = Array.from(new Set(schemas.map((schema) => schema.name).filter(Boolean)));
-
         const hydrateCatalog = async () => {
             setIsHydratingCatalog(true);
             setCatalogStage("Indexing tables");
 
+            let schemaNames: string[];
+            if (isDesktopMode) {
+                try {
+                    const schemaRows = await dbListSchemas(effectiveConnectionId);
+                    if (isStale()) return;
+                    schemaNames = schemaRows.map((s) => s.name).filter(Boolean);
+                } catch {
+                    schemaNames = [];
+                }
+            } else {
+                schemaNames = Array.from(new Set(schemas.map((schema) => schema.name).filter(Boolean)));
+            }
+
             const loadedTables = await mapWithConcurrency(schemaNames, 4, async (schema) => {
                 try {
-                    return await dbListTables(connectionId, schema);
+                    return await dbListTables(effectiveConnectionId, schema);
                 } catch {
                     return [] as TableInfo[];
                 }
             });
             if (isStale()) return;
-            const mergedTables = mergeTables([...tables, ...loadedTables.flat()]);
+            const mergedTables = mergeTables([
+                ...(isDesktopMode ? [] : tables),
+                ...loadedTables.flat(),
+            ]);
             setAllTables(mergedTables);
 
             setCatalogStage("Indexing functions, types, and triggers");
             const [triggers, functionsBySchema, typesBySchema] = await Promise.all([
-                dbListEventTriggers(connectionId).catch(() => [] as EventTriggerInfo[]),
+                dbListEventTriggers(effectiveConnectionId).catch(() => [] as EventTriggerInfo[]),
                 mapWithConcurrency(schemaNames, 4, async (schema) => {
                     try {
-                        const items = await dbListFunctions(connectionId, schema);
+                        const items = await dbListFunctions(effectiveConnectionId, schema);
                         return { schema, items };
                     } catch {
                         return { schema, items: [] as FunctionInfo[] };
@@ -452,7 +524,7 @@ export function CommandPalette({
                 }),
                 mapWithConcurrency(schemaNames, 4, async (schema) => {
                     try {
-                        const items = await dbListTypes(connectionId, schema);
+                        const items = await dbListTypes(effectiveConnectionId, schema);
                         return { schema, items };
                     } catch {
                         return { schema, items: [] as TypeInfo[] };
@@ -464,7 +536,7 @@ export function CommandPalette({
             setAllEventTriggers(triggers);
             setAllFunctions(functionsBySchema.flatMap(({ schema, items }) => items.map((item) => ({ schema, item }))));
             setAllTypes(typesBySchema.flatMap(({ schema, items }) => items.map((item) => ({ schema, item }))));
-            setCatalogConnectionId(connectionId);
+            setCatalogConnectionId(effectiveConnectionId);
             setCatalogStage("");
             setIsHydratingCatalog(false);
         };
@@ -478,7 +550,15 @@ export function CommandPalette({
         return () => {
             cancelled = true;
         };
-    }, [open, isConnected, connectionId, catalogConnectionId, schemas, tables]);
+    }, [
+        open,
+        isConnectedEffective,
+        effectiveConnectionId,
+        catalogConnectionId,
+        isDesktopMode,
+        schemas,
+        tables,
+    ]);
 
     const visibleTables = allTables.length > 0 ? allTables : tables;
     const parsed: CommandSearchStage = parseCommandSearchInput(input, visibleTables);
@@ -506,7 +586,7 @@ export function CommandPalette({
 
     const fetchColumnsForTable = useCallback(
         async (schema: string, table: string): Promise<ColumnInfo[]> => {
-            if (!connectionId) return [];
+            if (!effectiveConnectionId) return [];
             const key = tableKey(schema, table);
             const cached = columnCacheRef.current[key];
             if (cached) return cached;
@@ -514,7 +594,7 @@ export function CommandPalette({
             const existingRequest = pendingColumnsRef.current.get(key);
             if (existingRequest) return existingRequest;
 
-            const request = dbGetColumns(connectionId, schema, table)
+            const request = dbGetColumns(effectiveConnectionId, schema, table)
                 .then((cols) => {
                     setColumnCache((prev) => {
                         if (prev[key]) return prev;
@@ -530,7 +610,7 @@ export function CommandPalette({
             pendingColumnsRef.current.set(key, request);
             return request;
         },
-        [connectionId]
+        [effectiveConnectionId]
     );
 
     const structuredTableKey =
@@ -539,7 +619,7 @@ export function CommandPalette({
             : null;
 
     useEffect(() => {
-        if (!connectionId || !structuredTableKey) return;
+      if (!effectiveConnectionId || !structuredTableKey) return;
         const { schema, table } = splitTableKey(structuredTableKey);
 
         let cancelled = false;
@@ -559,7 +639,7 @@ export function CommandPalette({
         return () => {
             cancelled = true;
         };
-    }, [connectionId, structuredTableKey, fetchColumnsForTable]);
+    }, [effectiveConnectionId, structuredTableKey, fetchColumnsForTable]);
 
     const candidateTablesForPrefetch = useMemo(() => {
         if (!normalizedInput || searchTokens.length === 0) return [] as TableInfo[];
@@ -578,7 +658,7 @@ export function CommandPalette({
     }, [visibleTables, normalizedInput, searchTokens]);
 
     useEffect(() => {
-        if (!open || !connectionId) return;
+        if (!open || !effectiveConnectionId) return;
         if (parsed.type !== "init" && parsed.type !== "table") return;
         if (searchTokens.length === 0) return;
         for (const table of candidateTablesForPrefetch) {
@@ -586,7 +666,7 @@ export function CommandPalette({
         }
     }, [
         open,
-        connectionId,
+        effectiveConnectionId,
         parsed.type,
         searchTokens,
         candidateTablesForPrefetch,
@@ -872,7 +952,18 @@ export function CommandPalette({
 
     const executeSearch = useCallback(
         async (sql: string, label: string, savedId?: string) => {
-            if (!connectionId) return;
+            if (!effectiveConnectionId) return;
+            if (isDesktopMode && onDesktopSqlRun) {
+                addRecentSearch(label, sql);
+                if (savedId) {
+                    touchSavedSearch(savedId);
+                } else {
+                    const maybeSaved = savedBySql.get(sqlSignature(sql));
+                    if (maybeSaved) touchSavedSearch(maybeSaved.id);
+                }
+                onDesktopSqlRun(sql, label);
+                return;
+            }
             addRecentSearch(label, sql);
             if (savedId) {
                 touchSavedSearch(savedId);
@@ -886,10 +977,12 @@ export function CommandPalette({
             updateSql(activeTabId, sql);
             onNavigateToQuery();
             onOpenChange(false);
-            executeQuery(connectionId, activeTabId);
+            executeQuery(effectiveConnectionId, activeTabId);
         },
         [
-            connectionId,
+            effectiveConnectionId,
+            isDesktopMode,
+            onDesktopSqlRun,
             addRecentSearch,
             touchSavedSearch,
             savedBySql,
@@ -903,11 +996,18 @@ export function CommandPalette({
 
     const openPreviewObject = useCallback(
         (selection: PreviewSelection) => {
+            if (isDesktopMode) {
+                toast.message("Object details open in the main workspace.", {
+                    description: "Switched focus to pgStudio.",
+                });
+                void desktopFocusMainWindow();
+                return;
+            }
             selectPreview(selection);
             onNavigateToData();
             onOpenChange(false);
         },
-        [selectPreview, onNavigateToData, onOpenChange]
+        [isDesktopMode, selectPreview, onNavigateToData, onOpenChange]
     );
 
     const toggleSaveQuery = useCallback(
@@ -924,7 +1024,7 @@ export function CommandPalette({
     );
 
     const runStructured = useCallback(async () => {
-        if (parsed.type !== "value" || !connectionId) return;
+        if (parsed.type !== "value" || !effectiveConnectionId) return;
         const { schema, table, col, op, value } = parsed;
         setIsExecuting(true);
 
@@ -937,7 +1037,7 @@ export function CommandPalette({
         } else {
             try {
                 const result: QueryResult = await dbSearchTableData(
-                    connectionId,
+                    effectiveConnectionId,
                     schema,
                     table,
                     col,
@@ -945,23 +1045,30 @@ export function CommandPalette({
                     value,
                     200
                 );
-                addRecentSearch(label, result.query);
-                const maybeSaved = savedBySql.get(sqlSignature(result.query));
-                if (maybeSaved) touchSavedSearch(maybeSaved.id);
-                addTab(label);
-                const { activeTabId } = useQueryStore.getState();
-                if (activeTabId) {
-                    updateSql(activeTabId, result.query);
-                    useQueryStore.setState((state) => ({
-                        tabs: state.tabs.map((tab) =>
-                            tab.id === activeTabId
-                                ? { ...tab, result, executionTime: result.execution_time_ms }
-                                : tab
-                        ),
-                    }));
+                if (isDesktopMode && onDesktopSqlRun) {
+                    addRecentSearch(label, result.query);
+                    const maybeSaved = savedBySql.get(sqlSignature(result.query));
+                    if (maybeSaved) touchSavedSearch(maybeSaved.id);
+                    onDesktopSqlRun(result.query, label);
+                } else {
+                    addRecentSearch(label, result.query);
+                    const maybeSaved = savedBySql.get(sqlSignature(result.query));
+                    if (maybeSaved) touchSavedSearch(maybeSaved.id);
+                    addTab(label);
+                    const { activeTabId } = useQueryStore.getState();
+                    if (activeTabId) {
+                        updateSql(activeTabId, result.query);
+                        useQueryStore.setState((state) => ({
+                            tabs: state.tabs.map((tab) =>
+                                tab.id === activeTabId
+                                    ? { ...tab, result, executionTime: result.execution_time_ms }
+                                    : tab
+                            ),
+                        }));
+                    }
+                    onNavigateToQuery();
+                    onOpenChange(false);
                 }
-                onNavigateToQuery();
-                onOpenChange(false);
             } catch {
                 const sql = buildStructuredCommandSearchSQL(schema, table, col, op, value);
                 await executeSearch(sql, label);
@@ -971,7 +1078,9 @@ export function CommandPalette({
         setIsExecuting(false);
     }, [
         parsed,
-        connectionId,
+        effectiveConnectionId,
+        isDesktopMode,
+        onDesktopSqlRun,
         executeSearch,
         addRecentSearch,
         savedBySql,
@@ -1014,60 +1123,120 @@ export function CommandPalette({
 
     const allCategoriesSelected = activeCategories.length === ALL_CATEGORIES.length;
 
-    return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="overflow-hidden p-0 shadow-2xl border-border/30 max-w-[920px] w-[96vw] bg-gradient-to-b from-card via-card/95 to-muted/30 backdrop-blur-xl">
-                <DialogTitle className="sr-only">Command palette</DialogTitle>
+    const shellClassName = cn(
+        "overflow-hidden p-0 backdrop-blur-xl flex flex-col min-h-0 min-w-0",
+        embedded
+            ? "h-full w-full max-w-none flex-1 rounded-none border-0 bg-transparent shadow-none"
+            : "max-w-[920px] w-[96vw] rounded-lg border border-border/30 bg-gradient-to-b from-card via-card/95 to-muted/30 shadow-2xl"
+    );
+
+    const commandTree = (
                 <Command
                     shouldFilter={false}
-                    className="rounded-lg border-0 [&_[data-slot=command-input-wrapper]]:border-b-0 [&_[data-slot=command-input-wrapper]]:flex-1 [&_[data-slot=command-input-wrapper]]:min-w-0"
+                    className={cn(
+                        "border-0 flex flex-col min-h-0 min-w-0 flex-1 [&_[data-slot=command-input-wrapper]]:border-b-0 [&_[data-slot=command-input-wrapper]]:min-w-0",
+                        embedded
+                            ? "rounded-none shadow-none [&_[data-slot=command-input-wrapper]]:flex-1"
+                            : "rounded-lg [&_[data-slot=command-input-wrapper]]:flex-1"
+                    )}
                 >
-                    <div className="border-b border-border/20 bg-gradient-to-r from-emerald-500/[0.04] via-transparent to-blue-500/[0.04]">
-                        {/* Search row */}
-                        <div className="flex items-center gap-2 px-4 pt-3 pb-2">
-                            <CommandInput
-                                value={input}
-                                onValueChange={setInput}
-                                placeholder={
-                                    isConnected
-                                        ? "Search everything: tables, columns, functions, types, triggers... or run SQL"
-                                        : "Connect to a database first"
-                                }
-                                className="h-11 text-sm border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
-                                disabled={!isConnected || isExecuting}
-                            />
-                            {isHydratingCatalog && (
-                                <Badge
-                                    variant="outline"
-                                    className="shrink-0 h-7 border-emerald-500/30 bg-emerald-500/5 text-[11px] text-emerald-400 px-2"
+                    <div
+                        className={cn(
+                            "border-b border-border/20",
+                            embedded
+                                ? "border-border/15 bg-transparent"
+                                : "bg-gradient-to-r from-emerald-500/[0.05] via-transparent to-cyan-500/[0.04]"
+                        )}
+                    >
+                        {/* Search row — desktop panel uses a single inset “search well” (no double borders). */}
+                        {embedded ? (
+                            <div className="px-3 pt-2.5 pb-2">
+                                <div className="relative overflow-hidden rounded-[14px] border border-border/40 bg-gradient-to-br from-background/94 via-background/45 to-emerald-950/25 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.07),0_3px_18px_-8px_rgba(0,0,0,0.55)] ring-1 ring-black/[0.12] dark:ring-white/[0.05] dark:to-emerald-950/35">
+                                    <div
+                                        aria-hidden
+                                        className="pointer-events-none absolute inset-0 opacity-[0.97] bg-[radial-gradient(ellipse_88%_120%_at_50%_-35%,rgba(52,211,153,0.14),transparent_58%),radial-gradient(ellipse_70%_90%_at_100%_-10%,rgba(34,211,238,0.09),transparent_52%),linear-gradient(180deg,rgba(255,255,255,0.03),transparent_40%)] dark:opacity-100"
+                                    />
+                                    <div className="relative flex min-h-[2.75rem] items-center gap-1.5 pr-1.5">
+                                        <CommandInput
+                                            ref={searchInputRef}
+                                            value={input}
+                                            onValueChange={setInput}
+                                            autoFocus={Boolean(open && isConnectedEffective)}
+                                            placeholder={
+                                                isConnectedEffective
+                                                    ? "Search everything: tables, columns, functions, types, triggers... or run SQL"
+                                                    : "Connect to a database first"
+                                            }
+                                            wrapperClassName="h-auto min-h-10 flex-1 min-w-0 border-0 bg-transparent px-2.5 py-1 shadow-none gap-2.5 [&_svg]:size-[1.05rem] [&_svg]:shrink-0 [&_svg]:text-emerald-500/50 [&_svg]:opacity-95"
+                                            className="h-10 py-2 text-[13px] leading-snug border-0 focus-visible:ring-0 focus-visible:ring-offset-0 placeholder:text-muted-foreground/68"
+                                            disabled={!isConnectedEffective || isExecuting}
+                                        />
+                                        {isHydratingCatalog && (
+                                            <Badge
+                                                variant="outline"
+                                                className="shrink-0 h-7 border-emerald-500/35 bg-emerald-500/[0.08] text-[11px] text-emerald-600 dark:text-emerald-400/95 px-2"
+                                            >
+                                                <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                                                {catalogStage || "Indexing"}
+                                            </Badge>
+                                        )}
+                                        {isExecuting && (
+                                            <Loader2 className="mr-1 shrink-0 h-4 w-4 animate-spin text-muted-foreground/60" />
+                                        )}
+                                    </div>
+                                </div>
+                            </div>
+                        ) : (
+                            <div className={cn("flex items-center gap-2 px-4 pt-3 pb-2")}>
+                                <CommandInput
+                                    ref={searchInputRef}
+                                    value={input}
+                                    onValueChange={setInput}
+                                    autoFocus={Boolean(open && isConnectedEffective)}
+                                    placeholder={
+                                        isConnectedEffective
+                                            ? "Search everything: tables, columns, functions, types, triggers... or run SQL"
+                                            : "Connect to a database first"
+                                    }
+                                    className="h-11 text-sm border-0 focus-visible:ring-0 focus-visible:ring-offset-0"
+                                    disabled={!isConnectedEffective || isExecuting}
+                                />
+                                {isHydratingCatalog && (
+                                    <Badge
+                                        variant="outline"
+                                        className="shrink-0 h-7 border-emerald-500/30 bg-emerald-500/5 text-[11px] text-emerald-400 px-2"
+                                    >
+                                        <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
+                                        {catalogStage || "Indexing"}
+                                    </Badge>
+                                )}
+                                <button
+                                    type="button"
+                                    onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
+                                    className="shrink-0 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border/40 bg-muted/20 text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                                    aria-label="Toggle light and dark mode"
+                                    title="Toggle light/dark mode"
                                 >
-                                    <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
-                                    {catalogStage || "Indexing"}
-                                </Badge>
-                            )}
-                            <button
-                                type="button"
-                                onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
-                                className="shrink-0 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border/40 bg-muted/20 text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
-                                aria-label="Toggle light and dark mode"
-                                title="Toggle light/dark mode"
-                            >
-                                {resolvedTheme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
-                            </button>
-                            {isExecuting && (
-                                <Loader2 className="shrink-0 h-4 w-4 animate-spin text-muted-foreground/60" />
-                            )}
-                        </div>
+                                    {resolvedTheme === "dark" ? <Sun className="h-4 w-4" /> : <Moon className="h-4 w-4" />}
+                                </button>
+                                {isExecuting && (
+                                    <Loader2 className="shrink-0 h-4 w-4 animate-spin text-muted-foreground/60" />
+                                )}
+                            </div>
+                        )}
 
                         {/* Filters: categories + refinement */}
-                        {isConnected && (parsed.type === "init" || parsed.type === "table") && (
-                            <div className="px-4 pb-3 space-y-2.5">
-                                <div className="flex flex-wrap items-center gap-2">
+                        {isConnectedEffective && (parsed.type === "init" || parsed.type === "table") && (
+                            <div className={cn("px-4", embedded ? "space-y-2 pb-2" : "space-y-2.5 pb-3")}>
+                                <div className={cn("flex flex-wrap items-center", embedded ? "gap-1.5" : "gap-2")}>
                                     <button
                                         type="button"
                                         onClick={() => setActiveCategories(ALL_CATEGORIES)}
                                         className={cn(
-                                            "h-7 rounded-lg border px-2.5 text-xs font-medium transition-colors shrink-0",
+                                            "border font-medium transition-colors shrink-0",
+                                            embedded
+                                                ? "h-6 rounded-full px-2 text-[11px]"
+                                                : "h-7 rounded-lg px-2.5 text-xs",
                                             allCategoriesSelected
                                                 ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
                                                 : "border-border/40 bg-background/50 text-muted-foreground hover:text-foreground hover:border-border/60"
@@ -1101,7 +1270,10 @@ export function CommandPalette({
                                                     });
                                                 }}
                                                 className={cn(
-                                                    "h-7 rounded-lg border px-2.5 text-xs font-medium transition-colors shrink-0 inline-flex items-center",
+                                                    "border font-medium transition-colors shrink-0 inline-flex items-center",
+                                                    embedded
+                                                        ? "h-6 rounded-full px-2 text-[11px]"
+                                                        : "h-7 rounded-lg px-2.5 text-xs",
                                                     active
                                                         ? "border-primary/40 bg-primary/10 text-foreground"
                                                         : "border-border/40 bg-background/50 text-muted-foreground hover:text-foreground hover:border-border/60"
@@ -1115,47 +1287,96 @@ export function CommandPalette({
                                         );
                                     })}
                                 </div>
-                                <div className="flex items-center gap-2 pt-2 border-t border-border/20">
+                                <div
+                                    className={cn(
+                                        "flex flex-wrap items-center gap-2",
+                                        embedded ? "border-t-0 pt-0" : "border-t border-border/20 pt-2"
+                                    )}
+                                >
                                     <Select value={schemaFilter} onValueChange={setSchemaFilter}>
-                                        <SelectTrigger className="h-8 w-[140px] rounded-lg border-border/40 bg-background/60 text-xs font-medium">
-                                            <SlidersHorizontal className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
+                                        <SelectTrigger
+                                            size="sm"
+                                            className={cn(
+                                                embedded
+                                                    ? "h-6 min-h-6 w-[min(6.75rem,26vw)] max-w-[36vw] rounded-full border-border/20 bg-muted/10 px-2 text-[11px] font-normal shadow-none gap-1 [&_svg:not([class*='size-])]:size-3"
+                                                    : "h-8 w-[140px] rounded-lg border-border/40 bg-background/60 text-xs font-medium"
+                                            )}
+                                        >
+                                            {!embedded && (
+                                                <SlidersHorizontal className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
+                                            )}
                                             <SelectValue placeholder="Schema" />
                                         </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="all">All schemas</SelectItem>
+                                        <SelectContent className={embedded ? "text-xs" : undefined}>
+                                            <SelectItem value="all" className={embedded ? "text-xs py-1.5" : undefined}>
+                                                All schemas
+                                            </SelectItem>
                                             {schemaOptions.map((schema) => (
-                                                <SelectItem key={schema} value={schema}>
+                                                <SelectItem
+                                                    key={schema}
+                                                    value={schema}
+                                                    className={embedded ? "text-xs py-1.5" : undefined}
+                                                >
                                                     {schema}
                                                 </SelectItem>
                                             ))}
                                         </SelectContent>
                                     </Select>
                                     <Select value={sortMode} onValueChange={(value) => setSortMode(value as SortMode)}>
-                                        <SelectTrigger className="h-8 w-[130px] rounded-lg border-border/40 bg-background/60 text-xs font-medium">
-                                            {sortMode === "name" ? (
-                                                <ArrowUpAZ className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
-                                            ) : sortMode === "rows" ? (
-                                                <Rows3 className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
-                                            ) : (
-                                                <ArrowUpDown className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
+                                        <SelectTrigger
+                                            size="sm"
+                                            className={cn(
+                                                embedded
+                                                    ? "h-6 min-h-6 w-[min(5.5rem,22vw)] max-w-[32vw] rounded-full border-border/20 bg-muted/10 px-2 text-[11px] font-normal shadow-none gap-1 [&_svg:not([class*='size-])]:size-3"
+                                                    : "h-8 w-[130px] rounded-lg border-border/40 bg-background/60 text-xs font-medium"
                                             )}
+                                        >
+                                            {!embedded &&
+                                                (sortMode === "name" ? (
+                                                    <ArrowUpAZ className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
+                                                ) : sortMode === "rows" ? (
+                                                    <Rows3 className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
+                                                ) : (
+                                                    <ArrowUpDown className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
+                                                ))}
                                             <SelectValue placeholder="Sort" />
                                         </SelectTrigger>
-                                        <SelectContent>
-                                            <SelectItem value="relevance">Relevance</SelectItem>
-                                            <SelectItem value="name">Name</SelectItem>
-                                            <SelectItem value="rows">Row count</SelectItem>
-                                            <SelectItem value="recent">Recent</SelectItem>
+                                        <SelectContent className={embedded ? "text-xs" : undefined}>
+                                            <SelectItem value="relevance" className={embedded ? "text-xs py-1.5" : undefined}>
+                                                Relevance
+                                            </SelectItem>
+                                            <SelectItem value="name" className={embedded ? "text-xs py-1.5" : undefined}>
+                                                Name
+                                            </SelectItem>
+                                            <SelectItem value="rows" className={embedded ? "text-xs py-1.5" : undefined}>
+                                                Row count
+                                            </SelectItem>
+                                            <SelectItem value="recent" className={embedded ? "text-xs py-1.5" : undefined}>
+                                                Recent
+                                            </SelectItem>
                                         </SelectContent>
                                     </Select>
                                     <Select value={rowFilter} onValueChange={(value) => setRowFilter(value as RowFilter)}>
-                                        <SelectTrigger className="h-8 w-[120px] rounded-lg border-border/40 bg-background/60 text-xs font-medium">
-                                            <Rows3 className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
+                                        <SelectTrigger
+                                            size="sm"
+                                            className={cn(
+                                                embedded
+                                                    ? "h-6 min-h-6 w-[min(5.25rem,20vw)] max-w-[30vw] rounded-full border-border/20 bg-muted/10 px-2 text-[11px] font-normal shadow-none gap-1 [&_svg:not([class*='size-])]:size-3"
+                                                    : "h-8 w-[120px] rounded-lg border-border/40 bg-background/60 text-xs font-medium"
+                                            )}
+                                        >
+                                            {!embedded && (
+                                                <Rows3 className="mr-2 h-3.5 w-3.5 text-muted-foreground/70" />
+                                            )}
                                             <SelectValue placeholder="Rows" />
                                         </SelectTrigger>
-                                        <SelectContent>
+                                        <SelectContent className={embedded ? "text-xs" : undefined}>
                                             {ROW_FILTERS.map((filter) => (
-                                                <SelectItem key={filter.value} value={filter.value}>
+                                                <SelectItem
+                                                    key={filter.value}
+                                                    value={filter.value}
+                                                    className={embedded ? "text-xs py-1.5" : undefined}
+                                                >
                                                     {filter.label}
                                                 </SelectItem>
                                             ))}
@@ -1166,8 +1387,13 @@ export function CommandPalette({
                         )}
                     </div>
 
-                    <CommandList className="max-h-[560px] overflow-y-auto p-1">
-                        {!isConnected && (
+                    <CommandList
+                        className={cn(
+                            "overflow-y-auto p-1",
+                            embedded ? "max-h-none min-h-0 flex-1" : "max-h-[560px]"
+                        )}
+                    >
+                        {!isConnectedEffective && (
                             <div className="flex flex-col items-center justify-center py-14 gap-3">
                                 <Database className="h-9 w-9 text-muted-foreground/20" />
                                 <p className="text-sm text-muted-foreground/50">
@@ -1176,7 +1402,7 @@ export function CommandPalette({
                             </div>
                         )}
 
-                        {isConnected && (parsed.type === "init" || parsed.type === "table") && (
+                        {isConnectedEffective && (parsed.type === "init" || parsed.type === "table") && (
                             <>
                                 {liveSuggestions.length > 0 && (
                                     <CommandGroup heading="Suggestions">
@@ -1333,6 +1559,10 @@ export function CommandPalette({
                                                     key={candidate.key}
                                                     value={candidate.key}
                                                     onSelect={() => {
+                                                        if (isDesktopMode && onDesktopTableSelect) {
+                                                            onDesktopTableSelect(candidate.schema, candidate.name);
+                                                            return;
+                                                        }
                                                         onNavigateToTable(candidate.schema, candidate.name);
                                                         onOpenChange(false);
                                                     }}
@@ -1529,7 +1759,7 @@ export function CommandPalette({
                             </>
                         )}
 
-                        {isConnected && parsed.type === "column" && (
+                        {isConnectedEffective && parsed.type === "column" && (
                             <CommandGroup
                                 heading={
                                     <span className="flex items-center gap-1.5">
@@ -1561,7 +1791,7 @@ export function CommandPalette({
                             </CommandGroup>
                         )}
 
-                        {isConnected && parsed.type === "operator" && (
+                        {isConnectedEffective && parsed.type === "operator" && (
                             <CommandGroup
                                 heading={
                                     <span className="flex items-center gap-1.5">
@@ -1599,7 +1829,7 @@ export function CommandPalette({
                             </CommandGroup>
                         )}
 
-                        {isConnected && parsed.type === "value" && (
+                        {isConnectedEffective && parsed.type === "value" && (
                             <>
                                 <CommandGroup heading="Execute">
                                     <CommandItem
@@ -1633,7 +1863,7 @@ export function CommandPalette({
                                                     LIMIT 200
                                                 </Badge>
                                                 <span className="text-[10px] text-muted-foreground/30">
-                                                    Opens in Query tab
+                                                    {isDesktopMode ? "Runs in results panel" : "Opens in Query tab"}
                                                 </span>
                                             </div>
                                         </div>
@@ -1701,7 +1931,7 @@ export function CommandPalette({
                             </>
                         )}
 
-                        {isConnected && parsed.type === "ai_nl" && (
+                        {isConnectedEffective && parsed.type === "ai_nl" && (
                             <CommandGroup
                                 heading={
                                     <span className="flex items-center gap-1.5">
@@ -1785,7 +2015,7 @@ export function CommandPalette({
                             </CommandGroup>
                         )}
 
-                        {isConnected && parsed.type === "raw_sql" && (
+                        {isConnectedEffective && parsed.type === "raw_sql" && (
                             <CommandGroup heading="Execute SQL">
                                 <CommandItem
                                     value="run-raw-sql"
@@ -1812,7 +2042,9 @@ export function CommandPalette({
                                         <p className="mt-0.5 text-xs font-mono text-muted-foreground/55 line-clamp-2 break-all">
                                             {parsed.sql}
                                         </p>
-                                        <span className="text-[10px] text-muted-foreground/30">Opens in Query tab</span>
+                                        <span className="text-[10px] text-muted-foreground/30">
+                                            {isDesktopMode ? "Runs in results panel" : "Opens in Query tab"}
+                                        </span>
                                     </div>
                                     <button
                                         type="button"
@@ -1836,27 +2068,46 @@ export function CommandPalette({
                         )}
                     </CommandList>
 
-                    <div className="flex items-center justify-between border-t border-border/10 px-3 py-1.5">
-                        <div className="flex items-center gap-3 text-[10px] text-muted-foreground/30">
-                            <span>↑↓ navigate</span>
-                            <span>↵ select</span>
-                            <span>esc close</span>
+                    {!(embedded && embeddedSuppressFooter) && (
+                        <div className="flex items-center justify-between border-t border-border/10 px-3 py-1 shrink-0">
+                            <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-[10px] text-muted-foreground/30">
+                                <span>↑↓ navigate</span>
+                                <span>↵ select</span>
+                                <span>/ focus search</span>
+                                <span>{embedded ? "esc close panel" : "esc close"}</span>
+                            </div>
+                            <span className="text-[10px] text-muted-foreground/35 font-mono">
+                                {parsed.type === "init" || parsed.type === "table"
+                                    ? `${visibleTables.length} tables · ${allFunctions.length} functions · ${allTypes.length} types`
+                                    : parsed.type === "column"
+                                        ? "Select column to filter"
+                                        : parsed.type === "operator"
+                                            ? "Select operator"
+                                            : parsed.type === "value"
+                                                ? "Type value · ↵ run"
+                                                : parsed.type === "ai_nl"
+                                                    ? "Nova AI · ↵ run"
+                                                    : "SQL mode · ↵ run"}
+                            </span>
                         </div>
-                        <span className="text-[10px] text-muted-foreground/35 font-mono">
-                            {parsed.type === "init" || parsed.type === "table"
-                                ? `${visibleTables.length} tables · ${allFunctions.length} functions · ${allTypes.length} types`
-                                : parsed.type === "column"
-                                    ? "Select column to filter"
-                                    : parsed.type === "operator"
-                                        ? "Select operator"
-                                        : parsed.type === "value"
-                                            ? "Type value · ↵ run"
-                                            : parsed.type === "ai_nl"
-                                                ? "Nova AI · ↵ run"
-                                                : "SQL mode · ↵ run"}
-                        </span>
-                    </div>
+                    )}
                 </Command>
+    );
+
+    if (embedded) {
+        return (
+            <div className={cn(shellClassName, className)}>
+                <span className="sr-only">Command palette</span>
+                {commandTree}
+            </div>
+        );
+    }
+
+    return (
+        <Dialog open={open} onOpenChange={onOpenChange}>
+            <DialogContent className="overflow-hidden p-0 shadow-2xl border-border/30 max-w-[920px] w-[96vw] bg-gradient-to-b from-card via-card/95 to-muted/30 backdrop-blur-xl">
+                <DialogTitle className="sr-only">Command palette</DialogTitle>
+                {commandTree}
             </DialogContent>
         </Dialog>
     );

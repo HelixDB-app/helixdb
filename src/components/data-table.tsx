@@ -487,9 +487,19 @@ function formatRecentAge(openedAt: number): string {
 
 const BATCH_SIZE = 30;
 
-export function DataTable({ schema, table }: { schema: string; table: string }) {
+export function DataTable({
+    schema,
+    table,
+    connectionId: connectionIdProp,
+}: {
+    schema: string;
+    table: string;
+    /** When set (e.g. desktop quick search), use this instead of the layout connection store. */
+    connectionId?: string | null;
+}) {
+    const storeConnectionId = useConnectionStore((s) => s.connectionId);
+    const connectionId = connectionIdProp ?? storeConnectionId;
     const {
-        connectionId,
         recentTables,
         eventTriggers,
         refreshTrigger,

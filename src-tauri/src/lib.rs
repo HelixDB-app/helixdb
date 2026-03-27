@@ -271,6 +271,8 @@ pub fn run() {
             desktop_panel::desktop_focus_main_window,
             desktop_panel::desktop_get_quick_search_context,
             desktop_panel::desktop_hide_quick_search_panel,
+            desktop_panel::desktop_resize_quick_search_panel,
+            desktop_panel::desktop_reposition_quick_search_panel,
             desktop_panel::desktop_set_active_connection,
             desktop_panel::desktop_toggle_quick_search_panel,
             commands::db_import_schema,

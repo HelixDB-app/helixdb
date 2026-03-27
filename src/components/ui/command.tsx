@@ -60,17 +60,24 @@ function CommandDialog({
   )
 }
 
-function CommandInput({
-  className,
-  ...props
-}: React.ComponentProps<typeof CommandPrimitive.Input>) {
+const CommandInput = React.forwardRef<
+  React.ElementRef<typeof CommandPrimitive.Input>,
+  React.ComponentPropsWithoutRef<typeof CommandPrimitive.Input> & {
+    /** Merged onto the outer wrapper (icon + input shell). */
+    wrapperClassName?: string;
+  }
+>(({ className, wrapperClassName, ...props }, ref) => {
   return (
     <div
       data-slot="command-input-wrapper"
-      className="flex h-10 items-center gap-3 border-b border-border/35 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--background)_72%,transparent),transparent)] px-4"
+      className={cn(
+        "flex h-10 items-center gap-3 border-b border-border/35 bg-[linear-gradient(180deg,color-mix(in_oklab,var(--background)_78%,transparent)_0%,color-mix(in_oklab,var(--muted)_12%,transparent)_48%,transparent_100%)] px-4",
+        wrapperClassName
+      )}
     >
       <SearchIcon className="size-4 shrink-0 opacity-55" />
       <CommandPrimitive.Input
+        ref={ref}
         data-slot="command-input"
         className={cn(
           "placeholder:text-muted-foreground/80 flex h-11 w-full rounded-md bg-transparent py-3 text-sm outline-hidden disabled:cursor-not-allowed disabled:opacity-50",
@@ -79,8 +86,9 @@ function CommandInput({
         {...props}
       />
     </div>
-  )
-}
+  );
+});
+CommandInput.displayName = "CommandInput";
 
 function CommandList({
   className,
