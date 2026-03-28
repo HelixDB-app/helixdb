@@ -155,6 +155,8 @@ export interface SchemaContext {
     tables: string[];
     /** tableName → ordered list of column names (pre-populated on connect) */
     columns: Record<string, string[]>;
+    /** Optional FK edges summary for JOIN-capable prompts */
+    fkSummary?: string;
 }
 
 export interface AISuggestionTelemetry {
@@ -1634,10 +1636,14 @@ OUTPUT RULES
 
 function naturalLanguagePrompt(schema: SchemaContext, appName: string): string {
     const schemaBlock = buildSchemaBlock(schema);
+    const fkBlock =
+        schema.fkSummary?.trim() &&
+        `\nFOREIGN KEY HINTS (join when needed)\n--------------------------\n${schema.fkSummary.trim()}\n`;
     return `\
 You are Nova, an expert PostgreSQL assistant for ${appName}.
 
 ${schemaBlock}
+${fkBlock ?? ""}
 
 YOUR TASK
 ---------

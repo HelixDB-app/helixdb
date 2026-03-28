@@ -1,6 +1,13 @@
 /** Persisted last chosen saved-connection id for desktop quick search (auto-reconnect). */
 const QUICK_SEARCH_LAST_SAVED_ID_KEY = "helixdb_quick_search_last_saved_id";
 
+/**
+ * Stable Tauri pool id for the quick-search "Local PostgreSQL" profile so reconnects reuse one session.
+ * Stored via {@link setQuickSearchLastSavedId} like a saved profile id.
+ */
+export const DESKTOP_QUICK_SEARCH_LOCAL_CONNECTION_ID =
+    "helixdb-desktop-local-postgres";
+
 export function getQuickSearchLastSavedId(): string | null {
     if (typeof window === "undefined") return null;
     try {

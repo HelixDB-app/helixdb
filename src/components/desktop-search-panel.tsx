@@ -6,6 +6,7 @@ import {
     BookmarkCheck,
     Database,
     Loader2,
+    Monitor,
     MonitorUp,
     PanelLeftClose,
     RefreshCw,
@@ -52,16 +53,20 @@ import {
     desktopResizeQuickSearchPanel,
     desktopSetActiveConnection,
     getSavedConnections,
+    localPostgresCheck,
     updateSavedConnectionDatabaseName,
 } from "@/lib/tauri";
+import { isTauri } from "@/lib/tauri-runtime";
 import type {
     DesktopConnectedConnection,
     DesktopQuickSearchContext,
+    LocalPostgresStatus,
     QueryResult,
     SavedConnection,
 } from "@/lib/types";
 import { formatCellValue } from "@/lib/types";
 import {
+    DESKTOP_QUICK_SEARCH_LOCAL_CONNECTION_ID,
     getQuickSearchLastSavedId,
     setQuickSearchLastSavedId,
 } from "@/lib/quick-search-prefs";
@@ -78,6 +83,11 @@ function connectionTooltipLines(conn: DesktopConnectedConnection): string {
 
 const PICKER_LIVE_PREFIX = "hqlive:" as const;
 const PICKER_SAVED_PREFIX = "hqsaved:" as const;
+const PICKER_LOCAL_PREFIX = "hqlocal:" as const;
+
+const LOCAL_PROFILE_CONNECT_VALUE = `${PICKER_LOCAL_PREFIX}connect` as const;
+/** `connectingSavedId` while local profile is connecting */
+const CONNECTING_LOCAL_SENTINEL = "__helix_local__";
 
 function pickerLiveValue(id: string): string {
     return `${PICKER_LIVE_PREFIX}${id}`;
@@ -92,6 +102,18 @@ function savedProfileSubtitle(saved: SavedConnection): string {
         return `${saved.name} · ${saved.database_name}`;
     }
     return saved.connection_string;
+}
+
+function isLocalhostHost(host: string): boolean {
+    const h = host.toLowerCase();
+    return h === "localhost" || h === "127.0.0.1" || h === "::1";
+}
+
+function findLocalLiveSession(
+    connections: DesktopConnectedConnection[],
+    port: number
+): DesktopConnectedConnection | undefined {
+    return connections.find((c) => isLocalhostHost(c.host) && c.port === port);
 }
 
 function effectiveTotalRows(result: QueryResult): number {
@@ -167,6 +189,7 @@ export function DesktopSearchPanel() {
 
     const [context, setContext] = useState<DesktopQuickSearchContext | null>(null);
     const [savedConnections, setSavedConnections] = useState<SavedConnection[]>([]);
+    const [localPgStatus, setLocalPgStatus] = useState<LocalPostgresStatus | null>(null);
     const [isBootstrapping, setIsBootstrapping] = useState(true);
     const [selectedConnectionId, setSelectedConnectionId] = useState<string | null>(null);
     const [connectingSavedId, setConnectingSavedId] = useState<string | null>(null);
@@ -183,8 +206,19 @@ export function DesktopSearchPanel() {
 
     const connectedConnections = useMemo(() => context?.connected_connections ?? [], [context]);
 
+    const localPickerPort = localPgStatus?.port ?? 5432;
+    const localLiveSession = useMemo(
+        () => findLocalLiveSession(connectedConnections, localPickerPort),
+        [connectedConnections, localPickerPort]
+    );
+
+    const showLocalMachineSection =
+        isTauri() && localPgStatus !== null && localPgStatus.installed;
+
     const showConnectionPicker =
-        savedConnections.length > 0 || connectedConnections.length > 0;
+        savedConnections.length > 0 ||
+        connectedConnections.length > 0 ||
+        showLocalMachineSection;
 
     const { savedPickerRows, orphanConnections } = useMemo(() => {
         const savedSorted = [...savedConnections].sort((a, b) =>
@@ -200,8 +234,13 @@ export function DesktopSearchPanel() {
                 : ({ kind: "offline-saved" as const, saved });
         });
         const savedIds = new Set(savedConnections.map((s) => s.id));
+        const localOrphanId = localLiveSession?.connection_id;
         const orphanConnections = connectedConnections
-            .filter((c) => !savedIds.has(c.connection_id))
+            .filter(
+                (c) =>
+                    !savedIds.has(c.connection_id) &&
+                    (!localOrphanId || c.connection_id !== localOrphanId)
+            )
             .sort((a, b) => {
                 const byDb = a.database_name.localeCompare(b.database_name, undefined, {
                     sensitivity: "base",
@@ -210,7 +249,7 @@ export function DesktopSearchPanel() {
                 return a.host.localeCompare(b.host);
             });
         return { savedPickerRows, orphanConnections };
-    }, [savedConnections, connectedConnections]);
+    }, [savedConnections, connectedConnections, localLiveSession?.connection_id]);
 
     const pickerSelectValue = useMemo(() => {
         if (!selectedConnectionId) return undefined;
@@ -232,13 +271,17 @@ export function DesktopSearchPanel() {
     const refreshDesktopContext = useCallback(async (preferredConnectionId?: string | null) => {
         setIsBootstrapping(true);
         try {
-            const [quickSearchContext, availableSavedConnections] = await Promise.all([
+            const [quickSearchContext, availableSavedConnections, localCheck] = await Promise.all([
                 desktopGetQuickSearchContext(),
                 getSavedConnections().catch(() => []),
+                isTauri()
+                    ? localPostgresCheck().catch(() => null)
+                    : Promise.resolve(null),
             ]);
 
             setContext(quickSearchContext);
             setSavedConnections(availableSavedConnections);
+            setLocalPgStatus(localCheck);
 
             const live = quickSearchContext.connected_connections ?? [];
             const liveIds = new Set(live.map((c) => c.connection_id));
@@ -261,6 +304,16 @@ export function DesktopSearchPanel() {
                 void desktopSetActiveConnection(nextConnectionId);
                 if (availableSavedConnections.some((s) => s.id === nextConnectionId)) {
                     setQuickSearchLastSavedId(nextConnectionId);
+                } else if (
+                    localCheck?.running &&
+                    live.some(
+                        (c) =>
+                            c.connection_id === nextConnectionId &&
+                            isLocalhostHost(c.host) &&
+                            c.port === localCheck.port
+                    )
+                ) {
+                    setQuickSearchLastSavedId(DESKTOP_QUICK_SEARCH_LOCAL_CONNECTION_ID);
                 }
             } else {
                 triedAutoConnectRef.current = false;
@@ -292,6 +345,12 @@ export function DesktopSearchPanel() {
             setSelectedConnectionId(connectionId);
             if (savedConnections.some((s) => s.id === connectionId)) {
                 setQuickSearchLastSavedId(connectionId);
+            } else if (
+                localPgStatus?.running &&
+                findLocalLiveSession(connectedConnections, localPickerPort)?.connection_id ===
+                    connectionId
+            ) {
+                setQuickSearchLastSavedId(DESKTOP_QUICK_SEARCH_LOCAL_CONNECTION_ID);
             }
             setDataTableTarget(null);
             setSqlInspector(null);
@@ -308,7 +367,7 @@ export function DesktopSearchPanel() {
                     : current
             );
         },
-        [savedConnections]
+        [savedConnections, localPgStatus?.running, connectedConnections, localPickerPort]
     );
 
     const connectSavedConnection = useCallback(
@@ -342,14 +401,64 @@ export function DesktopSearchPanel() {
         [refreshDesktopContext]
     );
 
+    const connectLocalPostgres = useCallback(async () => {
+        if (!localPgStatus?.connection_string || connectSavedInflightRef.current) return;
+        const existing = findLocalLiveSession(connectedConnections, localPickerPort);
+        if (existing) {
+            await activateConnection(existing.connection_id);
+            return;
+        }
+        connectSavedInflightRef.current = true;
+        setConnectingSavedId(CONNECTING_LOCAL_SENTINEL);
+        try {
+            const response = await dbConnect(
+                localPgStatus.connection_string,
+                DESKTOP_QUICK_SEARCH_LOCAL_CONNECTION_ID
+            );
+            setQuickSearchLastSavedId(DESKTOP_QUICK_SEARCH_LOCAL_CONNECTION_ID);
+            await desktopSetActiveConnection(response.connection_id).catch(() => {});
+            await refreshDesktopContext(response.connection_id);
+            setDataTableTarget(null);
+            setSqlInspector(null);
+            toast.success(`Connected to local · ${response.database_name}`);
+        } catch (error) {
+            toast.error(String(error));
+        } finally {
+            connectSavedInflightRef.current = false;
+            setConnectingSavedId(null);
+        }
+    }, [
+        localPgStatus?.connection_string,
+        connectedConnections,
+        localPickerPort,
+        activateConnection,
+        refreshDesktopContext,
+    ]);
+
     useEffect(() => {
         if (isBootstrapping) return;
         if (selectedConnectionId || connectingSavedId) return;
-        if (savedConnections.length === 0 || connectedConnections.length > 0) return;
+        if (connectedConnections.length > 0) return;
         if (triedAutoConnectRef.current) return;
 
-        triedAutoConnectRef.current = true;
         const last = getQuickSearchLastSavedId();
+        const localReady = Boolean(localPgStatus?.running && localPgStatus.connection_string);
+
+        if (last === DESKTOP_QUICK_SEARCH_LOCAL_CONNECTION_ID && localReady) {
+            triedAutoConnectRef.current = true;
+            void connectLocalPostgres();
+            return;
+        }
+
+        if (savedConnections.length === 0) {
+            if (localReady) {
+                triedAutoConnectRef.current = true;
+                void connectLocalPostgres();
+            }
+            return;
+        }
+
+        triedAutoConnectRef.current = true;
         const sorted = [...savedConnections].sort((a, b) =>
             a.name.localeCompare(b.name, undefined, { sensitivity: "base" })
         );
@@ -363,6 +472,9 @@ export function DesktopSearchPanel() {
         savedConnections,
         connectedConnections.length,
         connectSavedConnection,
+        connectLocalPostgres,
+        localPgStatus?.running,
+        localPgStatus?.connection_string,
     ]);
 
     const onPickerValueChange = useCallback(
@@ -371,13 +483,17 @@ export function DesktopSearchPanel() {
                 void activateConnection(value.slice(PICKER_LIVE_PREFIX.length));
                 return;
             }
+            if (value === LOCAL_PROFILE_CONNECT_VALUE) {
+                void connectLocalPostgres();
+                return;
+            }
             if (value.startsWith(PICKER_SAVED_PREFIX)) {
                 const id = value.slice(PICKER_SAVED_PREFIX.length);
                 const saved = savedConnections.find((s) => s.id === id);
                 if (saved) void connectSavedConnection(saved);
             }
         },
-        [savedConnections, activateConnection, connectSavedConnection]
+        [savedConnections, activateConnection, connectSavedConnection, connectLocalPostgres]
     );
 
     const openDesktopTable = useCallback(
@@ -584,6 +700,96 @@ export function DesktopSearchPanel() {
                                             align="start"
                                             sideOffset={6}
                                         >
+                                            {showLocalMachineSection ? (
+                                                <SelectGroup>
+                                                    <SelectLabel className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
+                                                        This machine
+                                                    </SelectLabel>
+                                                    {localLiveSession ? (
+                                                        <SelectItem
+                                                            key={pickerLiveValue(localLiveSession.connection_id)}
+                                                            value={pickerLiveValue(localLiveSession.connection_id)}
+                                                            className="cursor-pointer py-2.5 pl-8 pr-2 text-xs"
+                                                            title={connectionTooltipLines(localLiveSession)}
+                                                        >
+                                                            <span className="flex w-full items-start gap-2 text-left">
+                                                                <Monitor
+                                                                    className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-500/85"
+                                                                    aria-hidden
+                                                                />
+                                                                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                                                                    <span className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
+                                                                        <span className="font-medium text-foreground/95">
+                                                                            Local PostgreSQL
+                                                                        </span>
+                                                                        <span className="text-[10px] font-medium text-emerald-500/85">
+                                                                            {localLiveSession.is_active ? "active" : "live"}
+                                                                        </span>
+                                                                    </span>
+                                                                    <span className="truncate font-mono text-[10px] text-muted-foreground/75">
+                                                                        {localLiveSession.user}@{localLiveSession.host}:
+                                                                        {localLiveSession.port} · {localLiveSession.database_name}
+                                                                    </span>
+                                                                </span>
+                                                            </span>
+                                                        </SelectItem>
+                                                    ) : localPgStatus?.running && localPgStatus.connection_string ? (
+                                                        <SelectItem
+                                                            key={LOCAL_PROFILE_CONNECT_VALUE}
+                                                            value={LOCAL_PROFILE_CONNECT_VALUE}
+                                                            disabled={connectingSavedId === CONNECTING_LOCAL_SENTINEL}
+                                                            className="cursor-pointer py-2.5 pl-8 pr-2 text-xs"
+                                                            title={localPgStatus.connection_string}
+                                                        >
+                                                            <span className="flex w-full items-start gap-2 text-left">
+                                                                <Monitor
+                                                                    className="mt-0.5 h-3.5 w-3.5 shrink-0 text-violet-500/80"
+                                                                    aria-hidden
+                                                                />
+                                                                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                                                                    <span className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
+                                                                        <span className="font-medium text-foreground/90">
+                                                                            Local PostgreSQL
+                                                                        </span>
+                                                                        <span className="text-[10px] font-normal text-muted-foreground/65">
+                                                                            connect
+                                                                        </span>
+                                                                    </span>
+                                                                    <span className="truncate font-mono text-[10px] text-muted-foreground/70">
+                                                                        {localPgStatus.version
+                                                                            ? `${localPgStatus.version} · ${localPgStatus.host}:${localPgStatus.port}`
+                                                                            : `${localPgStatus.host}:${localPgStatus.port}`}
+                                                                    </span>
+                                                                </span>
+                                                            </span>
+                                                        </SelectItem>
+                                                    ) : (
+                                                        <SelectItem
+                                                            value={`${PICKER_LOCAL_PREFIX}stopped`}
+                                                            disabled
+                                                            className="cursor-not-allowed py-2.5 pl-8 pr-2 text-xs opacity-70"
+                                                        >
+                                                            <span className="flex w-full items-start gap-2 text-left">
+                                                                <Unplug
+                                                                    className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground/45"
+                                                                    aria-hidden
+                                                                />
+                                                                <span className="flex min-w-0 flex-1 flex-col gap-0.5">
+                                                                    <span className="font-medium text-foreground/75">
+                                                                        Local PostgreSQL
+                                                                    </span>
+                                                                    <span className="text-[10px] text-muted-foreground/70">
+                                                                        Not running — start from the main workspace
+                                                                    </span>
+                                                                </span>
+                                                            </span>
+                                                        </SelectItem>
+                                                    )}
+                                                </SelectGroup>
+                                            ) : null}
+                                            {showLocalMachineSection && savedPickerRows.length > 0 ? (
+                                                <SelectSeparator className="my-1 bg-border/60" />
+                                            ) : null}
                                             {savedPickerRows.length > 0 ? (
                                                 <SelectGroup>
                                                     <SelectLabel className="px-2 py-1.5 text-[10px] font-semibold uppercase tracking-[0.12em] text-muted-foreground/70">
@@ -651,7 +857,7 @@ export function DesktopSearchPanel() {
                                             ) : null}
                                             {orphanConnections.length > 0 ? (
                                                 <>
-                                                    {savedPickerRows.length > 0 ? (
+                                                    {savedPickerRows.length > 0 || showLocalMachineSection ? (
                                                         <SelectSeparator className="my-1 bg-border/60" />
                                                     ) : null}
                                                     <SelectGroup>
@@ -735,7 +941,9 @@ export function DesktopSearchPanel() {
                                 {connectingSavedId && !selectedConnectionId ? (
                                     <div className="flex shrink-0 items-center gap-2 border-b border-border/20 bg-muted/[0.06] px-3 py-1.5 text-[11px] text-muted-foreground">
                                         <Loader2 className="h-3 w-3 shrink-0 animate-spin text-emerald-500" />
-                                        Connecting saved profile…
+                                        {connectingSavedId === CONNECTING_LOCAL_SENTINEL
+                                            ? "Connecting to local PostgreSQL…"
+                                            : "Connecting saved profile…"}
                                     </div>
                                 ) : null}
                                 <CommandPalette

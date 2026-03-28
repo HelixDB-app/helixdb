@@ -190,6 +190,39 @@ export function classifySqlRisk(sql: string): SqlRiskClassification {
     };
 }
 
+/** NL search may only run read-only SQL (SELECT / WITH … SELECT). */
+export function validateNlGeneratedSql(sql: string): { ok: true } | { ok: false; error: string } {
+    const trimmed = sql.trim();
+    if (!trimmed) {
+        return { ok: false, error: "Empty SQL." };
+    }
+
+    const risk = classifySqlRisk(trimmed);
+    if (risk.isRisky) {
+        return {
+            ok: false,
+            error: `Generated SQL is not read-only (disallowed: ${risk.riskyStatements.join(", ")}).`,
+        };
+    }
+
+    const statements = splitStatements(trimmed);
+    if (statements.length === 0) {
+        return { ok: false, error: "No executable SQL found." };
+    }
+
+    for (const statement of statements) {
+        const kw = firstKeyword(statement.text);
+        if (kw !== "SELECT" && kw !== "WITH") {
+            return {
+                ok: false,
+                error: `Natural language search only allows SELECT queries (got “${kw}”).`,
+            };
+        }
+    }
+
+    return { ok: true };
+}
+
 export function shouldRequireProductionGuard(options: {
     strictProductionGuard: boolean;
     environment?: ConnectionEnvironment | string | null;

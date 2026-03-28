@@ -7,7 +7,7 @@
     "build": "sh scripts/next-static-export.sh",
     "start": "next start",
     "lint": "eslint",
-    "test:unit": "node --test src/lib/sql-risk-guard.test.ts",
+    "test:unit": "node --test src/lib/sql-risk-guard.test.ts src/lib/nl-search-json.test.ts",
     "tauri": "cargo tauri",
     "build:mac": "sh -c 'case \"$(uname -m)\" in arm64) T=aarch64-apple-darwin;; x86_64) T=x86_64-apple-darwin;; *) T=;; esac; if [ -n \"$T\" ]; then pnpm tauri build --target \"$T\"; else pnpm tauri build; fi'",
     "release:mac": "pnpm build:mac",

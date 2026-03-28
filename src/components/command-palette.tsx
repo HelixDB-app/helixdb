@@ -18,29 +18,54 @@ import {
     CommandList,
     CommandSeparator,
 } from "@/components/ui/command";
-import { Dialog, DialogContent, DialogTitle } from "@/components/ui/dialog";
+import {
+    Dialog,
+    DialogContent,
+    DialogFooter,
+    DialogHeader,
+    DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
+import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { useConnectionStore } from "@/stores/connection-store";
 import { useQueryStore } from "@/stores/query-store";
 import { useSearchStore } from "@/stores/search-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import {
     dbGetColumns,
+    dbGetDatabaseTopology,
     dbListEventTriggers,
     dbListFunctions,
     dbListSchemas,
+    dbListTables,
     dbListTypes,
+    dbSearchTableDataMulti,
 } from "@/lib/db-platform";
-import { dbListTables, dbSearchTableData, desktopFocusMainWindow } from "@/lib/tauri";
+import { desktopFocusMainWindow } from "@/lib/tauri";
+import { buildJoinSearchSQL } from "@/lib/command-search-join";
 import type {
     ColumnInfo,
     EventTriggerInfo,
+    FilterCondition,
     FunctionInfo,
     PreviewSelection,
     QueryResult,
     TableInfo,
+    TopologyData,
     TypeInfo,
 } from "@/lib/types";
-import { aiSuggestionEngine } from "@/lib/ai-suggestions";
+import { naturalLanguageToSql } from "@/lib/nl-search-ai";
+import { buildNlSearchSchemaBundle, rankTablesForNlSearch } from "@/lib/nl-search-schema";
+import { formatHelixSql } from "@/lib/format-sql";
+import {
+    shouldRequireProductionGuard,
+    STRICT_PRODUCTION_CONFIRMATION,
+    type SqlRiskClassification,
+} from "@/lib/sql-risk-guard";
+import { formatEnvironmentLabel } from "@/lib/connection-metadata";
 import {
     Table2,
     Play,
@@ -65,19 +90,23 @@ import {
     Rows3,
     Braces,
     Zap,
+    CircleHelp,
+    ShieldCheck,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { isEditableTarget } from "@/lib/shortcut-keys";
 import { toast } from "sonner";
 import {
+    buildMultiConditionSQL,
     buildStructuredCommandSearchSQL,
     COMMAND_SEARCH_OPERATORS,
     parseCommandSearchInput,
+    parseSingleTableSearchRest,
+    serializeTableSearchInput,
     tokenizeCommandSearchInput,
     type CommandSearchStage,
 } from "@/lib/command-search";
-
 function formatCount(n: number): string {
     if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
     if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
@@ -120,6 +149,20 @@ function searchSignature(query: string, sql: string): string {
 
 function sqlSignature(sql: string): string {
     return sql.trim().toLowerCase();
+}
+
+function validateConditionsAgainstColumns(
+    conditions: FilterCondition[],
+    columnList: ColumnInfo[]
+): string | null {
+    if (conditions.length === 0) return null;
+    const names = new Set(columnList.map((c) => c.name.toLowerCase()));
+    for (const cond of conditions) {
+        if (!names.has(cond.column.toLowerCase())) {
+            return `Unknown column “${cond.column}” for this table. Try loading columns or check spelling.`;
+        }
+    }
+    return null;
 }
 
 function tableKey(schema: string, table: string): string {
@@ -314,6 +357,62 @@ function HighlightedText({ text, query }: { text: string; query: string }) {
     return <>{out}</>;
 }
 
+function SearchHowToPanel() {
+    return (
+        <div className="space-y-4 pr-1">
+            <div>
+                <p className="text-xs font-semibold text-foreground/90 mb-1.5">Single column</p>
+                <pre className="text-[11px] bg-muted/40 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
+                    drivers.driver_code = DFLTA01716
+                </pre>
+            </div>
+            <div>
+                <p className="text-xs font-semibold text-foreground/90 mb-1.5">Multiple conditions (AND / OR)</p>
+                <pre className="text-[11px] bg-muted/40 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
+                    drivers.driver_code = DFLTA01716 AND status = active{"\n"}
+                    orders.total &gt; 100 OR orders.total &lt; 10
+                </pre>
+                <p className="text-[10px] text-muted-foreground/60 mt-1">
+                    After the first column, you can omit the table name on the next conditions.
+                </p>
+            </div>
+            <div>
+                <p className="text-xs font-semibold text-foreground/90 mb-1.5">Operators</p>
+                <p className="text-[11px] text-muted-foreground/80 leading-relaxed">
+                    <span className="font-mono text-emerald-400/90">=</span>,{" "}
+                    <span className="font-mono text-emerald-400/90">!=</span>,{" "}
+                    <span className="font-mono text-emerald-400/90">&gt;</span>,{" "}
+                    <span className="font-mono text-emerald-400/90">&lt;</span>,{" "}
+                    <span className="font-mono text-emerald-400/90">LIKE %txt%</span>,{" "}
+                    <span className="font-mono text-emerald-400/90">IS NULL</span>
+                </p>
+            </div>
+            <div>
+                <p className="text-xs font-semibold text-foreground/90 mb-1.5">Related table (FK path)</p>
+                <pre className="text-[11px] bg-muted/40 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
+                    drivers.driver_code = DFLTA01716 =&gt; trips
+                </pre>
+                <p className="text-[10px] text-muted-foreground/60 mt-1">
+                    Returns rows from the table after =&gt; , joined along foreign keys (up to 8 hops). Use
+                    schema.table on the right if needed.
+                </p>
+            </div>
+            <div>
+                <p className="text-xs font-semibold text-foreground/90 mb-1.5">AI search</p>
+                <pre className="text-[11px] bg-muted/40 rounded-md p-2 overflow-x-auto whitespace-pre-wrap">
+                    ? active drivers hired after 2020
+                </pre>
+            </div>
+            <div>
+                <p className="text-xs font-semibold text-foreground/90 mb-1.5">Raw SQL</p>
+                <p className="text-[11px] text-muted-foreground/80">
+                    Paste a full statement starting with SELECT, or include a semicolon — it runs as-is.
+                </p>
+            </div>
+        </div>
+    );
+}
+
 function ColTypeIcon({ dataType }: { dataType: string }) {
     const dt = dataType.toLowerCase();
     if (dt.includes("int") || dt.includes("numeric") || dt.includes("float") || dt.includes("double") || dt.includes("real")) {
@@ -361,9 +460,16 @@ export function CommandPalette({
     const tables = useConnectionStore((state) => state.tables);
     const schemas = useConnectionStore((state) => state.schemas);
     const isConnected = useConnectionStore((state) => state.isConnected);
+    const databaseName = useConnectionStore((state) => state.databaseName);
+    const connections = useConnectionStore((state) => state.connections);
+    const strictProductionGuard = useSettingsStore((state) => state.strictProductionGuard);
 
     const isDesktopMode = Boolean(desktopConnectionId);
     const effectiveConnectionId = desktopConnectionId ?? storeConnectionId;
+    const activeEnvironment = useMemo(() => {
+        if (!effectiveConnectionId) return undefined;
+        return connections.find((c) => c.connectionId === effectiveConnectionId)?.environment;
+    }, [connections, effectiveConnectionId]);
     const isConnectedEffective = isDesktopMode ? Boolean(desktopConnectionId) : isConnected;
     const selectPreview = useConnectionStore((state) => state.selectPreview);
     const loadEventTriggers = useConnectionStore((state) => state.loadEventTriggers);
@@ -388,9 +494,21 @@ export function CommandPalette({
     const [isExecuting, setIsExecuting] = useState(false);
 
     const [aiGeneratedSQL, setAiGeneratedSQL] = useState<string | null>(null);
+    const [aiNlTitle, setAiNlTitle] = useState<string>("");
+    const [aiNlExplanation, setAiNlExplanation] = useState<string>("");
+    const [aiSqlPretty, setAiSqlPretty] = useState(false);
     const [isAiLoading, setIsAiLoading] = useState(false);
     const [aiError, setAiError] = useState<string | null>(null);
-    const [lastAiQuery, setLastAiQuery] = useState<string | null>(null);
+    const [paletteProdGuardPending, setPaletteProdGuardPending] = useState<{
+        sql: string;
+        label: string;
+        savedId?: string;
+        classification: SqlRiskClassification;
+    } | null>(null);
+    const [paletteProdGuardTypedText, setPaletteProdGuardTypedText] = useState("");
+    const [paletteProdGuardReason, setPaletteProdGuardReason] = useState("");
+    const [searchTopology, setSearchTopology] = useState<TopologyData | null>(null);
+    const [searchHelpOpen, setSearchHelpOpen] = useState(false);
 
     const [allTables, setAllTables] = useState<TableInfo[]>([]);
     const [allFunctions, setAllFunctions] = useState<Array<{ schema: string; item: FunctionInfo }>>([]);
@@ -512,8 +630,10 @@ export function CommandPalette({
             setColumns([]);
             setIsExecuting(false);
             setAiGeneratedSQL(null);
+            setAiNlTitle("");
+            setAiNlExplanation("");
+            setAiSqlPretty(false);
             setAiError(null);
-            setLastAiQuery(null);
             setIsAiLoading(false);
             setSortMode("relevance");
             setRowFilter("any");
@@ -529,7 +649,26 @@ export function CommandPalette({
         setAllEventTriggers([]);
         setColumnCache({});
         pendingColumnsRef.current.clear();
+        setSearchTopology(null);
     }, [effectiveConnectionId]);
+
+    useEffect(() => {
+        if (!open || !effectiveConnectionId || !isConnectedEffective) {
+            setSearchTopology(null);
+            return;
+        }
+        let cancelled = false;
+        void dbGetDatabaseTopology(effectiveConnectionId)
+            .then((topo) => {
+                if (!cancelled) setSearchTopology(topo);
+            })
+            .catch(() => {
+                if (!cancelled) setSearchTopology(null);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [open, effectiveConnectionId, isConnectedEffective]);
 
     useEffect(() => {
         if (isDesktopMode) return;
@@ -629,10 +768,40 @@ export function CommandPalette({
     const visibleTables = allTables.length > 0 ? allTables : tables;
     const parsed: CommandSearchStage = parseCommandSearchInput(input, visibleTables);
 
+    const tailParsed = useMemo((): CommandSearchStage | null => {
+        if (parsed.type === "multi_build") {
+            return parseSingleTableSearchRest(parsed.schema, parsed.table, parsed.tailRest);
+        }
+        if (parsed.type === "join_build") {
+            return parseSingleTableSearchRest(parsed.schema, parsed.table, parsed.tailRest);
+        }
+        return null;
+    }, [parsed]);
+
     const normalizedInput = input.trim().toLowerCase();
     const searchTokens = useMemo(() => tokenizeCommandSearchInput(normalizedInput), [normalizedInput]);
     const activeCategorySet = useMemo(() => new Set(activeCategories), [activeCategories]);
     const aiQuery = parsed.type === "ai_nl" ? parsed.query : null;
+
+    const nlSearchSchemaBundle = useMemo(() => {
+        if (!aiQuery?.trim()) return null;
+        return buildNlSearchSchemaBundle(
+            aiQuery.trim(),
+            visibleTables,
+            columnCache,
+            searchTopology
+        );
+    }, [aiQuery, visibleTables, columnCache, searchTopology]);
+
+    const displayAiSql = useMemo(() => {
+        if (!aiGeneratedSQL) return null;
+        if (!aiSqlPretty) return aiGeneratedSQL;
+        try {
+            return formatHelixSql(aiGeneratedSQL);
+        } catch {
+            return aiGeneratedSQL;
+        }
+    }, [aiGeneratedSQL, aiSqlPretty]);
 
     const tableByKey = useMemo(() => {
         const out = new Map<string, TableInfo>();
@@ -672,7 +841,13 @@ export function CommandPalette({
     );
 
     const structuredTableKey =
-        parsed.type === "column" || parsed.type === "operator" || parsed.type === "value"
+        parsed.type === "column" ||
+        parsed.type === "operator" ||
+        parsed.type === "value" ||
+        parsed.type === "multi_value" ||
+        parsed.type === "join_value" ||
+        parsed.type === "multi_build" ||
+        parsed.type === "join_build"
             ? tableKey(parsed.schema, parsed.table)
             : null;
 
@@ -732,36 +907,69 @@ export function CommandPalette({
     ]);
 
     useEffect(() => {
-        if (!aiQuery) {
-            setAiGeneratedSQL(null);
-            setAiError(null);
-            setLastAiQuery(null);
+        if (!open || !effectiveConnectionId) return;
+        if (parsed.type !== "ai_nl" || !aiQuery?.trim()) return;
+        const ranked = rankTablesForNlSearch(aiQuery.trim(), visibleTables, 20);
+        for (const t of ranked) {
+            void fetchColumnsForTable(t.schema, t.name);
+        }
+    }, [open, effectiveConnectionId, parsed.type, aiQuery, visibleTables, fetchColumnsForTable]);
+
+    useEffect(() => {
+        if (!open || !aiQuery?.trim()) {
+            if (!aiQuery?.trim()) {
+                setAiGeneratedSQL(null);
+                setAiNlTitle("");
+                setAiNlExplanation("");
+                setAiError(null);
+                setAiSqlPretty(false);
+            }
             return;
         }
 
-        const query = aiQuery;
-        if (!query || query === lastAiQuery) return;
+        if (!nlSearchSchemaBundle) return;
 
-        const timer = setTimeout(async () => {
-            setLastAiQuery(query);
-            setIsAiLoading(true);
-            setAiGeneratedSQL(null);
-            setAiError(null);
-            try {
-                const sql = await aiSuggestionEngine.getNaturalLanguageSQL(query, {
-                    tables: visibleTables.map((t) => t.name),
-                    columns: {},
-                });
-                setAiGeneratedSQL(sql || null);
-            } catch {
-                setAiError("AI request failed. Check your connection.");
-            } finally {
-                setIsAiLoading(false);
-            }
+        const query = aiQuery.trim();
+        const abort = new AbortController();
+
+        const timer = setTimeout(() => {
+            void (async () => {
+                setIsAiLoading(true);
+                setAiGeneratedSQL(null);
+                setAiNlTitle("");
+                setAiNlExplanation("");
+                setAiError(null);
+                try {
+                    const res = await naturalLanguageToSql(query, nlSearchSchemaBundle.compressedSchema, {
+                        signal: abort.signal,
+                        schemaFingerprint: nlSearchSchemaBundle.schemaFingerprint,
+                        fkSummaryBlock: nlSearchSchemaBundle.fkSummaryBlock,
+                    });
+                    if (abort.signal.aborted) return;
+                    if (res.error) {
+                        setAiError(res.error);
+                        setAiNlTitle(res.title);
+                        setAiNlExplanation(res.explanation);
+                        return;
+                    }
+                    setAiGeneratedSQL(res.sql);
+                    setAiNlTitle(res.title);
+                    setAiNlExplanation(res.explanation);
+                } catch {
+                    if (!abort.signal.aborted) {
+                        setAiError("AI request failed. Check your connection.");
+                    }
+                } finally {
+                    setIsAiLoading(false);
+                }
+            })();
         }, 600);
 
-        return () => clearTimeout(timer);
-    }, [aiQuery, visibleTables, lastAiQuery]);
+        return () => {
+            clearTimeout(timer);
+            abort.abort();
+        };
+    }, [open, aiQuery, nlSearchSchemaBundle]);
 
     const catalogCandidates = useMemo<CatalogCandidate[]>(() => {
         const out: CatalogCandidate[] = [];
@@ -1030,8 +1238,26 @@ export function CommandPalette({
     }, [normalizedInput, groupedCatalog, filteredSavedSearches, input]);
 
     const executeSearch = useCallback(
-        async (sql: string, label: string, savedId?: string) => {
+        async (sql: string, label: string, savedId?: string, productionGuardReason?: string) => {
             if (!effectiveConnectionId) return;
+
+            const guard = shouldRequireProductionGuard({
+                strictProductionGuard,
+                environment: activeEnvironment ?? null,
+                sql,
+            });
+            if (guard.required && !productionGuardReason?.trim()) {
+                setPaletteProdGuardPending({
+                    sql,
+                    label,
+                    savedId,
+                    classification: guard.classification,
+                });
+                setPaletteProdGuardTypedText("");
+                setPaletteProdGuardReason("");
+                return;
+            }
+
             if (isDesktopMode && onDesktopSqlRun) {
                 addRecentSearch(label, sql);
                 if (savedId) {
@@ -1056,10 +1282,16 @@ export function CommandPalette({
             updateSql(activeTabId, sql);
             onNavigateToQuery();
             onOpenChange(false);
-            executeQuery(effectiveConnectionId, activeTabId);
+            executeQuery(effectiveConnectionId, activeTabId, databaseName || undefined, {
+                environment: activeEnvironment,
+                productionGuardReason: productionGuardReason?.trim() || undefined,
+            });
         },
         [
             effectiveConnectionId,
+            activeEnvironment,
+            strictProductionGuard,
+            databaseName,
             isDesktopMode,
             onDesktopSqlRun,
             addRecentSearch,
@@ -1072,6 +1304,34 @@ export function CommandPalette({
             executeQuery,
         ]
     );
+
+    const closePaletteProdGuard = useCallback(() => {
+        setPaletteProdGuardPending(null);
+        setPaletteProdGuardTypedText("");
+        setPaletteProdGuardReason("");
+    }, []);
+
+    const confirmPaletteProdGuard = useCallback(() => {
+        if (paletteProdGuardTypedText.trim() !== STRICT_PRODUCTION_CONFIRMATION) {
+            toast.error(`Type exactly "${STRICT_PRODUCTION_CONFIRMATION}" to continue.`);
+            return;
+        }
+        const reason = paletteProdGuardReason.trim();
+        if (!reason) {
+            toast.error("Enter a reason for this production query.");
+            return;
+        }
+        const pending = paletteProdGuardPending;
+        if (!pending) return;
+        closePaletteProdGuard();
+        void executeSearch(pending.sql, pending.label, pending.savedId, reason);
+    }, [
+        paletteProdGuardTypedText,
+        paletteProdGuardReason,
+        paletteProdGuardPending,
+        closePaletteProdGuard,
+        executeSearch,
+    ]);
 
     const openPreviewObject = useCallback(
         (selection: PreviewSelection) => {
@@ -1102,88 +1362,180 @@ export function CommandPalette({
         [savedBySignature, unsaveSearch, saveSearch]
     );
 
-    const runStructured = useCallback(async () => {
-        if (parsed.type !== "value" || !effectiveConnectionId) return;
-        const { schema, table, col, op, value } = parsed;
-        setIsExecuting(true);
-
-        const noValue = op === "IS NULL" || op === "IS NOT NULL";
-        const label = `${table}.${col} ${op}${!noValue && value ? ` ${value}` : ""}`;
-
-        if (noValue) {
-            const sql = `SELECT * FROM "${schema}"."${table}" WHERE "${col}" ${op} LIMIT 200`;
-            await executeSearch(sql, label);
-        } else {
-            try {
-                const result: QueryResult = await dbSearchTableData(
-                    effectiveConnectionId,
-                    schema,
-                    table,
-                    col,
-                    op,
-                    value,
-                    200
-                );
-                if (isDesktopMode && onDesktopSqlRun) {
-                    addRecentSearch(label, result.query);
-                    const maybeSaved = savedBySql.get(sqlSignature(result.query));
-                    if (maybeSaved) touchSavedSearch(maybeSaved.id);
-                    onDesktopSqlRun(result.query, label);
-                } else {
-                    addRecentSearch(label, result.query);
-                    const maybeSaved = savedBySql.get(sqlSignature(result.query));
-                    if (maybeSaved) touchSavedSearch(maybeSaved.id);
-                    addTab(label);
-                    const { activeTabId } = useQueryStore.getState();
-                    if (activeTabId) {
-                        updateSql(activeTabId, result.query);
-                        useQueryStore.setState((state) => ({
-                            tabs: state.tabs.map((tab) =>
-                                tab.id === activeTabId
-                                    ? { ...tab, result, executionTime: result.execution_time_ms }
-                                    : tab
-                            ),
-                        }));
-                    }
-                    onNavigateToQuery();
-                    onOpenChange(false);
-                }
-            } catch {
-                const sql = buildStructuredCommandSearchSQL(schema, table, col, op, value);
-                await executeSearch(sql, label);
+    const finalizeStructuredResult = useCallback(
+        async (result: QueryResult, label: string) => {
+            if (result.is_error) {
+                toast.error(result.error_message ?? "Search failed.");
+                return;
             }
+            if (isDesktopMode && onDesktopSqlRun) {
+                addRecentSearch(label, result.query);
+                const maybeSaved = savedBySql.get(sqlSignature(result.query));
+                if (maybeSaved) touchSavedSearch(maybeSaved.id);
+                onDesktopSqlRun(result.query, label);
+                return;
+            }
+            addRecentSearch(label, result.query);
+            const maybeSaved = savedBySql.get(sqlSignature(result.query));
+            if (maybeSaved) touchSavedSearch(maybeSaved.id);
+            addTab(label);
+            const { activeTabId } = useQueryStore.getState();
+            if (activeTabId) {
+                updateSql(activeTabId, result.query);
+                useQueryStore.setState((state) => ({
+                    tabs: state.tabs.map((tab) =>
+                        tab.id === activeTabId
+                            ? { ...tab, result, executionTime: result.execution_time_ms }
+                            : tab
+                    ),
+                }));
+            }
+            onNavigateToQuery();
+            onOpenChange(false);
+        },
+        [
+            isDesktopMode,
+            onDesktopSqlRun,
+            addRecentSearch,
+            savedBySql,
+            touchSavedSearch,
+            addTab,
+            updateSql,
+            onNavigateToQuery,
+            onOpenChange,
+        ]
+    );
+
+    const runStructuredSearch = useCallback(async () => {
+        if (!effectiveConnectionId) return;
+
+        if (parsed.type === "join_value") {
+            if (!searchTopology) {
+                toast.error("Relationship map not loaded yet. Try again in a moment.");
+                return;
+            }
+            const badCol = validateConditionsAgainstColumns(parsed.conditions, columns);
+            if (badCol && columns.length > 0) {
+                toast.error(badCol);
+                return;
+            }
+            const built = buildJoinSearchSQL(
+                searchTopology,
+                parsed.schema,
+                parsed.table,
+                parsed.conditions,
+                parsed.targetTable
+            );
+            if ("error" in built) {
+                toast.error(built.error);
+                return;
+            }
+            setIsExecuting(true);
+            try {
+                await executeSearch(built.sql, `→ ${parsed.targetTable}`);
+            } finally {
+                setIsExecuting(false);
+            }
+            return;
         }
 
-        setIsExecuting(false);
+        if (parsed.type === "multi_value") {
+            const badCol = validateConditionsAgainstColumns(parsed.conditions, columns);
+            if (badCol && columns.length > 0) {
+                toast.error(badCol);
+                return;
+            }
+            const label =
+                parsed.conditions.length > 1
+                    ? `${parsed.table} · ${parsed.conditions.length} filters`
+                    : `${parsed.table}.${parsed.conditions[0]?.column ?? "?"}`;
+            setIsExecuting(true);
+            try {
+                const result = await dbSearchTableDataMulti(
+                    effectiveConnectionId,
+                    parsed.schema,
+                    parsed.table,
+                    parsed.conditions,
+                    200,
+                    1
+                );
+                await finalizeStructuredResult(result, label);
+            } catch {
+                await executeSearch(
+                    buildMultiConditionSQL(parsed.schema, parsed.table, parsed.conditions),
+                    label
+                );
+            } finally {
+                setIsExecuting(false);
+            }
+            return;
+        }
+
+        if (parsed.type !== "value") return;
+
+        const { schema, table, col, op, value } = parsed;
+        setIsExecuting(true);
+        const noValue = op === "IS NULL" || op === "IS NOT NULL";
+        const label = `${table}.${col} ${op}${!noValue && value ? ` ${value}` : ""}`;
+        const oneCondition: FilterCondition[] = [
+            {
+                column: col,
+                operator: op,
+                value: noValue ? null : value || null,
+                logical_op: "AND",
+            },
+        ];
+
+        try {
+            if (noValue) {
+                const sql = `SELECT * FROM "${schema}"."${table}" WHERE "${col}" ${op} LIMIT 200`;
+                await executeSearch(sql, label);
+            } else {
+                try {
+                    const result = await dbSearchTableDataMulti(
+                        effectiveConnectionId,
+                        schema,
+                        table,
+                        oneCondition,
+                        200,
+                        1
+                    );
+                    await finalizeStructuredResult(result, label);
+                } catch {
+                    const sql = buildStructuredCommandSearchSQL(schema, table, col, op, value);
+                    await executeSearch(sql, label);
+                }
+            }
+        } finally {
+            setIsExecuting(false);
+        }
     }, [
         parsed,
         effectiveConnectionId,
-        isDesktopMode,
-        onDesktopSqlRun,
+        columns,
+        searchTopology,
         executeSearch,
-        addRecentSearch,
-        savedBySql,
-        touchSavedSearch,
-        addTab,
-        updateSql,
-        onNavigateToQuery,
-        onOpenChange,
+        finalizeStructuredResult,
     ]);
 
+    const activeParseFragment = tailParsed ?? parsed;
+
     const displayColumns = (() => {
-        if (parsed.type === "column") {
-            const filter = parsed.filter.toLowerCase();
+        if (activeParseFragment.type === "column") {
+            const filter = activeParseFragment.filter.toLowerCase();
             return filter
                 ? columns.filter((c) => c.name.toLowerCase().startsWith(filter))
                 : columns;
         }
-        if (parsed.type === "operator" || parsed.type === "value") return columns;
+        if (activeParseFragment.type === "operator" || activeParseFragment.type === "value") {
+            return columns;
+        }
         return [];
     })().slice(0, 24);
 
     const filteredOperators = (() => {
-        if (parsed.type === "operator") {
-            const filter = parsed.opFilter.toLowerCase();
+        if (activeParseFragment.type === "operator") {
+            const filter = activeParseFragment.opFilter.toLowerCase();
             return filter
                 ? COMMAND_SEARCH_OPERATORS.filter(
                     (op) =>
@@ -1195,10 +1547,39 @@ export function CommandPalette({
         return [];
     })();
 
-    const previewSQL =
-        parsed.type === "value"
-            ? buildStructuredCommandSearchSQL(parsed.schema, parsed.table, parsed.col, parsed.op, parsed.value)
-            : "";
+    const showStructuredColumnPicker =
+        parsed.type === "column" ||
+        (tailParsed?.type === "column" && (parsed.type === "multi_build" || parsed.type === "join_build"));
+
+    const showStructuredOperatorPicker =
+        parsed.type === "operator" ||
+        (tailParsed?.type === "operator" && (parsed.type === "multi_build" || parsed.type === "join_build"));
+
+    const previewSQL = useMemo(() => {
+        if (parsed.type === "value") {
+            return buildStructuredCommandSearchSQL(
+                parsed.schema,
+                parsed.table,
+                parsed.col,
+                parsed.op,
+                parsed.value
+            );
+        }
+        if (parsed.type === "multi_value") {
+            return buildMultiConditionSQL(parsed.schema, parsed.table, parsed.conditions);
+        }
+        if (parsed.type === "join_value" && searchTopology) {
+            const built = buildJoinSearchSQL(
+                searchTopology,
+                parsed.schema,
+                parsed.table,
+                parsed.conditions,
+                parsed.targetTable
+            );
+            return "sql" in built ? built.sql : "";
+        }
+        return "";
+    }, [parsed, searchTopology]);
 
     const allCategoriesSelected = activeCategories.length === ALL_CATEGORIES.length;
 
@@ -1207,6 +1588,80 @@ export function CommandPalette({
         embedded
             ? "h-full w-full max-w-none flex-1 rounded-none border-0 bg-transparent shadow-none"
             : "max-w-[920px] w-[96vw] rounded-lg border border-border/30 bg-gradient-to-b from-card via-card/95 to-muted/30 shadow-2xl"
+    );
+
+    const productionGuardDialog = (
+        <Dialog
+            open={Boolean(paletteProdGuardPending)}
+            onOpenChange={(next) => {
+                if (!next) closePaletteProdGuard();
+            }}
+        >
+            <DialogContent className="sm:max-w-lg">
+                <DialogHeader>
+                    <DialogTitle className="flex items-center gap-2 text-base">
+                        <ShieldCheck className="h-4 w-4 text-red-300" />
+                        Production guard required
+                    </DialogTitle>
+                </DialogHeader>
+                <div className="space-y-3">
+                    <div className="rounded-lg border border-red-500/25 bg-red-500/8 px-3 py-2 text-xs text-red-100/85">
+                        This connection is tagged as{" "}
+                        <span className="font-semibold">{formatEnvironmentLabel(activeEnvironment)}</span>.
+                        Confirm before executing risky SQL.
+                    </div>
+                    <div className="flex flex-wrap items-center gap-1.5">
+                        <span className="text-xs text-muted-foreground">Detected risky statements:</span>
+                        {(paletteProdGuardPending?.classification.riskyStatements ?? []).map((statement) => (
+                            <Badge
+                                key={statement}
+                                variant="outline"
+                                className="h-5 px-1.5 text-[10px] border-red-500/30 text-red-300 bg-red-500/10"
+                            >
+                                {statement}
+                            </Badge>
+                        ))}
+                    </div>
+                    <div className="space-y-1.5">
+                        <label className="text-xs text-muted-foreground">
+                            Type <span className="font-mono text-foreground">{STRICT_PRODUCTION_CONFIRMATION}</span>
+                        </label>
+                        <Input
+                            value={paletteProdGuardTypedText}
+                            onChange={(e) => setPaletteProdGuardTypedText(e.target.value)}
+                            placeholder={STRICT_PRODUCTION_CONFIRMATION}
+                            className="h-9 font-mono text-xs"
+                            autoFocus
+                        />
+                    </div>
+                    <div className="space-y-1.5">
+                        <label className="text-xs text-muted-foreground">Reason for this production query</label>
+                        <Textarea
+                            value={paletteProdGuardReason}
+                            onChange={(e) => setPaletteProdGuardReason(e.target.value)}
+                            placeholder="Describe why this change is needed and what scope it impacts."
+                            className="min-h-24 text-sm resize-none"
+                        />
+                    </div>
+                </div>
+                <DialogFooter>
+                    <Button variant="ghost" size="sm" onClick={closePaletteProdGuard}>
+                        Cancel
+                    </Button>
+                    <Button
+                        size="sm"
+                        className="bg-red-600 hover:bg-red-500 text-white"
+                        onClick={confirmPaletteProdGuard}
+                        disabled={
+                            paletteProdGuardTypedText.trim() !== STRICT_PRODUCTION_CONFIRMATION ||
+                            !paletteProdGuardReason.trim()
+                        }
+                    >
+                        Continue on production
+                    </Button>
+                </DialogFooter>
+            </DialogContent>
+        </Dialog>
     );
 
     const commandTree = (
@@ -1262,6 +1717,28 @@ export function CommandPalette({
                                         {isExecuting && (
                                             <Loader2 className="mr-1 shrink-0 h-4 w-4 animate-spin text-muted-foreground/60" />
                                         )}
+                                        {isConnectedEffective && (
+                                            <Popover open={searchHelpOpen} onOpenChange={setSearchHelpOpen}>
+                                                <PopoverTrigger asChild>
+                                                    <button
+                                                        type="button"
+                                                        className="shrink-0 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-border/40 bg-background/30 text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                                                        aria-label="How to search"
+                                                    >
+                                                        <CircleHelp className="h-4 w-4" />
+                                                    </button>
+                                                </PopoverTrigger>
+                                                <PopoverContent
+                                                    className="w-[min(420px,92vw)] max-h-[min(480px,70vh)] overflow-y-auto text-sm"
+                                                    align="end"
+                                                >
+                                                    <p className="text-xs font-semibold mb-2 border-b border-border/30 pb-2">
+                                                        How to search
+                                                    </p>
+                                                    <SearchHowToPanel />
+                                                </PopoverContent>
+                                            </Popover>
+                                        )}
                                     </div>
                                 </div>
                             </div>
@@ -1288,6 +1765,28 @@ export function CommandPalette({
                                         <Loader2 className="mr-1.5 h-3 w-3 animate-spin" />
                                         {catalogStage || "Indexing"}
                                     </Badge>
+                                )}
+                                {isConnectedEffective && (
+                                    <Popover open={searchHelpOpen} onOpenChange={setSearchHelpOpen}>
+                                        <PopoverTrigger asChild>
+                                            <button
+                                                type="button"
+                                                className="shrink-0 inline-flex h-9 w-9 items-center justify-center rounded-lg border border-border/40 bg-muted/20 text-muted-foreground hover:text-foreground hover:bg-muted/40 transition-colors"
+                                                aria-label="How to search"
+                                            >
+                                                <CircleHelp className="h-4 w-4" />
+                                            </button>
+                                        </PopoverTrigger>
+                                        <PopoverContent
+                                            className="w-[min(420px,92vw)] max-h-[min(480px,70vh)] overflow-y-auto text-sm"
+                                            align="end"
+                                        >
+                                            <p className="text-xs font-semibold mb-2 border-b border-border/30 pb-2">
+                                                How to search
+                                            </p>
+                                            <SearchHowToPanel />
+                                        </PopoverContent>
+                                    </Popover>
                                 )}
                                 <button
                                     type="button"
@@ -1852,13 +2351,21 @@ export function CommandPalette({
                             </>
                         )}
 
-                        {isConnectedEffective && parsed.type === "column" && (
+                        {isConnectedEffective && showStructuredColumnPicker && (
                             <CommandGroup
                                 heading={
                                     <span className="flex items-center gap-1.5">
                                         <span className="text-muted-foreground/60">{parsed.table}</span>
                                         <ChevronRight className="h-3 w-3 text-muted-foreground/30" />
                                         <span>Columns</span>
+                                        {(parsed.type === "multi_build" || parsed.type === "join_build") && (
+                                            <>
+                                                <ChevronRight className="h-3 w-3 text-muted-foreground/30" />
+                                                <span className="text-[11px] text-muted-foreground/45">
+                                                    Add condition
+                                                </span>
+                                            </>
+                                        )}
                                     </span>
                                 }
                             >
@@ -1873,9 +2380,29 @@ export function CommandPalette({
                                             key={col.name}
                                             col={col}
                                             input={input}
-                                            onSelect={() =>
-                                                setInput(`${parsed.schema}.${parsed.table}.${col.name} `)
-                                            }
+                                            onSelect={() => {
+                                                if (parsed.type === "multi_build") {
+                                                    setInput(
+                                                        serializeTableSearchInput(
+                                                            parsed.table,
+                                                            parsed.prior,
+                                                            `${col.name} `,
+                                                            undefined
+                                                        )
+                                                    );
+                                                } else if (parsed.type === "join_build") {
+                                                    setInput(
+                                                        serializeTableSearchInput(
+                                                            parsed.table,
+                                                            parsed.prior,
+                                                            `${col.name} `,
+                                                            parsed.targetTable
+                                                        )
+                                                    );
+                                                } else {
+                                                    setInput(`${parsed.schema}.${parsed.table}.${col.name} `);
+                                                }
+                                            }}
                                         />
                                     ))
                                 ) : (
@@ -1886,13 +2413,17 @@ export function CommandPalette({
                             </CommandGroup>
                         )}
 
-                        {isConnectedEffective && parsed.type === "operator" && (
+                        {isConnectedEffective && showStructuredOperatorPicker && (
                             <CommandGroup
                                 heading={
                                     <span className="flex items-center gap-1.5">
                                         <span className="text-muted-foreground/60">{parsed.table}</span>
                                         <ChevronRight className="h-3 w-3 text-muted-foreground/30" />
-                                        <span className="font-mono text-foreground/80">{parsed.col}</span>
+                                        <span className="font-mono text-foreground/80">
+                                            {activeParseFragment.type === "operator"
+                                                ? activeParseFragment.col
+                                                : ""}
+                                        </span>
                                         <ChevronRight className="h-3 w-3 text-muted-foreground/30" />
                                         <span>Operator</span>
                                     </span>
@@ -1902,9 +2433,37 @@ export function CommandPalette({
                                     <CommandItem
                                         key={op.label}
                                         value={`op-${op.label}`}
-                                        onSelect={() =>
-                                            setInput(`${parsed.schema}.${parsed.table}.${parsed.col} ${op.label} `)
-                                        }
+                                        onSelect={() => {
+                                            if (
+                                                activeParseFragment.type === "operator" &&
+                                                (parsed.type === "multi_build" || parsed.type === "join_build")
+                                            ) {
+                                                const tail = `${activeParseFragment.col} ${op.label} `;
+                                                if (parsed.type === "multi_build") {
+                                                    setInput(
+                                                        serializeTableSearchInput(
+                                                            parsed.table,
+                                                            parsed.prior,
+                                                            tail,
+                                                            undefined
+                                                        )
+                                                    );
+                                                } else {
+                                                    setInput(
+                                                        serializeTableSearchInput(
+                                                            parsed.table,
+                                                            parsed.prior,
+                                                            tail,
+                                                            parsed.targetTable
+                                                        )
+                                                    );
+                                                }
+                                            } else if (parsed.type === "operator") {
+                                                setInput(
+                                                    `${parsed.schema}.${parsed.table}.${parsed.col} ${op.label} `
+                                                );
+                                            }
+                                        }}
                                         className="flex items-center gap-3 rounded-md px-2.5 py-2 cursor-pointer"
                                     >
                                         <span className="w-20 font-mono text-sm font-semibold text-emerald-400/80 shrink-0">
@@ -1931,7 +2490,7 @@ export function CommandPalette({
                                 <CommandGroup heading="Execute">
                                     <CommandItem
                                         value="run-search"
-                                        onSelect={runStructured}
+                                        onSelect={runStructuredSearch}
                                         disabled={isExecuting}
                                         className={cn(
                                             "group flex items-start gap-3 rounded-md px-3 py-3 cursor-pointer",
@@ -2018,7 +2577,7 @@ export function CommandPalette({
                                                             col={col}
                                                             input={input}
                                                             onSelect={() =>
-                                                                setInput(`${parsed.schema}.${parsed.table}.${col.name} `)
+                                                                setInput(`${input.trim()} AND ${col.name} `)
                                                             }
                                                             compact
                                                         />
@@ -2028,6 +2587,114 @@ export function CommandPalette({
                                     </>
                                 )}
                             </>
+                        )}
+
+                        {isConnectedEffective && parsed.type === "multi_value" && (
+                            <CommandGroup heading="Execute multi-condition search">
+                                <CommandItem
+                                    value="run-multi-search"
+                                    onSelect={runStructuredSearch}
+                                    disabled={isExecuting || !previewSQL}
+                                    className={cn(
+                                        "group flex items-start gap-3 rounded-md px-3 py-3 cursor-pointer",
+                                        isExecuting && "opacity-60"
+                                    )}
+                                >
+                                    <div className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-md bg-emerald-500/10 border border-emerald-500/20 shrink-0">
+                                        {isExecuting ? (
+                                            <Loader2 className="h-3.5 w-3.5 text-emerald-400 animate-spin" />
+                                        ) : (
+                                            <Play className="h-3.5 w-3.5 text-emerald-400" />
+                                        )}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-sm font-medium">
+                                            {isExecuting ? "Running..." : "Run search (all conditions)"}
+                                        </p>
+                                        <p className="text-xs font-mono text-muted-foreground/55 mt-0.5 line-clamp-4 break-all whitespace-pre-wrap">
+                                            {previewSQL}
+                                        </p>
+                                        <div className="flex items-center gap-2 mt-1.5">
+                                            <Badge
+                                                variant="outline"
+                                                className="h-4 px-1.5 text-[9px] border-border/20 text-muted-foreground/40"
+                                            >
+                                                {parsed.conditions.length} predicates · LIMIT 200
+                                            </Badge>
+                                        </div>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={(event) => {
+                                            event.stopPropagation();
+                                            toggleSaveQuery(
+                                                `${parsed.table} (${parsed.conditions.length} filters)`,
+                                                input.trim(),
+                                                previewSQL
+                                            );
+                                        }}
+                                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/30 hover:bg-muted/50"
+                                        title="Save search"
+                                    >
+                                        {savedBySignature.has(
+                                            searchSignature(`${parsed.table} (${parsed.conditions.length} filters)`, previewSQL)
+                                        ) ? (
+                                            <BookmarkCheck className="h-3.5 w-3.5 text-emerald-400" />
+                                        ) : (
+                                            <Bookmark className="h-3.5 w-3.5 text-muted-foreground/70" />
+                                        )}
+                                    </button>
+                                </CommandItem>
+                            </CommandGroup>
+                        )}
+
+                        {isConnectedEffective && parsed.type === "join_value" && (
+                            <CommandGroup heading="Execute related-table search">
+                                <CommandItem
+                                    value="run-join-search"
+                                    onSelect={runStructuredSearch}
+                                    disabled={isExecuting || !previewSQL}
+                                    className={cn(
+                                        "group flex items-start gap-3 rounded-md px-3 py-3 cursor-pointer",
+                                        isExecuting && "opacity-60"
+                                    )}
+                                >
+                                    <div className="mt-0.5 flex h-7 w-7 items-center justify-center rounded-md bg-cyan-500/10 border border-cyan-500/20 shrink-0">
+                                        {isExecuting ? (
+                                            <Loader2 className="h-3.5 w-3.5 text-cyan-400 animate-spin" />
+                                        ) : (
+                                            <Play className="h-3.5 w-3.5 text-cyan-400" />
+                                        )}
+                                    </div>
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-sm font-medium">
+                                            {isExecuting ? "Running..." : `Load rows from “${parsed.targetTable}” via FK joins`}
+                                        </p>
+                                        <p className="text-xs font-mono text-muted-foreground/55 mt-0.5 line-clamp-4 break-all whitespace-pre-wrap">
+                                            {previewSQL}
+                                        </p>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={(event) => {
+                                            event.stopPropagation();
+                                            toggleSaveQuery(
+                                                `→ ${parsed.targetTable}`,
+                                                input.trim(),
+                                                previewSQL
+                                            );
+                                        }}
+                                        className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/30 hover:bg-muted/50"
+                                        title="Save search"
+                                    >
+                                        {savedBySignature.has(searchSignature(`→ ${parsed.targetTable}`, previewSQL)) ? (
+                                            <BookmarkCheck className="h-3.5 w-3.5 text-emerald-400" />
+                                        ) : (
+                                            <Bookmark className="h-3.5 w-3.5 text-muted-foreground/70" />
+                                        )}
+                                    </button>
+                                </CommandItem>
+                            </CommandGroup>
                         )}
 
                         {isConnectedEffective && parsed.type === "ai_nl" && (
@@ -2051,6 +2718,9 @@ export function CommandPalette({
                                         <span className="text-[10px] text-muted-foreground/30 font-mono mt-1 block">
                                             e.g. ? show all active drivers
                                         </span>
+                                        <span className="text-[10px] text-muted-foreground/35 mt-2 block">
+                                            Requires a Gemini API key in Settings → AI.
+                                        </span>
                                     </div>
                                 ) : isAiLoading ? (
                                     <div className="flex items-center gap-2 px-3 py-4 text-muted-foreground/50">
@@ -2058,20 +2728,27 @@ export function CommandPalette({
                                         <span className="text-sm">Nova is generating SQL...</span>
                                     </div>
                                 ) : aiError ? (
-                                    <div className="px-3 py-3 text-xs text-destructive/70">
-                                        {aiError}
+                                    <div className="px-3 py-3 space-y-1.5">
+                                        <p className="text-xs text-destructive/70">{aiError}</p>
+                                        {aiNlExplanation ? (
+                                            <p className="text-[11px] text-muted-foreground/60 leading-snug">
+                                                {aiNlExplanation}
+                                            </p>
+                                        ) : null}
                                     </div>
-                                ) : aiGeneratedSQL ? (
+                                ) : aiGeneratedSQL && displayAiSql ? (
                                     <CommandItem
                                         value="run-ai-sql"
-                                        onSelect={() =>
-                                            executeSearch(
-                                                aiGeneratedSQL,
+                                        onSelect={() => {
+                                            const nlQueryLabel =
                                                 parsed.query.length > 50
-                                                    ? parsed.query.substring(0, 50) + "..."
-                                                    : parsed.query
-                                            )
-                                        }
+                                                    ? `${parsed.query.substring(0, 50)}...`
+                                                    : parsed.query;
+                                            void executeSearch(
+                                                aiGeneratedSQL,
+                                                aiNlTitle.trim() || nlQueryLabel
+                                            );
+                                        }}
                                         disabled={isExecuting}
                                         className="group flex items-start gap-3 rounded-md px-3 py-3 cursor-pointer"
                                     >
@@ -2083,23 +2760,51 @@ export function CommandPalette({
                                             )}
                                         </div>
                                         <div className="flex-1 min-w-0">
-                                            <p className="text-sm font-medium">Run AI-generated query</p>
-                                            <p className="mt-0.5 text-xs font-mono text-muted-foreground/55 line-clamp-3 break-all whitespace-pre-wrap">
-                                                {aiGeneratedSQL}
+                                            <p className="text-sm font-medium">
+                                                {aiNlTitle.trim() || "Run AI-generated query"}
+                                            </p>
+                                            {aiNlExplanation ? (
+                                                <p className="mt-1 text-[11px] text-muted-foreground/65 leading-snug">
+                                                    {aiNlExplanation}
+                                                </p>
+                                            ) : null}
+                                            <div className="mt-2 flex items-center gap-2">
+                                                <button
+                                                    type="button"
+                                                    onClick={(e) => {
+                                                        e.stopPropagation();
+                                                        setAiSqlPretty((v) => !v);
+                                                    }}
+                                                    className="text-[10px] uppercase tracking-wide text-violet-400/80 hover:text-violet-300"
+                                                >
+                                                    {aiSqlPretty ? "Compact SQL" : "Format SQL"}
+                                                </button>
+                                            </div>
+                                            <p className="mt-1 text-xs font-mono text-muted-foreground/55 line-clamp-6 break-all whitespace-pre-wrap">
+                                                {displayAiSql}
                                             </p>
                                         </div>
                                         <button
                                             type="button"
                                             onClick={(event) => {
                                                 event.stopPropagation();
-                                                const queryLabel = parsed.query.length > 50
-                                                    ? parsed.query.substring(0, 50) + "..."
-                                                    : parsed.query;
-                                                toggleSaveQuery(queryLabel, queryLabel, aiGeneratedSQL);
+                                                const nlQueryLabel =
+                                                    parsed.query.length > 50
+                                                        ? `${parsed.query.substring(0, 50)}...`
+                                                        : parsed.query;
+                                                const saveLabel = aiNlTitle.trim() || nlQueryLabel;
+                                                toggleSaveQuery(saveLabel, nlQueryLabel, aiGeneratedSQL);
                                             }}
                                             className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-border/30 hover:bg-muted/50"
                                         >
-                                            {savedBySignature.has(searchSignature(parsed.query.length > 50 ? parsed.query.substring(0, 50) + "..." : parsed.query, aiGeneratedSQL)) ? (
+                                            {savedBySignature.has(
+                                                searchSignature(
+                                                    parsed.query.length > 50
+                                                        ? `${parsed.query.substring(0, 50)}...`
+                                                        : parsed.query,
+                                                    aiGeneratedSQL
+                                                )
+                                            ) ? (
                                                 <BookmarkCheck className="h-3.5 w-3.5 text-emerald-400" />
                                             ) : (
                                                 <Bookmark className="h-3.5 w-3.5 text-muted-foreground/70" />
@@ -2184,9 +2889,13 @@ export function CommandPalette({
                                             ? "Select operator"
                                             : parsed.type === "value"
                                                 ? "Type value · ↵ run"
-                                                : parsed.type === "ai_nl"
-                                                    ? "Nova AI · ↵ run"
-                                                    : "SQL mode · ↵ run"}
+                                                : parsed.type === "multi_value" || parsed.type === "join_value"
+                                                    ? "Multi search · ↵ run"
+                                                    : parsed.type === "multi_build" || parsed.type === "join_build"
+                                                        ? "Finish condition"
+                                                        : parsed.type === "ai_nl"
+                                                            ? "Nova AI · ↵ run"
+                                                            : "SQL mode · ↵ run"}
                             </span>
                         </div>
                     )}
@@ -2195,20 +2904,26 @@ export function CommandPalette({
 
     if (embedded) {
         return (
-            <div className={cn(shellClassName, className)}>
-                <span className="sr-only">Command palette</span>
-                {commandTree}
-            </div>
+            <>
+                {productionGuardDialog}
+                <div className={cn(shellClassName, className)}>
+                    <span className="sr-only">Command palette</span>
+                    {commandTree}
+                </div>
+            </>
         );
     }
 
     return (
-        <Dialog open={open} onOpenChange={onOpenChange}>
-            <DialogContent className="overflow-hidden p-0 shadow-2xl border-border/30 max-w-[920px] w-[96vw] bg-gradient-to-b from-card via-card/95 to-muted/30 backdrop-blur-xl">
-                <DialogTitle className="sr-only">Command palette</DialogTitle>
-                {commandTree}
-            </DialogContent>
-        </Dialog>
+        <>
+            {productionGuardDialog}
+            <Dialog open={open} onOpenChange={onOpenChange}>
+                <DialogContent className="overflow-hidden p-0 shadow-2xl border-border/30 max-w-[920px] w-[96vw] bg-gradient-to-b from-card via-card/95 to-muted/30 backdrop-blur-xl">
+                    <DialogTitle className="sr-only">Command palette</DialogTitle>
+                    {commandTree}
+                </DialogContent>
+            </Dialog>
+        </>
     );
 }
 

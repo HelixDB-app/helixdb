@@ -19,6 +19,7 @@ export type ApiFeatureType =
     | "row-form-fill"
     | "index-optimization"
     | "query-error"
+    | "nl-search"
     | "query-explain"
     | "schema-doc"
     | "git"

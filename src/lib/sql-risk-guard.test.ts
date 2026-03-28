@@ -3,6 +3,7 @@ import test from "node:test";
 import {
     classifySqlRisk,
     shouldRequireProductionGuard,
+    validateNlGeneratedSql,
 } from "./sql-risk-guard.ts";
 
 test("classifySqlRisk marks risky write statements", () => {
@@ -72,4 +73,16 @@ test("production guard required only in prod + strict mode + risky SQL", () => {
     assert.equal(prodRelaxed.required, false);
     assert.equal(stagingStrict.required, false);
     assert.equal(prodSelect.required, false);
+});
+
+test("validateNlGeneratedSql accepts SELECT and WITH SELECT", () => {
+    assert.equal(validateNlGeneratedSql("SELECT 1").ok, true);
+    assert.equal(validateNlGeneratedSql("WITH a AS (SELECT 1) SELECT * FROM a").ok, true);
+});
+
+test("validateNlGeneratedSql rejects DML and INSERT", () => {
+    const upd = validateNlGeneratedSql("UPDATE t SET x = 1");
+    assert.equal(upd.ok, false);
+    const ins = validateNlGeneratedSql("INSERT INTO t VALUES (1)");
+    assert.equal(ins.ok, false);
 });

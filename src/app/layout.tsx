@@ -98,29 +98,29 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           <PosthogAppProvider>
-          <TooltipProvider delayDuration={200}>
-            <FirebaseProvider>
-              <PosthogAuthBridge />
-              <NetworkStatusProvider>
-                <NotificationProvider>
-                  <NotificationRTDBProvider>
-                    <SubscriptionProvider>
-                      <TrialProvider>
-                        <TrialGate />
-                        <TrialBanner />
-                        <AppUpdateManager />
-                        <WhatsNewModal />
-                        <ErrorBoundary>
-                          {children}
-                        </ErrorBoundary>
-                      </TrialProvider>
-                    </SubscriptionProvider>
-                  </NotificationRTDBProvider>
-                </NotificationProvider>
-              </NetworkStatusProvider>
-            </FirebaseProvider>
-          </TooltipProvider>
-          <Toaster />
+            <TooltipProvider delayDuration={200}>
+              <FirebaseProvider>
+                <PosthogAuthBridge />
+                <NetworkStatusProvider>
+                  <NotificationProvider>
+                    <NotificationRTDBProvider>
+                      <SubscriptionProvider>
+                        <TrialProvider>
+                          {/* <TrialGate /> */}
+                          <TrialBanner />
+                          <AppUpdateManager />
+                          <WhatsNewModal />
+                          <ErrorBoundary>
+                            {children}
+                          </ErrorBoundary>
+                        </TrialProvider>
+                      </SubscriptionProvider>
+                    </NotificationRTDBProvider>
+                  </NotificationProvider>
+                </NetworkStatusProvider>
+              </FirebaseProvider>
+            </TooltipProvider>
+            <Toaster />
           </PosthogAppProvider>
         </ThemeProvider>
       </body>
