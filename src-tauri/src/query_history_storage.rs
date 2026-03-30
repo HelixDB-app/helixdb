@@ -302,6 +302,50 @@ fn ensure_schema(conn: &Connection) -> Result<(), String> {
         }
     }
 
+    conn.execute_batch(
+        r#"
+        CREATE TABLE IF NOT EXISTS slow_query_snapshot (
+          id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+          connection_id        TEXT    NOT NULL,
+          query_fingerprint    TEXT    NOT NULL,
+          query_text_preview   TEXT,
+          captured_at          INTEGER NOT NULL,
+          snapshot_hour        INTEGER NOT NULL,
+          mean_exec_time_ms    REAL    NOT NULL,
+          max_exec_time_ms     REAL    NOT NULL,
+          min_exec_time_ms     REAL    NOT NULL,
+          total_exec_time_ms   REAL    NOT NULL,
+          calls                INTEGER NOT NULL,
+          rows_total           INTEGER NOT NULL,
+          shared_blks_hit      INTEGER NOT NULL,
+          shared_blks_read     INTEGER NOT NULL,
+          temp_blks_written    INTEGER NOT NULL,
+          hit_percent          REAL    NOT NULL,
+          stats_json           TEXT,
+          UNIQUE(connection_id, query_fingerprint, snapshot_hour)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sq_snap_conn_fp_time
+          ON slow_query_snapshot(connection_id, query_fingerprint, captured_at DESC);
+
+        CREATE TABLE IF NOT EXISTS slow_query_insight (
+          connection_id         TEXT    NOT NULL,
+          query_fingerprint     TEXT    NOT NULL,
+          query_text_last_seen  TEXT    NOT NULL,
+          explain_json          TEXT,
+          ai_analysis_json      TEXT,
+          note                  TEXT,
+          pinned                INTEGER NOT NULL DEFAULT 0,
+          updated_at            INTEGER NOT NULL,
+          PRIMARY KEY (connection_id, query_fingerprint)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_sq_insight_pinned
+          ON slow_query_insight(connection_id, pinned);
+        "#,
+    )
+    .map_err(|e| format!("Failed to initialize slow query schema: {}", e))?;
+
     Ok(())
 }
 
@@ -1575,4 +1619,567 @@ pub fn export_csv(
 fn csv_escape(input: &str) -> String {
     let escaped = input.replace('"', "\"\"");
     format!("\"{}\"", escaped)
+}
+
+// ─── Slow query tracking (pg_stat_statements snapshots + cached insight) ───
+
+const SLOW_SNAPSHOT_RETENTION_MS: i64 = 90_i64 * 24 * 3600 * 1000;
+const MS_PER_HOUR: i64 = 3600 * 1000;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlowQueryPgStatRow {
+    pub query_fingerprint: String,
+    pub query: String,
+    pub calls: i64,
+    pub total_exec_time_ms: f64,
+    pub mean_exec_time_ms: f64,
+    pub min_exec_time_ms: f64,
+    pub max_exec_time_ms: f64,
+    pub rows: i64,
+    pub shared_blks_hit: i64,
+    pub shared_blks_read: i64,
+    pub temp_blks_written: i64,
+    pub hit_percent: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlowQuerySnapshotRecord {
+    pub id: i64,
+    pub connection_id: String,
+    pub query_fingerprint: String,
+    pub captured_at: i64,
+    pub mean_exec_time_ms: f64,
+    pub max_exec_time_ms: f64,
+    pub min_exec_time_ms: f64,
+    pub total_exec_time_ms: f64,
+    pub calls: i64,
+    pub rows_total: i64,
+    pub hit_percent: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlowQueryInsight {
+    pub connection_id: String,
+    pub query_fingerprint: String,
+    pub query_text_last_seen: String,
+    pub explain_json: Option<String>,
+    pub ai_analysis_json: Option<String>,
+    pub note: Option<String>,
+    pub pinned: bool,
+    pub updated_at: i64,
+}
+
+fn prune_old_slow_snapshots(conn: &Connection, now_ms: i64) -> Result<(), String> {
+    let cutoff = now_ms.saturating_sub(SLOW_SNAPSHOT_RETENTION_MS);
+    conn.execute(
+        "DELETE FROM slow_query_snapshot WHERE captured_at < ?",
+        params![cutoff],
+    )
+    .map_err(|e| format!("Failed to prune slow query snapshots: {}", e))?;
+    Ok(())
+}
+
+/// Insert/update hourly snapshots from pg_stat_statements rows. Returns rows written/updated.
+pub fn ingest_pg_stat_slow_snapshots(
+    app_data_dir: Option<PathBuf>,
+    connection_id: &str,
+    rows: &[SlowQueryPgStatRow],
+) -> Result<u32, String> {
+    if rows.is_empty() {
+        return Ok(0);
+    }
+    let conn = open_history_db(app_data_dir)?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    prune_old_slow_snapshots(&conn, now_ms)?;
+    let snapshot_hour = now_ms / MS_PER_HOUR;
+
+    let preview = |q: &str| -> String {
+        q.chars().take(2000).collect::<String>()
+    };
+
+    let mut count: u32 = 0;
+    for row in rows {
+        let stats_json = serde_json::to_string(row).unwrap_or_else(|_| "{}".to_string());
+        conn.execute(
+            r#"
+            INSERT INTO slow_query_snapshot (
+              connection_id, query_fingerprint, query_text_preview, captured_at, snapshot_hour,
+              mean_exec_time_ms, max_exec_time_ms, min_exec_time_ms, total_exec_time_ms,
+              calls, rows_total, shared_blks_hit, shared_blks_read, temp_blks_written,
+              hit_percent, stats_json
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(connection_id, query_fingerprint, snapshot_hour) DO UPDATE SET
+              query_text_preview = excluded.query_text_preview,
+              captured_at = excluded.captured_at,
+              mean_exec_time_ms = excluded.mean_exec_time_ms,
+              max_exec_time_ms = excluded.max_exec_time_ms,
+              min_exec_time_ms = excluded.min_exec_time_ms,
+              total_exec_time_ms = excluded.total_exec_time_ms,
+              calls = excluded.calls,
+              rows_total = excluded.rows_total,
+              shared_blks_hit = excluded.shared_blks_hit,
+              shared_blks_read = excluded.shared_blks_read,
+              temp_blks_written = excluded.temp_blks_written,
+              hit_percent = excluded.hit_percent,
+              stats_json = excluded.stats_json
+            "#,
+            params![
+                connection_id,
+                row.query_fingerprint,
+                preview(&row.query),
+                now_ms,
+                snapshot_hour,
+                row.mean_exec_time_ms,
+                row.max_exec_time_ms,
+                row.min_exec_time_ms,
+                row.total_exec_time_ms,
+                row.calls,
+                row.rows,
+                row.shared_blks_hit,
+                row.shared_blks_read,
+                row.temp_blks_written,
+                row.hit_percent,
+                stats_json,
+            ],
+        )
+        .map_err(|e| format!("Failed to ingest slow query snapshot: {}", e))?;
+        count += 1;
+
+        conn.execute(
+            r#"
+            INSERT INTO slow_query_insight (
+              connection_id, query_fingerprint, query_text_last_seen,
+              explain_json, ai_analysis_json, note, pinned, updated_at
+            ) VALUES (?, ?, ?, NULL, NULL, NULL, 0, ?)
+            ON CONFLICT(connection_id, query_fingerprint) DO UPDATE SET
+              query_text_last_seen = excluded.query_text_last_seen,
+              updated_at = excluded.updated_at
+            "#,
+            params![connection_id, row.query_fingerprint, row.query.as_str(), now_ms],
+        )
+        .map_err(|e| format!("Failed to upsert slow query insight stub: {}", e))?;
+    }
+
+    Ok(count)
+}
+
+pub fn list_slow_query_snapshots(
+    app_data_dir: Option<PathBuf>,
+    connection_id: &str,
+    query_fingerprint: &str,
+    limit: u32,
+) -> Result<Vec<SlowQuerySnapshotRecord>, String> {
+    let conn = open_history_db(app_data_dir)?;
+    let lim = limit.clamp(1, 500) as i64;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT id, connection_id, query_fingerprint, captured_at,
+                   mean_exec_time_ms, max_exec_time_ms, min_exec_time_ms, total_exec_time_ms,
+                   calls, rows_total, hit_percent
+            FROM slow_query_snapshot
+            WHERE connection_id = ? AND query_fingerprint = ?
+            ORDER BY captured_at DESC
+            LIMIT ?
+            "#,
+        )
+        .map_err(|e| format!("Failed to prepare slow snapshot list: {}", e))?;
+
+    let rows = stmt
+        .query_map(params![connection_id, query_fingerprint, lim], |r| {
+            Ok(SlowQuerySnapshotRecord {
+                id: r.get(0)?,
+                connection_id: r.get(1)?,
+                query_fingerprint: r.get(2)?,
+                captured_at: r.get(3)?,
+                mean_exec_time_ms: r.get(4)?,
+                max_exec_time_ms: r.get(5)?,
+                min_exec_time_ms: r.get(6)?,
+                total_exec_time_ms: r.get(7)?,
+                calls: r.get(8)?,
+                rows_total: r.get(9)?,
+                hit_percent: r.get(10)?,
+            })
+        })
+        .map_err(|e| format!("Failed to list slow snapshots: {}", e))?;
+
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+pub fn get_slow_query_insight(
+    app_data_dir: Option<PathBuf>,
+    connection_id: &str,
+    query_fingerprint: &str,
+) -> Result<Option<SlowQueryInsight>, String> {
+    let conn = open_history_db(app_data_dir)?;
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT connection_id, query_fingerprint, query_text_last_seen,
+                   explain_json, ai_analysis_json, note, pinned, updated_at
+            FROM slow_query_insight
+            WHERE connection_id = ? AND query_fingerprint = ?
+            "#,
+        )
+        .map_err(|e| format!("Failed to prepare slow insight get: {}", e))?;
+
+    let mut rows = stmt
+        .query_map(params![connection_id, query_fingerprint], |r| {
+            Ok(SlowQueryInsight {
+                connection_id: r.get(0)?,
+                query_fingerprint: r.get(1)?,
+                query_text_last_seen: r.get(2)?,
+                explain_json: r.get(3)?,
+                ai_analysis_json: r.get(4)?,
+                note: r.get(5)?,
+                pinned: r.get::<_, i64>(6)? != 0,
+                updated_at: r.get(7)?,
+            })
+        })
+        .map_err(|e| format!("Failed to query slow insight: {}", e))?;
+
+    match rows.next() {
+        Some(row) => Ok(Some(row.map_err(|e| e.to_string())?)),
+        None => Ok(None),
+    }
+}
+
+pub fn slow_query_save_explain_for_fingerprint(
+    app_data_dir: Option<PathBuf>,
+    connection_id: &str,
+    query_fingerprint: &str,
+    query_text: &str,
+    explain_json: String,
+) -> Result<(), String> {
+    let conn = open_history_db(app_data_dir)?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    conn.execute(
+        r#"
+        INSERT INTO slow_query_insight (
+          connection_id, query_fingerprint, query_text_last_seen,
+          explain_json, ai_analysis_json, note, pinned, updated_at
+        ) VALUES (?, ?, ?, ?, NULL, NULL, 0, ?)
+        ON CONFLICT(connection_id, query_fingerprint) DO UPDATE SET
+          query_text_last_seen = excluded.query_text_last_seen,
+          explain_json = excluded.explain_json,
+          updated_at = excluded.updated_at
+        "#,
+        params![
+            connection_id,
+            query_fingerprint,
+            query_text,
+            explain_json,
+            now_ms
+        ],
+    )
+    .map_err(|e| format!("Failed to save slow query explain: {}", e))?;
+    Ok(())
+}
+
+pub fn slow_query_save_ai_for_fingerprint(
+    app_data_dir: Option<PathBuf>,
+    connection_id: &str,
+    query_fingerprint: &str,
+    query_text: &str,
+    ai_analysis_json: String,
+) -> Result<(), String> {
+    let conn = open_history_db(app_data_dir)?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    conn.execute(
+        r#"
+        INSERT INTO slow_query_insight (
+          connection_id, query_fingerprint, query_text_last_seen,
+          explain_json, ai_analysis_json, note, pinned, updated_at
+        ) VALUES (?, ?, ?, NULL, ?, NULL, 0, ?)
+        ON CONFLICT(connection_id, query_fingerprint) DO UPDATE SET
+          query_text_last_seen = excluded.query_text_last_seen,
+          ai_analysis_json = excluded.ai_analysis_json,
+          updated_at = excluded.updated_at
+        "#,
+        params![
+            connection_id,
+            query_fingerprint,
+            query_text,
+            ai_analysis_json,
+            now_ms
+        ],
+    )
+    .map_err(|e| format!("Failed to save slow query AI analysis: {}", e))?;
+    Ok(())
+}
+
+pub fn slow_query_save_note_for_fingerprint(
+    app_data_dir: Option<PathBuf>,
+    connection_id: &str,
+    query_fingerprint: &str,
+    query_text: &str,
+    note: Option<String>,
+) -> Result<(), String> {
+    let conn = open_history_db(app_data_dir)?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    conn.execute(
+        r#"
+        INSERT INTO slow_query_insight (
+          connection_id, query_fingerprint, query_text_last_seen,
+          explain_json, ai_analysis_json, note, pinned, updated_at
+        ) VALUES (?, ?, ?, NULL, NULL, ?, 0, ?)
+        ON CONFLICT(connection_id, query_fingerprint) DO UPDATE SET
+          query_text_last_seen = excluded.query_text_last_seen,
+          note = excluded.note,
+          updated_at = excluded.updated_at
+        "#,
+        params![connection_id, query_fingerprint, query_text, note, now_ms],
+    )
+    .map_err(|e| format!("Failed to save slow query note: {}", e))?;
+    Ok(())
+}
+
+pub fn slow_query_set_pinned_for_fingerprint(
+    app_data_dir: Option<PathBuf>,
+    connection_id: &str,
+    query_fingerprint: &str,
+    query_text: &str,
+    pinned: bool,
+) -> Result<(), String> {
+    let conn = open_history_db(app_data_dir)?;
+    let now_ms = chrono::Utc::now().timestamp_millis();
+    let pin = if pinned { 1_i64 } else { 0_i64 };
+    conn.execute(
+        r#"
+        INSERT INTO slow_query_insight (
+          connection_id, query_fingerprint, query_text_last_seen,
+          explain_json, ai_analysis_json, note, pinned, updated_at
+        ) VALUES (?, ?, ?, NULL, NULL, NULL, ?, ?)
+        ON CONFLICT(connection_id, query_fingerprint) DO UPDATE SET
+          query_text_last_seen = excluded.query_text_last_seen,
+          pinned = excluded.pinned,
+          updated_at = excluded.updated_at
+        "#,
+        params![connection_id, query_fingerprint, query_text, pin, now_ms],
+    )
+    .map_err(|e| format!("Failed to set slow query pinned: {}", e))?;
+    Ok(())
+}
+
+pub fn list_slow_query_pinned_fingerprints(
+    app_data_dir: Option<PathBuf>,
+    connection_id: &str,
+) -> Result<Vec<String>, String> {
+    let conn = open_history_db(app_data_dir)?;
+    let mut stmt = conn
+        .prepare(
+            "SELECT query_fingerprint FROM slow_query_insight WHERE connection_id = ? AND pinned = 1",
+        )
+        .map_err(|e| format!("Failed to prepare pinned list: {}", e))?;
+    let rows = stmt
+        .query_map(params![connection_id], |r| r.get::<_, String>(0))
+        .map_err(|e| format!("Failed to list pinned fingerprints: {}", e))?;
+    let mut out = Vec::new();
+    for row in rows {
+        out.push(row.map_err(|e| e.to_string())?);
+    }
+    Ok(out)
+}
+
+const MS_PER_DAY_F: f64 = 86400000.0;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SlowQueryTrendRisk {
+    pub query_fingerprint: String,
+    pub query_text_preview: Option<String>,
+    pub snapshot_count: i64,
+    pub span_days: f64,
+    pub mean_ms_slope_per_day: f64,
+    pub last_mean_ms: f64,
+    pub baseline_median_ms: f64,
+    pub last_vs_baseline_ratio: f64,
+    pub mean_ms_volatility: f64,
+    pub risk_level: String,
+    pub risk_score: f64,
+    pub summary: String,
+}
+
+fn median_sorted(mut v: Vec<f64>) -> f64 {
+    if v.is_empty() {
+        return 0.0;
+    }
+    v.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let mid = v.len() / 2;
+    if v.len() % 2 == 0 {
+        (v[mid - 1] + v[mid]) / 2.0
+    } else {
+        v[mid]
+    }
+}
+
+fn stddev_sample(xs: &[f64]) -> f64 {
+    if xs.len() < 2 {
+        return 0.0;
+    }
+    let n = xs.len() as f64;
+    let mean = xs.iter().sum::<f64>() / n;
+    let var = xs.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / (n - 1.0);
+    var.sqrt()
+}
+
+fn linear_slope(xs: &[f64], ys: &[f64]) -> f64 {
+    if xs.len() != ys.len() || xs.len() < 2 {
+        return 0.0;
+    }
+    let n = xs.len() as f64;
+    let sum_x: f64 = xs.iter().sum();
+    let sum_y: f64 = ys.iter().sum();
+    let sum_xy: f64 = xs.iter().zip(ys.iter()).map(|(a, b)| a * b).sum();
+    let sum_xx: f64 = xs.iter().map(|x| x * x).sum();
+    let denom = n * sum_xx - sum_x * sum_x;
+    if denom.abs() < 1e-12 {
+        return 0.0;
+    }
+    (n * sum_xy - sum_x * sum_y) / denom
+}
+
+/// Rank statement fingerprints by deteriorating mean execution time from local snapshots.
+pub fn list_slow_query_trend_risks(
+    app_data_dir: Option<PathBuf>,
+    connection_id: &str,
+    min_snapshots: u32,
+    limit: u32,
+) -> Result<Vec<SlowQueryTrendRisk>, String> {
+    let conn = open_history_db(app_data_dir)?;
+    let min_s = min_snapshots.max(3) as i64;
+    let out_limit = limit.clamp(1, 50) as usize;
+    let max_fps = 120_i64;
+
+    let mut stmt = conn
+        .prepare(
+            r#"
+            SELECT query_fingerprint
+            FROM slow_query_snapshot
+            WHERE connection_id = ?
+            GROUP BY query_fingerprint
+            HAVING COUNT(*) >= ?
+            LIMIT ?
+            "#,
+        )
+        .map_err(|e| format!("Failed to prepare trend risk fingerprints: {}", e))?;
+
+    let fingerprints: Vec<String> = stmt
+        .query_map(params![connection_id, min_s, max_fps], |r| r.get(0))
+        .map_err(|e| format!("Failed to list trend risk fingerprints: {}", e))?
+        .filter_map(|x| x.ok())
+        .collect();
+
+    let mut risks: Vec<SlowQueryTrendRisk> = Vec::new();
+
+    for fp in fingerprints {
+        let mut snap_stmt = conn
+            .prepare(
+                r#"
+                SELECT captured_at, mean_exec_time_ms, query_text_preview
+                FROM slow_query_snapshot
+                WHERE connection_id = ? AND query_fingerprint = ?
+                ORDER BY captured_at ASC
+                LIMIT 250
+                "#,
+            )
+            .map_err(|e| format!("Failed to prepare trend snapshots: {}", e))?;
+
+        let snaps: Vec<(i64, f64, Option<String>)> = snap_stmt
+            .query_map(params![connection_id, &fp], |r| {
+                Ok((r.get(0)?, r.get(1)?, r.get(2)?))
+            })
+            .map_err(|e| format!("Failed to read trend snapshots: {}", e))?
+            .filter_map(|x| x.ok())
+            .collect();
+
+        if snaps.len() < min_s as usize {
+            continue;
+        }
+
+        let cnt = snaps.len() as i64;
+        let t0 = snaps[0].0 as f64;
+        let xs: Vec<f64> = snaps
+            .iter()
+            .map(|(t, _, _)| (*t as f64 - t0) / MS_PER_DAY_F)
+            .collect();
+        let ys: Vec<f64> = snaps.iter().map(|(_, m, _)| *m).collect();
+        let slope = linear_slope(&xs, &ys);
+        let last_mean = *ys.last().unwrap_or(&0.0);
+        let baseline_slice: Vec<f64> = if ys.len() > 1 {
+            ys[..ys.len() - 1].to_vec()
+        } else {
+            vec![]
+        };
+        let baseline_median = median_sorted(baseline_slice.clone());
+        let last_vs = if baseline_median > 1e-6 {
+            last_mean / baseline_median
+        } else {
+            1.0
+        };
+        let vol = stddev_sample(&ys);
+        let span_days = ((snaps.last().unwrap().0 as f64 - t0) / MS_PER_DAY_F).max(0.0);
+
+        let mean_y = ys.iter().sum::<f64>() / ys.len() as f64;
+        let vol_ratio = if mean_y > 1e-6 { vol / mean_y } else { 0.0 };
+
+        let mut score = 0.0_f64;
+        if slope > 0.0 {
+            score += slope * 2.0;
+        }
+        if last_vs > 1.15 {
+            score += (last_vs - 1.0) * 50.0;
+        }
+        score += vol_ratio * 20.0;
+
+        let risk_level = if score >= 35.0 || (slope > 5.0 && span_days >= 0.5) {
+            "high"
+        } else if score >= 15.0 || slope > 1.0 || last_vs > 1.25 {
+            "medium"
+        } else {
+            "low"
+        };
+
+        let preview = snaps
+            .iter()
+            .rev()
+            .find_map(|(_, _, p)| p.clone())
+            .filter(|s| !s.is_empty());
+
+        let summary = format!(
+            "{} snapshots over {:.1}d; slope {:.2} ms/day; last {:.0}ms vs baseline median {:.0}ms ({:.2}x)",
+            cnt,
+            span_days.max(0.01),
+            slope,
+            last_mean,
+            baseline_median,
+            last_vs
+        );
+
+        risks.push(SlowQueryTrendRisk {
+            query_fingerprint: fp,
+            query_text_preview: preview,
+            snapshot_count: cnt,
+            span_days,
+            mean_ms_slope_per_day: slope,
+            last_mean_ms: last_mean,
+            baseline_median_ms: baseline_median,
+            last_vs_baseline_ratio: last_vs,
+            mean_ms_volatility: vol,
+            risk_level: risk_level.to_string(),
+            risk_score: score,
+            summary,
+        });
+    }
+
+    risks.sort_by(|a, b| {
+        b.risk_score
+            .partial_cmp(&a.risk_score)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
+    risks.truncate(out_limit);
+    Ok(risks)
 }

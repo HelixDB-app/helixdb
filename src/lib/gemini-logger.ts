@@ -18,6 +18,8 @@ export type ApiFeatureType =
     | "seed-data"
     | "row-form-fill"
     | "index-optimization"
+    | "query-optimization"
+    | "query-performance-forecast"
     | "query-error"
     | "nl-search"
     | "query-explain"

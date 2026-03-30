@@ -77,6 +77,9 @@ export interface AppSettings {
     aiCompletionUrl: string;
     aiWorkerUrl: string;
 
+    /** When true, opening Query History on pg_stat tab ingests a snapshot (local SQLite). */
+    queryHistoryAutoSnapshotPgStat: boolean;
+
     // Git AI
     gitAiProvider: GitAiProvider;
     cloudflareApiToken: string;
@@ -121,6 +124,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     aiShowSuggestionLatency: true,
     aiCompletionUrl: "",
     aiWorkerUrl: "",
+    queryHistoryAutoSnapshotPgStat: false,
     gitAiProvider: "cloudflare",
     cloudflareApiToken: "",
     cloudflareAccountId: "",
@@ -141,7 +145,18 @@ export const useSettingsStore = create<SettingsStore>()(
         }),
         {
             name: "helix-settings",
-            version: 3,
+            version: 4,
+            migrate: (persisted, version) => {
+                const p = persisted as Partial<AppSettings>;
+                if (version < 4) {
+                    return {
+                        ...DEFAULT_SETTINGS,
+                        ...p,
+                        queryHistoryAutoSnapshotPgStat: p.queryHistoryAutoSnapshotPgStat ?? false,
+                    } as AppSettings;
+                }
+                return persisted as AppSettings;
+            },
         }
     )
 );

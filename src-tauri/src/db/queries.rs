@@ -5165,6 +5165,21 @@ pub async fn cancel_backend(pool: &Pool, pid: i32) -> Result<bool, String> {
 // Visual Index Builder queries
 // ──────────────────────────────────────────────────────────────────────────────
 
+fn pg_stat_suggested_preload_value(current: &str) -> String {
+    let mut parts: Vec<String> = current
+        .split(',')
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect();
+    if !parts
+        .iter()
+        .any(|s| s.eq_ignore_ascii_case("pg_stat_statements"))
+    {
+        parts.push("pg_stat_statements".to_string());
+    }
+    parts.join(", ")
+}
+
 /// Inspect whether pg_stat_statements is available for the current connection.
 /// Checks:
 /// 1) extension installed in current database
@@ -5178,25 +5193,34 @@ pub async fn get_pg_stat_statements_status(
         .await
         .map_err(|e| format!("Connection error: {}", pg_error_message(&e)))?;
 
-    let extension_installed: bool = client
+    let row = client
         .query_one(
-            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements')",
+            "SELECT EXISTS(SELECT 1 FROM pg_extension WHERE extname = 'pg_stat_statements') AS ext_ok, \
+             COALESCE((SELECT setting FROM pg_settings WHERE name = 'shared_preload_libraries'), '') AS preload, \
+             (SELECT setting FROM pg_settings WHERE name = 'config_file' LIMIT 1) AS config_file",
             &[],
         )
         .await
-        .map_err(|e| format_pg_error(&e))?
-        .get(0);
+        .map_err(|e| format_pg_error(&e))?;
 
-    let preload_raw: String = client
-        .query_one("SHOW shared_preload_libraries", &[])
-        .await
-        .map_err(|e| format_pg_error(&e))?
-        .get(0);
+    let extension_installed: bool = row.get(0);
+    let preload_raw: String = row.get(1);
+    let config_file: Option<String> = row.get(2);
 
     let preload_enabled = preload_raw
         .split(',')
         .map(|v| v.trim().to_ascii_lowercase())
         .any(|v| v == "pg_stat_statements");
+
+    let suggested_shared_preload_line = if !preload_enabled {
+        let value = pg_stat_suggested_preload_value(&preload_raw);
+        Some(format!(
+            "shared_preload_libraries = '{}'",
+            value.replace('\'', "''")
+        ))
+    } else {
+        None
+    };
 
     let mut can_query = false;
     let mut probe_error: Option<String> = None;
@@ -5219,7 +5243,7 @@ pub async fn get_pg_stat_statements_status(
     }
     if !preload_enabled {
         messages.push(
-            "shared_preload_libraries does not include pg_stat_statements. Add it to postgresql.conf and restart PostgreSQL.".to_string(),
+            "shared_preload_libraries does not include pg_stat_statements. Add it to postgresql.conf (or use ALTER SYSTEM), then restart PostgreSQL.".to_string(),
         );
     }
     if extension_installed && preload_enabled && !can_query {
@@ -5242,6 +5266,9 @@ pub async fn get_pg_stat_statements_status(
         preload_enabled,
         can_query,
         shared_preload_libraries: Some(preload_raw),
+        issues: messages.clone(),
+        config_file,
+        suggested_shared_preload_line,
         message: if messages.is_empty() {
             None
         } else {
@@ -5337,6 +5364,7 @@ pub async fn list_pg_stat_statements(
         r#"
         SELECT
             md5(query) AS query_id,
+            queryid::text AS pg_query_id,
             LEFT(query, 12000) AS query,
             calls::bigint AS calls,
             total_exec_time::float8 AS total_exec_time_ms,
@@ -5387,6 +5415,7 @@ pub async fn list_pg_stat_statements(
         .iter()
         .map(|row| super::types::PgStatStatementEntry {
             query_id: row.get("query_id"),
+            pg_query_id: row.try_get::<_, Option<String>>("pg_query_id").ok().flatten(),
             query: row.get("query"),
             calls: row.get("calls"),
             total_exec_time_ms: row.get("total_exec_time_ms"),

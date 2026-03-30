@@ -58,6 +58,9 @@ import type {
     PgStatStatementsStatus,
     PgStatStatementsFilter,
     PgStatStatementsPage,
+    SlowQueryInsight,
+    SlowQuerySnapshotRecord,
+    SlowQueryTrendRisk,
     ReplicationSnapshot,
     PatroniCluster,
     ReplicationPublicationRow,
@@ -1216,6 +1219,114 @@ export async function dbPgStatStatementsList(
     return invoke<PgStatStatementsPage>("db_pg_stat_statements_list", {
         connectionId,
         filter,
+    });
+}
+
+/** Snapshot top pg_stat_statements rows into local SQLite (hourly bucket per fingerprint). */
+export async function slowQueryIngestFromPgStat(
+    connectionId: string,
+    minMeanMs?: number | null,
+    limit?: number | null
+): Promise<number> {
+    return invoke<number>("slow_query_ingest_from_pg_stat", {
+        connectionId,
+        minMeanMs: minMeanMs ?? null,
+        limit: limit ?? null,
+    });
+}
+
+export async function slowQuerySnapshotsForFingerprint(
+    connectionId: string,
+    queryFingerprint: string,
+    limit?: number | null
+): Promise<SlowQuerySnapshotRecord[]> {
+    return invoke<SlowQuerySnapshotRecord[]>("slow_query_snapshots_for_fingerprint", {
+        connectionId,
+        queryFingerprint,
+        limit: limit ?? null,
+    });
+}
+
+export async function slowQueryGetInsight(
+    connectionId: string,
+    queryFingerprint: string
+): Promise<SlowQueryInsight | null> {
+    return invoke<SlowQueryInsight | null>("slow_query_get_insight", {
+        connectionId,
+        queryFingerprint,
+    });
+}
+
+export async function slowQuerySaveExplainForFingerprint(
+    connectionId: string,
+    queryFingerprint: string,
+    queryText: string,
+    explainJson: string
+): Promise<void> {
+    return invoke<void>("slow_query_save_explain_for_fingerprint", {
+        connectionId,
+        queryFingerprint,
+        queryText,
+        explainJson,
+    });
+}
+
+export async function slowQuerySaveAiForFingerprint(
+    connectionId: string,
+    queryFingerprint: string,
+    queryText: string,
+    aiAnalysisJson: string
+): Promise<void> {
+    return invoke<void>("slow_query_save_ai_for_fingerprint", {
+        connectionId,
+        queryFingerprint,
+        queryText,
+        aiAnalysisJson,
+    });
+}
+
+export async function slowQuerySaveNoteForFingerprint(
+    connectionId: string,
+    queryFingerprint: string,
+    queryText: string,
+    note: string | null
+): Promise<void> {
+    return invoke<void>("slow_query_save_note_for_fingerprint", {
+        connectionId,
+        queryFingerprint,
+        queryText,
+        note,
+    });
+}
+
+export async function slowQuerySetPinnedForFingerprint(
+    connectionId: string,
+    queryFingerprint: string,
+    queryText: string,
+    pinned: boolean
+): Promise<void> {
+    return invoke<void>("slow_query_set_pinned_for_fingerprint", {
+        connectionId,
+        queryFingerprint,
+        queryText,
+        pinned,
+    });
+}
+
+export async function slowQueryListPinnedFingerprints(connectionId: string): Promise<string[]> {
+    return invoke<string[]>("slow_query_list_pinned_fingerprints", { connectionId });
+}
+
+/** Rank statements by deteriorating mean time from local snapshot history. */
+export async function slowQueryListTrendRisks(
+    connectionId: string,
+    minSnapshots?: number | null,
+    limit?: number | null
+): Promise<SlowQueryTrendRisk[]> {
+    return invoke<SlowQueryTrendRisk[]>("slow_query_list_trend_risks", {
+        connectionId,
+        minSnapshots: minSnapshots ?? null,
+        limit: limit ?? null,
     });
 }
 

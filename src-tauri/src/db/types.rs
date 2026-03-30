@@ -514,6 +514,12 @@ pub struct PgStatStatementsStatus {
     pub preload_enabled: bool,
     pub can_query: bool,
     pub shared_preload_libraries: Option<String>,
+    /// Human-readable issues (same content as `message`, split for UI bullets).
+    pub issues: Vec<String>,
+    /// Primary PostgreSQL config file path when readable from `pg_settings`.
+    pub config_file: Option<String>,
+    /// Suggested `shared_preload_libraries` value (comma-separated) including `pg_stat_statements`.
+    pub suggested_shared_preload_line: Option<String>,
     pub message: Option<String>,
 }
 
@@ -534,6 +540,9 @@ pub struct PgStatStatementsFilter {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PgStatStatementEntry {
     pub query_id: String,
+    /// PostgreSQL internal `queryid` from pg_stat_statements (text for JSON bigint safety).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pg_query_id: Option<String>,
     pub query: String,
     pub calls: i64,
     pub total_exec_time_ms: f64,

@@ -48,7 +48,7 @@
     "macOS": {
       "entitlements": "./Entitlements.plist",
       "minimumSystemVersion": "12.0",
-      "bundleVersion": "43",
+      "bundleVersion": "45",
       "files": {
         "embedded.provisionprofile": "../apple/pgstudio.provisionprofile"
       }

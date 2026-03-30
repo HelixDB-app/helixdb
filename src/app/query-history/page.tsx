@@ -2,13 +2,9 @@
 
 import Link from "next/link";
 import Image from "next/image";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { UIEvent } from "react";
 import {
-    Area,
-    AreaChart,
-    Bar,
-    BarChart,
     CartesianGrid,
     Line,
     LineChart,
@@ -32,7 +28,24 @@ import {
     queryHistorySaveExplain,
     queryHistorySaveNote,
     queryHistoryToggleBookmark,
+    slowQueryGetInsight,
+    slowQueryIngestFromPgStat,
+    slowQueryListPinnedFingerprints,
+    slowQuerySaveAiForFingerprint,
+    slowQuerySaveExplainForFingerprint,
+    slowQuerySaveNoteForFingerprint,
+    slowQuerySetPinnedForFingerprint,
+    slowQuerySnapshotsForFingerprint,
+    slowQueryListTrendRisks,
 } from "@/lib/tauri";
+import {
+    analyzeQueryPerformance,
+    parseQueryOptimizationPayload,
+} from "@/lib/query-optimization-engine";
+import {
+    analyzePerformanceForecast,
+    computeExecutionTrendMetrics,
+} from "@/lib/query-performance-forecast-engine";
 import type {
     QueryHistoryDashboard,
     QueryHistoryDetail,
@@ -42,11 +55,18 @@ import type {
     PgStatStatementEntry,
     PgStatStatementsFilter,
     PgStatStatementsStatus,
+    PerformanceForecastPayload,
+    SlowQueryInsight,
+    SlowQuerySnapshotRecord,
+    SlowQueryTrendRisk,
 } from "@/lib/types";
 import { useConnectionStore } from "@/stores/connection-store";
+import { useSettingsStore } from "@/stores/settings-store";
 import { cn } from "@/lib/utils";
 import { QueryPlanViewer } from "@/components/query-plan-viewer";
 import { ConnectionEnvBadge } from "@/components/connection-env-badge";
+import { PgStatStatementsSetupCallout } from "@/components/pg-stat-statements-setup-callout";
+import { QueryHistoryPerformanceDashboard } from "@/components/query-history-performance-dashboard";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
@@ -58,6 +78,8 @@ import {
     ResizablePanelGroup,
 } from "@/components/ui/resizable";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { Switch } from "@/components/ui/switch";
+import { Label } from "@/components/ui/label";
 import {
     AlertTriangle,
     ArrowLeft,
@@ -75,8 +97,7 @@ import {
     RefreshCw,
     Search,
     Sparkles,
-    Timer,
-    Wrench,
+    TrendingUp,
     WandSparkles,
     Shield,
 } from "lucide-react";
@@ -88,21 +109,6 @@ type StatusChip = "all" | "slow" | "failed" | "cached";
 type SortKey = "slowest" | "recent" | "frequency" | "disk" | "rows" | "errors" | "table";
 type ViewMode = "history" | "dashboard";
 type HistorySource = "local" | "pg_stat";
-
-type LocalAiPayload = {
-    explanation: string;
-    optimized_sql: string;
-    changes_made: Array<{ change: string; reason: string; impact: string }>;
-    required_indexes: Array<{ sql: string; estimated_size_mb: number; build_time_minutes: number; locks_table: boolean }>;
-    estimated_improvement: {
-        current_ms: number;
-        optimized_ms: number;
-        speedup_factor: number;
-        confidence: "high" | "medium" | "low";
-    };
-    generated_at: number;
-    provider: "local-heuristic";
-};
 
 function formatMs(ms: number): string {
     if (!Number.isFinite(ms)) return "-";
@@ -209,86 +215,6 @@ function sortValue(sortBy: SortKey): string {
     }
 }
 
-function createLocalAiPayload(item: QueryHistorySummary): LocalAiPayload {
-    const rowsReturned = item.rows_returned ?? 0;
-    const hasLimit = /\blimit\b/i.test(item.query_text);
-    const tables = item.tables_touched;
-    const primaryTable = tables[0] ?? "your_table";
-    const whereMatch = item.query_text.match(/\bwhere\s+([\s\S]+?)(\border\s+by\b|\bgroup\s+by\b|\blimit\b|$)/i);
-    const whereClause = whereMatch?.[1] ?? "";
-    const colMatch = whereClause.match(/([a-zA-Z_][a-zA-Z0-9_.]*)\s*(=|>|<|>=|<=|LIKE|ILIKE|IN)/i);
-    const whereColumn = colMatch?.[1]?.split(".").pop()?.replace(/"/g, "") ?? "created_at";
-
-    const changes: LocalAiPayload["changes_made"] = [];
-    let optimizedSql = item.query_text.trim();
-    if (item.query_type === "SELECT" && !hasLimit && rowsReturned >= 1000) {
-        optimizedSql = `${optimizedSql.replace(/;\s*$/, "")}\nLIMIT 100;`;
-        changes.push({
-            change: "Added LIMIT 100",
-            reason: `${rowsReturned.toLocaleString()} rows were returned in one request`,
-            impact: "Reduces transfer/rendering overhead for UI queries",
-        });
-    }
-
-    const addIndex = item.total_ms >= 1000 || (item.blks_read ?? 0) > 1000 || rowsReturned > 10_000;
-    const requiredIndexes: LocalAiPayload["required_indexes"] = [];
-    if (addIndex) {
-        const sql = `CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_${primaryTable}_${whereColumn}_perf ON \"${primaryTable}\"(\"${whereColumn}\");`;
-        requiredIndexes.push({
-            sql,
-            estimated_size_mb: Math.max(16, Math.round(rowsReturned / 2000)),
-            build_time_minutes: Math.max(1, Math.round((rowsReturned + 50_000) / 250_000)),
-            locks_table: false,
-        });
-        changes.push({
-            change: `Recommended index on ${primaryTable}.${whereColumn}`,
-            reason: "Current execution profile suggests scan-heavy filtering",
-            impact: "Expected large reduction in execution time on repeated runs",
-        });
-    }
-
-    if (changes.length === 0) {
-        changes.push({
-            change: "No structural rewrite required",
-            reason: "Query is already within an acceptable latency range",
-            impact: "Maintain current shape; monitor regressions over time",
-        });
-    }
-
-    const confidence: "high" | "medium" | "low" = item.total_ms >= 3000 ? "high" : item.total_ms >= 800 ? "medium" : "low";
-    const projectedMs = Math.max(8, item.total_ms / (1 + changes.length * (confidence === "high" ? 4.5 : 2.0)));
-
-    return {
-        explanation:
-            `This ${item.query_type} query runs in ${formatMs(item.total_ms)} and touches ${tables.join(", ") || "no detected tables"}. ` +
-            `The main bottleneck appears in execution time rather than planning time. ` +
-            `Focus on reducing row volume and improving index coverage for the filtering path.`,
-        optimized_sql: optimizedSql,
-        changes_made: changes,
-        required_indexes: requiredIndexes,
-        estimated_improvement: {
-            current_ms: Math.round(item.total_ms),
-            optimized_ms: Math.round(projectedMs),
-            speedup_factor: Math.max(1, Math.round(item.total_ms / projectedMs)),
-            confidence,
-        },
-        generated_at: Date.now(),
-        provider: "local-heuristic",
-    };
-}
-
-function parseLocalAiPayload(raw: string | null): LocalAiPayload | null {
-    if (!raw) return null;
-    try {
-        const parsed = JSON.parse(raw) as LocalAiPayload;
-        if (!parsed || typeof parsed !== "object") return null;
-        if (!parsed.optimized_sql || !parsed.estimated_improvement) return null;
-        return parsed;
-    } catch {
-        return null;
-    }
-}
-
 function QueryRow({
     item,
     active,
@@ -343,10 +269,15 @@ function PgStatRow({
     item,
     active,
     onClick,
+    pinned,
+    trendRisk,
 }: {
     item: PgStatStatementEntry;
     active: boolean;
     onClick: () => void;
+    pinned?: boolean;
+    /** From local snapshot trend ranking (high | medium | low). */
+    trendRisk?: string | null;
 }) {
     const severity = severityFromMeanMs(item.mean_exec_time_ms);
     const rowsPerCall = item.calls > 0 ? item.rows / item.calls : 0;
@@ -359,7 +290,11 @@ function PgStatRow({
                 "w-full rounded-xl border p-3 text-left transition-all",
                 active
                     ? "border-emerald-500/50 bg-emerald-500/10"
-                    : "border-border/40 bg-card/20 hover:border-border/70 hover:bg-card/40"
+                    : trendRisk === "high"
+                      ? "border-amber-500/40 bg-amber-500/[0.06] hover:border-amber-500/55 hover:bg-amber-500/10"
+                      : trendRisk === "medium"
+                        ? "border-border/40 bg-card/20 hover:border-amber-500/25 hover:bg-card/35"
+                        : "border-border/40 bg-card/20 hover:border-border/70 hover:bg-card/40"
             )}
         >
             <div className="flex items-center justify-between gap-2">
@@ -372,6 +307,12 @@ function PgStatRow({
                     <Badge variant="outline" className="h-5 px-1.5 text-[10px] border-red-400/40 text-red-300">
                         slow≈{formatNumber(item.slow_call_estimate)}
                     </Badge>
+                    {trendRisk === "high" ? (
+                        <Badge variant="outline" className="h-5 border-amber-500/40 px-1.5 text-[10px] text-amber-200">
+                            trend risk
+                        </Badge>
+                    ) : null}
+                    {pinned ? <Pin className="h-3 w-3 text-amber-300" /> : null}
                 </div>
                 <span className="text-[11px] text-muted-foreground/70 shrink-0">
                     calls {formatNumber(item.calls)}
@@ -407,6 +348,8 @@ export default function QueryHistoryPage() {
     const isConnected = useConnectionStore((state) => state.isConnected);
     const connectionId = useConnectionStore((state) => state.connectionId);
     const databaseName = useConnectionStore((state) => state.databaseName);
+    const queryHistoryAutoSnapshotPgStat = useSettingsStore((s) => s.queryHistoryAutoSnapshotPgStat);
+    const updateSettings = useSettingsStore((s) => s.updateSettings);
 
     const LOCAL_PAGE_SIZE = 200;
     const PG_STAT_PAGE_SIZE = 200;
@@ -461,18 +404,26 @@ export default function QueryHistoryPage() {
     const [isSavingNote, setIsSavingNote] = useState(false);
     const [isEnablingPgStat, setIsEnablingPgStat] = useState(false);
 
+    const [pgStatPinnedOnly, setPgStatPinnedOnly] = useState(false);
+    const [pinnedFingerprints, setPinnedFingerprints] = useState<string[]>([]);
+    const [slowSnapshots, setSlowSnapshots] = useState<SlowQuerySnapshotRecord[]>([]);
+    const [slowInsight, setSlowInsight] = useState<SlowQueryInsight | null>(null);
+    const [pgStatNoteDraft, setPgStatNoteDraft] = useState("");
+    const [isIngestingSlow, setIsIngestingSlow] = useState(false);
+    const [isCapturingExplainPg, setIsCapturingExplainPg] = useState(false);
+    const [isSavingPgStatNote, setIsSavingPgStatNote] = useState(false);
+    const autoSnapshotPgRef = useRef(false);
+
+    const [connectionTrendRisks, setConnectionTrendRisks] = useState<SlowQueryTrendRisk[]>([]);
+    const [performanceForecast, setPerformanceForecast] = useState<PerformanceForecastPayload | null>(null);
+    const [isForecastingPerformance, setIsForecastingPerformance] = useState(false);
+
     const [refreshTick, setRefreshTick] = useState(0);
 
     const pgStatStatusErrorDisplay =
         !pgStatStatusError?.trim() || pgStatStatusError === "db error"
             ? "Could not check the extension. Verify your database connection and that you have permission to read system catalogs (e.g. pg_extension, pg_settings)."
             : pgStatStatusError;
-
-    useEffect(() => {
-        if (source === "pg_stat" && viewMode === "dashboard") {
-            setViewMode("history");
-        }
-    }, [source, viewMode]);
 
     useEffect(() => {
         const timer = window.setTimeout(() => setDebouncedSearch(search.trim()), 200);
@@ -760,6 +711,70 @@ export default function QueryHistoryPage() {
         };
     }, [source, connectionId, isConnected, pgStatStatus?.can_query, pgStatFilter, refreshTick]);
 
+    useEffect(() => {
+        if (source !== "pg_stat" || !connectionId || !pgStatStatus?.can_query) {
+            setPinnedFingerprints([]);
+            return;
+        }
+        let cancelled = false;
+        slowQueryListPinnedFingerprints(connectionId)
+            .then((ids) => {
+                if (!cancelled) setPinnedFingerprints(ids);
+            })
+            .catch(() => {
+                if (!cancelled) setPinnedFingerprints([]);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [source, connectionId, pgStatStatus?.can_query, refreshTick]);
+
+    useEffect(() => {
+        if (source !== "pg_stat" || !connectionId || !pgStatStatus?.can_query) {
+            setConnectionTrendRisks([]);
+            return;
+        }
+        let cancelled = false;
+        slowQueryListTrendRisks(connectionId, 3, 50)
+            .then((rows) => {
+                if (!cancelled) setConnectionTrendRisks(rows);
+            })
+            .catch(() => {
+                if (!cancelled) setConnectionTrendRisks([]);
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [source, connectionId, pgStatStatus?.can_query, refreshTick]);
+
+    useEffect(() => {
+        setPerformanceForecast(null);
+    }, [selectedPgStatId]);
+
+    useEffect(() => {
+        autoSnapshotPgRef.current = false;
+    }, [connectionId]);
+
+    useEffect(() => {
+        if (source !== "pg_stat" || !queryHistoryAutoSnapshotPgStat) return;
+        if (!connectionId || !isConnected || !pgStatStatus?.can_query) return;
+        if (autoSnapshotPgRef.current) return;
+        autoSnapshotPgRef.current = true;
+        slowQueryIngestFromPgStat(connectionId, 100, 200)
+            .then((n) => {
+                if (n > 0) {
+                    toast.success(`Recorded ${n} slow-query snapshot rows locally for trends.`);
+                }
+            })
+            .catch(() => {});
+    }, [
+        source,
+        connectionId,
+        isConnected,
+        pgStatStatus?.can_query,
+        queryHistoryAutoSnapshotPgStat,
+    ]);
+
     const loadMorePgStat = useCallback(() => {
         if (
             source !== "pg_stat" ||
@@ -838,11 +853,60 @@ export default function QueryHistoryPage() {
     }, [listData?.items, groupByHash]);
 
     const selectedItem = detail?.item ?? visibleItems.find((item) => item.id === selectedId) ?? null;
+
+    const displayPgStatItems = useMemo(() => {
+        if (!pgStatPinnedOnly) return pgStatItems;
+        const pinSet = new Set(pinnedFingerprints);
+        return pgStatItems.filter((row) => pinSet.has(row.query_id));
+    }, [pgStatItems, pgStatPinnedOnly, pinnedFingerprints]);
+
     const selectedPgStatItem = useMemo(
-        () => pgStatItems.find((item) => item.query_id === selectedPgStatId) ?? pgStatItems[0] ?? null,
-        [pgStatItems, selectedPgStatId]
+        () =>
+            displayPgStatItems.find((item) => item.query_id === selectedPgStatId) ??
+            displayPgStatItems[0] ??
+            null,
+        [displayPgStatItems, selectedPgStatId]
     );
-    const aiPayload = parseLocalAiPayload(detail?.ai_analysis ?? null);
+
+    const aiPayload = parseQueryOptimizationPayload(detail?.ai_analysis ?? null);
+    const pgStatAiPayload = parseQueryOptimizationPayload(slowInsight?.ai_analysis_json ?? null);
+
+    useEffect(() => {
+        if (source !== "pg_stat" || !connectionId || !selectedPgStatItem) {
+            setSlowInsight(null);
+            setSlowSnapshots([]);
+            setPgStatNoteDraft("");
+            return;
+        }
+        const fp = selectedPgStatItem.query_id;
+        let cancelled = false;
+        Promise.all([
+            slowQueryGetInsight(connectionId, fp),
+            slowQuerySnapshotsForFingerprint(connectionId, fp, 80),
+        ])
+            .then(([ins, snaps]) => {
+                if (cancelled) return;
+                setSlowInsight(ins);
+                setSlowSnapshots(snaps);
+                setPgStatNoteDraft(ins?.note ?? "");
+            })
+            .catch(() => {
+                if (!cancelled) {
+                    setSlowInsight(null);
+                    setSlowSnapshots([]);
+                }
+            });
+        return () => {
+            cancelled = true;
+        };
+    }, [source, connectionId, selectedPgStatItem?.query_id]);
+
+    useEffect(() => {
+        if (source !== "pg_stat") return;
+        if (!selectedPgStatId) return;
+        if (displayPgStatItems.some((i) => i.query_id === selectedPgStatId)) return;
+        setSelectedPgStatId(displayPgStatItems[0]?.query_id ?? null);
+    }, [source, displayPgStatItems, selectedPgStatId]);
 
     const canExecuteOnCurrentConnection = Boolean(isConnected && connectionId);
 
@@ -916,7 +980,7 @@ export default function QueryHistoryPage() {
             if (status.can_query) {
                 toast.success("pg_stat_statements is ready.");
             } else {
-                toast.error(status.message ?? "pg_stat_statements could not be activated yet.");
+                toast.warning("Server preload or restart may still be required — see the setup panel above.");
             }
         } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -951,17 +1015,221 @@ export default function QueryHistoryPage() {
         if (!detail) return;
         setIsGeneratingAi(true);
         try {
-            const payload = createLocalAiPayload(detail.item);
+            const payload = await analyzeQueryPerformance({
+                source: "local",
+                localItem: detail.item,
+                explainJson: detail.explain_json ?? null,
+            });
             const serialized = JSON.stringify(payload);
             await queryHistorySaveAiAnalysis(detail.item.id, serialized);
             setDetail((prev) => (prev ? { ...prev, ai_analysis: serialized } : prev));
-            toast.success("Optimization analysis generated");
+            toast.success(
+                payload.provider === "gemini"
+                    ? "AI optimization analysis generated"
+                    : "Heuristic analysis generated (add a Gemini key in Settings → AI for full AI)"
+            );
         } catch (error) {
             toast.error(error instanceof Error ? error.message : String(error));
         } finally {
             setIsGeneratingAi(false);
         }
     }, [detail]);
+
+    const handleRecordSlowSnapshots = useCallback(async () => {
+        if (!connectionId || !isConnected) {
+            toast.error("Connect to a database first.");
+            return;
+        }
+        setIsIngestingSlow(true);
+        try {
+            const n = await slowQueryIngestFromPgStat(connectionId, 100, 200);
+            toast.success(
+                n > 0 ? `Recorded ${n} slow-query snapshot rows locally.` : "No statements matched mean ≥100ms."
+            );
+            const fp = selectedPgStatItem?.query_id;
+            if (fp) {
+                const snaps = await slowQuerySnapshotsForFingerprint(connectionId, fp, 80);
+                setSlowSnapshots(snaps);
+            }
+            const risks = await slowQueryListTrendRisks(connectionId, 3, 20);
+            setConnectionTrendRisks(risks);
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : String(error));
+        } finally {
+            setIsIngestingSlow(false);
+        }
+    }, [connectionId, isConnected, selectedPgStatItem?.query_id]);
+
+    const handleCaptureExplainPg = useCallback(async () => {
+        if (!selectedPgStatItem || !connectionId) return;
+        if (!canExecuteOnCurrentConnection) {
+            toast.error("Connect to a database to capture EXPLAIN ANALYZE.");
+            return;
+        }
+        setIsCapturingExplainPg(true);
+        try {
+            const raw = await dbExplainQuery(connectionId, selectedPgStatItem.query);
+            await slowQuerySaveExplainForFingerprint(
+                connectionId,
+                selectedPgStatItem.query_id,
+                selectedPgStatItem.query,
+                raw
+            );
+            setSlowInsight((prev) => ({
+                connection_id: connectionId,
+                query_fingerprint: selectedPgStatItem.query_id,
+                query_text_last_seen: selectedPgStatItem.query,
+                explain_json: raw,
+                ai_analysis_json: prev?.ai_analysis_json ?? null,
+                note: prev?.note ?? null,
+                pinned: prev?.pinned ?? false,
+                updated_at: Date.now(),
+            }));
+            toast.success("Execution plan captured");
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : String(error));
+        } finally {
+            setIsCapturingExplainPg(false);
+        }
+    }, [canExecuteOnCurrentConnection, connectionId, selectedPgStatItem]);
+
+    const handleGenerateAiPg = useCallback(async () => {
+        if (!selectedPgStatItem || !connectionId) return;
+        setIsGeneratingAi(true);
+        try {
+            const payload = await analyzeQueryPerformance({
+                source: "pg_stat",
+                pgStatEntry: selectedPgStatItem,
+                explainJson: slowInsight?.explain_json ?? null,
+            });
+            const serialized = JSON.stringify(payload);
+            await slowQuerySaveAiForFingerprint(
+                connectionId,
+                selectedPgStatItem.query_id,
+                selectedPgStatItem.query,
+                serialized
+            );
+            setSlowInsight((prev) => ({
+                connection_id: connectionId,
+                query_fingerprint: selectedPgStatItem.query_id,
+                query_text_last_seen: selectedPgStatItem.query,
+                explain_json: prev?.explain_json ?? null,
+                ai_analysis_json: serialized,
+                note: prev?.note ?? null,
+                pinned: prev?.pinned ?? false,
+                updated_at: Date.now(),
+            }));
+            toast.success(
+                payload.provider === "gemini"
+                    ? "AI optimization analysis generated"
+                    : "Heuristic analysis generated (add a Gemini key in Settings → AI for full AI)"
+            );
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : String(error));
+        } finally {
+            setIsGeneratingAi(false);
+        }
+    }, [connectionId, selectedPgStatItem, slowInsight?.explain_json]);
+
+    const handleSavePgStatNote = useCallback(async () => {
+        if (!selectedPgStatItem || !connectionId) return;
+        setIsSavingPgStatNote(true);
+        try {
+            const trimmed = pgStatNoteDraft.trim() ? pgStatNoteDraft.trim() : null;
+            await slowQuerySaveNoteForFingerprint(
+                connectionId,
+                selectedPgStatItem.query_id,
+                selectedPgStatItem.query,
+                trimmed
+            );
+            setSlowInsight((prev) =>
+                prev
+                    ? { ...prev, note: trimmed, updated_at: Date.now() }
+                    : {
+                          connection_id: connectionId,
+                          query_fingerprint: selectedPgStatItem.query_id,
+                          query_text_last_seen: selectedPgStatItem.query,
+                          explain_json: null,
+                          ai_analysis_json: null,
+                          note: trimmed,
+                          pinned: false,
+                          updated_at: Date.now(),
+                      }
+            );
+            toast.success("Note saved");
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : String(error));
+        } finally {
+            setIsSavingPgStatNote(false);
+        }
+    }, [connectionId, selectedPgStatItem, pgStatNoteDraft]);
+
+    const handleTogglePgStatPin = useCallback(async () => {
+        if (!selectedPgStatItem || !connectionId) return;
+        const next = !slowInsight?.pinned;
+        try {
+            await slowQuerySetPinnedForFingerprint(
+                connectionId,
+                selectedPgStatItem.query_id,
+                selectedPgStatItem.query,
+                next
+            );
+            setSlowInsight((prev) =>
+                prev
+                    ? { ...prev, pinned: next, updated_at: Date.now() }
+                    : {
+                          connection_id: connectionId,
+                          query_fingerprint: selectedPgStatItem.query_id,
+                          query_text_last_seen: selectedPgStatItem.query,
+                          explain_json: null,
+                          ai_analysis_json: null,
+                          note: null,
+                          pinned: next,
+                          updated_at: Date.now(),
+                      }
+            );
+            const ids = await slowQueryListPinnedFingerprints(connectionId);
+            setPinnedFingerprints(ids);
+            toast.success(next ? "Pinned for this connection" : "Unpinned");
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : String(error));
+        }
+    }, [connectionId, selectedPgStatItem, slowInsight?.pinned]);
+
+    const handlePerformanceForecast = useCallback(async () => {
+        if (!selectedPgStatItem || !connectionId) return;
+        if (slowSnapshots.length < 3) {
+            toast.info("Record at least 3 hourly snapshots for this statement to forecast trends.");
+            return;
+        }
+        setIsForecastingPerformance(true);
+        try {
+            const result = await analyzePerformanceForecast({
+                snapshots: slowSnapshots,
+                pgStatEntry: selectedPgStatItem,
+                connectionTrendRisks,
+                explainJson: slowInsight?.explain_json ?? null,
+            });
+            if (result) {
+                setPerformanceForecast(result);
+                toast.success(
+                    result.provider === "gemini"
+                        ? "Predictive analysis generated"
+                        : "Heuristic forecast generated (add Gemini key in Settings → AI for deeper analysis)"
+                );
+            }
+        } catch (error) {
+            toast.error(error instanceof Error ? error.message : String(error));
+        } finally {
+            setIsForecastingPerformance(false);
+        }
+    }, [
+        connectionId,
+        selectedPgStatItem,
+        slowSnapshots,
+        connectionTrendRisks,
+        slowInsight?.explain_json,
+    ]);
 
     const handleRunAgain = useCallback(async () => {
         const sqlToRun = source === "pg_stat" ? selectedPgStatItem?.query : selectedItem?.query_text;
@@ -1085,6 +1353,15 @@ export default function QueryHistoryPage() {
         }
     }, [source, selectedItem, noteDraft]);
 
+    const showPgStatSetupCallout =
+        source === "pg_stat" &&
+        isConnected &&
+        Boolean(connectionId) &&
+        !pgStatStatusLoading &&
+        !pgStatStatusError &&
+        pgStatStatus != null &&
+        !pgStatStatus.can_query;
+
     const pgStatSummary = useMemo(() => {
         let calls = 0;
         let slowEstimate = 0;
@@ -1113,6 +1390,50 @@ export default function QueryHistoryPage() {
                 : "Most blocks are served from shared buffers, so focus on reducing call frequency or query shape.",
         ].join(" ");
     }, [selectedPgStatItem]);
+
+    const pgStatWorkloadSharePct = useMemo(() => {
+        if (!selectedPgStatItem) return null;
+        const sum = pgStatItems.reduce((a, r) => a + r.total_exec_time_ms, 0);
+        if (sum <= 0) return null;
+        return (100 * selectedPgStatItem.total_exec_time_ms) / sum;
+    }, [pgStatItems, selectedPgStatItem]);
+
+    const trendRiskByFingerprint = useMemo(() => {
+        const m = new Map<string, string>();
+        for (const r of connectionTrendRisks) {
+            m.set(r.query_fingerprint, r.risk_level);
+        }
+        return m;
+    }, [connectionTrendRisks]);
+
+    const snapshotRegression = useMemo(() => {
+        if (slowSnapshots.length < 3) return null;
+        const chronological = [...slowSnapshots].sort((a, b) => a.captured_at - b.captured_at);
+        const last = chronological[chronological.length - 1]?.mean_exec_time_ms;
+        const prev = chronological.slice(0, -1);
+        const sorted = [...prev].sort((a, b) => a.mean_exec_time_ms - b.mean_exec_time_ms);
+        const med = sorted[Math.floor(sorted.length / 2)]?.mean_exec_time_ms;
+        if (last == null || med == null || med < 1) return null;
+        if (last > med * 1.5) return { ratio: last / med, last, med };
+        return null;
+    }, [slowSnapshots]);
+
+    const snapshotChartData = useMemo(
+        () =>
+            [...slowSnapshots]
+                .sort((a, b) => a.captured_at - b.captured_at)
+                .map((r) => ({
+                    t: r.captured_at,
+                    label: new Date(r.captured_at).toLocaleString(),
+                    meanMs: r.mean_exec_time_ms,
+                })),
+        [slowSnapshots]
+    );
+
+    const trendExecutionMetrics = useMemo(
+        () => computeExecutionTrendMetrics(slowSnapshots),
+        [slowSnapshots]
+    );
 
     const pgStatDetailBody = (
         <div className="h-full overflow-hidden">
@@ -1143,36 +1464,8 @@ export default function QueryHistoryPage() {
                     <p className="text-sm">Connect to a database to inspect pg_stat_statements.</p>
                 </div>
             ) : !pgStatStatus?.can_query ? (
-                <div className="m-4 rounded-xl border border-amber-500/30 bg-amber-500/10 p-4">
-                    <div className="flex items-start gap-2">
-                        <Wrench className="mt-0.5 h-4 w-4 text-amber-300" />
-                        <div className="space-y-2">
-                            <p className="text-sm font-medium text-amber-100">pg_stat_statements is not ready</p>
-                            <p className="text-xs text-amber-100/80">
-                                {pgStatStatus?.message ??
-                                    "Enable the extension for this database. If preload is missing, add pg_stat_statements to shared_preload_libraries and restart PostgreSQL."}
-                            </p>
-                            {pgStatStatus?.shared_preload_libraries && (
-                                <p className="text-[11px] text-amber-100/70">
-                                    shared_preload_libraries: {pgStatStatus.shared_preload_libraries || "(empty)"}
-                                </p>
-                            )}
-                            <Button
-                                variant="outline"
-                                size="sm"
-                                className="h-7 gap-1.5"
-                                onClick={handleEnablePgStat}
-                                disabled={isEnablingPgStat}
-                            >
-                                {isEnablingPgStat ? (
-                                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                ) : (
-                                    <Wrench className="h-3.5 w-3.5" />
-                                )}
-                                Setup pg_stat_statements
-                            </Button>
-                        </div>
-                    </div>
+                <div className="flex h-full flex-col items-center justify-center px-6 text-center text-muted-foreground">
+                    <p className="text-sm">Complete the setup steps above to load statement details.</p>
                 </div>
             ) : pgStatError ? (
                 <div className="m-4 rounded-lg border border-destructive/40 bg-destructive/10 p-4">
@@ -1186,13 +1479,50 @@ export default function QueryHistoryPage() {
             ) : (
                 <ScrollArea className="h-full">
                     <div className="space-y-4 p-4">
+                        <p className="text-[11px] text-muted-foreground/80">
+                            Local snapshots store hourly pg_stat metrics on this device for trends and regression hints.
+                        </p>
                         <section className="rounded-xl border border-border/40 bg-card/20 p-4">
                             <div className="flex flex-col gap-3 sm:flex-row sm:flex-wrap sm:items-start sm:justify-between sm:gap-y-2">
-                                <h2 className="min-w-0 text-sm font-semibold">Query Text (pg_stat_statements)</h2>
+                                <div className="min-w-0">
+                                    <h2 className="text-sm font-semibold">Query Text (pg_stat_statements)</h2>
+                                    {selectedPgStatItem.pg_query_id ? (
+                                        <p className="mt-1 font-mono text-[10px] text-muted-foreground/80">
+                                            pg queryid: {selectedPgStatItem.pg_query_id}
+                                        </p>
+                                    ) : null}
+                                </div>
                                 <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
                                     <Button variant="outline" size="sm" className="h-7 gap-1.5" onClick={handleCopySql}>
                                         <Copy className="h-3.5 w-3.5" />
                                         Copy SQL
+                                    </Button>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-7 gap-1.5"
+                                        onClick={handleTogglePgStatPin}
+                                    >
+                                        {slowInsight?.pinned ? (
+                                            <PinOff className="h-3.5 w-3.5" />
+                                        ) : (
+                                            <Pin className="h-3.5 w-3.5" />
+                                        )}
+                                        {slowInsight?.pinned ? "Unpin" : "Pin"}
+                                    </Button>
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-7 gap-1.5"
+                                        onClick={handleRecordSlowSnapshots}
+                                        disabled={isIngestingSlow}
+                                    >
+                                        {isIngestingSlow ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                            <Database className="h-3.5 w-3.5" />
+                                        )}
+                                        Record snapshot
                                     </Button>
                                     <Button
                                         variant="outline"
@@ -1234,6 +1564,13 @@ export default function QueryHistoryPage() {
                                 />
                                 <MetricCard label="Cache Hit Rate" value={`${selectedPgStatItem.hit_percent.toFixed(1)}%`} />
                                 <MetricCard label="Std Dev" value={formatMs(selectedPgStatItem.stddev_exec_time_ms ?? 0)} />
+                                {pgStatWorkloadSharePct != null ? (
+                                    <MetricCard
+                                        label="Loaded list workload"
+                                        value={`${pgStatWorkloadSharePct.toFixed(1)}%`}
+                                        hint="Share of total execution time in the statements currently loaded"
+                                    />
+                                ) : null}
                             </div>
                         </section>
 
@@ -1248,6 +1585,338 @@ export default function QueryHistoryPage() {
                             </div>
                             <div className="mt-3 rounded-lg border border-border/40 bg-background/40 px-3 py-2 text-xs text-muted-foreground">
                                 {pgStatDiagnosis}
+                            </div>
+                        </section>
+
+                        {snapshotRegression ? (
+                            <div className="rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-200/90">
+                                Regression: latest snapshot mean ({formatMs(snapshotRegression.last)}) is{" "}
+                                {snapshotRegression.ratio.toFixed(2)}× the prior median ({formatMs(snapshotRegression.med)}).
+                            </div>
+                        ) : null}
+
+                        {snapshotChartData.length >= 2 ? (
+                            <section className="rounded-xl border border-border/40 bg-card/20 p-4">
+                                <h2 className="text-sm font-semibold">Mean time (local snapshots)</h2>
+                                <div className="mt-3 h-40 w-full">
+                                    <ResponsiveContainer width="100%" height="100%">
+                                        <LineChart data={snapshotChartData}>
+                                            <CartesianGrid strokeDasharray="3 3" className="stroke-border/30" />
+                                            <XAxis
+                                                dataKey="label"
+                                                tick={{ fontSize: 9 }}
+                                                interval="preserveStartEnd"
+                                                hide
+                                            />
+                                            <YAxis tick={{ fontSize: 9 }} width={44} />
+                                            <RechartsTooltip
+                                                contentStyle={{ fontSize: 11 }}
+                                                formatter={(v) => [formatMs(Number(v ?? 0)), "Mean"]}
+                                                labelFormatter={(_, p) =>
+                                                    (p?.[0]?.payload as { label?: string })?.label ?? ""
+                                                }
+                                            />
+                                            <Line
+                                                type="monotone"
+                                                dataKey="meanMs"
+                                                stroke="hsl(var(--primary))"
+                                                strokeWidth={2}
+                                                dot={{ r: 2 }}
+                                            />
+                                        </LineChart>
+                                    </ResponsiveContainer>
+                                </div>
+                            </section>
+                        ) : null}
+
+                        <section className="rounded-xl border border-cyan-500/20 bg-cyan-500/[0.04] p-4">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex items-center gap-2">
+                                    <TrendingUp className="h-4 w-4 text-cyan-300/90" />
+                                    <h2 className="text-sm font-semibold">Predictive performance</h2>
+                                    {trendExecutionMetrics ? (
+                                        <Badge
+                                            variant="outline"
+                                            className={cn(
+                                                "h-5 text-[10px]",
+                                                trendExecutionMetrics.riskLabel === "elevated" &&
+                                                    "border-amber-500/50 text-amber-200",
+                                                trendExecutionMetrics.riskLabel === "watch" &&
+                                                    "border-cyan-500/40 text-cyan-200"
+                                            )}
+                                        >
+                                            Trend: {trendExecutionMetrics.riskLabel}
+                                        </Badge>
+                                    ) : null}
+                                    {performanceForecast ? (
+                                        <Badge variant="outline" className="h-5 text-[10px]">
+                                            {performanceForecast.provider === "gemini" ? "Gemini" : "Heuristic"}
+                                        </Badge>
+                                    ) : null}
+                                </div>
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 gap-1.5"
+                                    onClick={handlePerformanceForecast}
+                                    disabled={isForecastingPerformance || slowSnapshots.length < 3}
+                                >
+                                    {isForecastingPerformance ? (
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                        <Flame className="h-3.5 w-3.5" />
+                                    )}
+                                    Forecast bottlenecks
+                                </Button>
+                            </div>
+                            <p className="mt-2 text-xs text-muted-foreground">
+                                Uses local snapshot time series, live pg_stat aggregates, connection-wide risk ranks, and
+                                optional EXPLAIN JSON to estimate where latency may head and what to do before it hurts
+                                production SLOs.
+                            </p>
+                            {trendExecutionMetrics ? (
+                                <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-3">
+                                    <MetricCard
+                                        label="Slope"
+                                        value={`${trendExecutionMetrics.slopeMsPerDay.toFixed(2)} ms/day`}
+                                        hint="Linear trend of mean execution time"
+                                    />
+                                    <MetricCard
+                                        label="Last vs baseline"
+                                        value={`${trendExecutionMetrics.lastVsBaseline.toFixed(2)}×`}
+                                        hint="Latest mean vs median of prior snapshots"
+                                    />
+                                    <MetricCard
+                                        label="Span"
+                                        value={`${trendExecutionMetrics.spanDays.toFixed(1)}d`}
+                                        hint={`${trendExecutionMetrics.snapshotCount} snapshots`}
+                                    />
+                                </div>
+                            ) : (
+                                <p className="mt-3 text-xs text-muted-foreground">
+                                    Record multiple snapshots over time to unlock quantitative trend signals.
+                                </p>
+                            )}
+                            {performanceForecast ? (
+                                <div className="mt-4 space-y-3 border-t border-border/30 pt-4">
+                                    <p className="text-sm font-medium text-foreground">{performanceForecast.headline}</p>
+                                    <p className="text-[11px] text-muted-foreground">
+                                        Horizon ~{performanceForecast.horizon_weeks} week(s) · Confidence{" "}
+                                        {performanceForecast.confidence}
+                                    </p>
+                                    <div className="space-y-2">
+                                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                                            Likely bottlenecks
+                                        </p>
+                                        {performanceForecast.predicted_bottlenecks.map((b, i) => (
+                                            <div
+                                                key={`${b.title}-${i}`}
+                                                className="rounded-lg border border-border/40 bg-background/40 p-3 text-xs"
+                                            >
+                                                <p className="font-medium text-foreground">{b.title}</p>
+                                                <p className="mt-1 text-muted-foreground">{b.rationale}</p>
+                                                <p className="mt-1 text-[10px] text-muted-foreground/80">
+                                                    {b.likelihood} · {b.timeframe}
+                                                </p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    <div className="space-y-2">
+                                        <p className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                                            Preventive actions
+                                        </p>
+                                        {performanceForecast.preventive_actions.map((a, i) => (
+                                            <div
+                                                key={`${a.action}-${i}`}
+                                                className="rounded-lg border border-emerald-500/20 bg-emerald-500/5 p-3 text-xs"
+                                            >
+                                                <div className="flex flex-wrap items-center gap-2">
+                                                    <Badge variant="outline" className="h-5 text-[10px]">
+                                                        {a.priority}
+                                                    </Badge>
+                                                    <span className="font-medium text-foreground">{a.action}</span>
+                                                </div>
+                                                <p className="mt-1 text-muted-foreground">
+                                                    {a.expected_impact} · Effort: {a.effort}
+                                                </p>
+                                            </div>
+                                        ))}
+                                    </div>
+                                    {performanceForecast.monitoring_suggestions.length > 0 ? (
+                                        <div className="rounded-lg border border-border/40 bg-background/30 p-3">
+                                            <p className="mb-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                                                Monitoring
+                                            </p>
+                                            <ul className="list-inside list-disc space-y-1 text-xs text-muted-foreground">
+                                                {performanceForecast.monitoring_suggestions.map((s) => (
+                                                    <li key={s}>{s}</li>
+                                                ))}
+                                            </ul>
+                                        </div>
+                                    ) : null}
+                                </div>
+                            ) : null}
+                        </section>
+
+                        <section className="rounded-xl border border-border/40 bg-card/20 p-4">
+                            <div className="flex items-center justify-between gap-2">
+                                <h2 className="text-sm font-semibold">Execution Plan</h2>
+                                {!slowInsight?.explain_json ? (
+                                    <Button
+                                        variant="outline"
+                                        size="sm"
+                                        className="h-7 gap-1.5"
+                                        onClick={handleCaptureExplainPg}
+                                        disabled={isCapturingExplainPg}
+                                    >
+                                        {isCapturingExplainPg ? (
+                                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                        ) : (
+                                            <WandSparkles className="h-3.5 w-3.5" />
+                                        )}
+                                        Capture EXPLAIN
+                                    </Button>
+                                ) : null}
+                            </div>
+                            <div className="mt-3 rounded-lg border border-border/40 bg-background/40 p-2">
+                                {slowInsight?.explain_json ? (
+                                    <QueryPlanViewer
+                                        rawJson={slowInsight.explain_json}
+                                        onApplyFix={async (sql) => {
+                                            navigator.clipboard.writeText(sql);
+                                            toast.success("Suggested fix copied");
+                                        }}
+                                    />
+                                ) : (
+                                    <p className="px-3 py-6 text-center text-xs text-muted-foreground">
+                                        No execution plan captured yet. Persists locally per statement fingerprint.
+                                    </p>
+                                )}
+                            </div>
+                        </section>
+
+                        <section className="rounded-xl border border-border/40 bg-card/20 p-4">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <h2 className="text-sm font-semibold">AI Explanation &amp; Optimization</h2>
+                                    {pgStatAiPayload ? (
+                                        <Badge variant="outline" className="h-5 text-[10px]">
+                                            {pgStatAiPayload.provider === "gemini" ? "Gemini" : "Heuristic"}
+                                        </Badge>
+                                    ) : null}
+                                </div>
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 gap-1.5"
+                                    onClick={handleGenerateAiPg}
+                                    disabled={isGeneratingAi}
+                                >
+                                    {isGeneratingAi ? (
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                        <Bot className="h-3.5 w-3.5" />
+                                    )}
+                                    Generate Optimized Version
+                                </Button>
+                            </div>
+
+                            {!pgStatAiPayload ? (
+                                <p className="mt-3 text-xs text-muted-foreground">
+                                    Uses pg_stat metrics and optional EXPLAIN JSON. Add a Gemini API key in Settings → AI
+                                    for intelligent rewrite and index suggestions.
+                                </p>
+                            ) : (
+                                <div className="mt-3 space-y-3">
+                                    <div className="rounded-lg border border-border/40 bg-background/40 p-3 text-sm text-muted-foreground">
+                                        {pgStatAiPayload.explanation}
+                                    </div>
+                                    <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-3">
+                                        <p className="mb-1 text-[11px] uppercase tracking-wide text-emerald-300/80">
+                                            Optimized SQL
+                                        </p>
+                                        <pre className="overflow-x-auto text-xs leading-relaxed text-emerald-200/90">
+                                            {pgStatAiPayload.optimized_sql}
+                                        </pre>
+                                    </div>
+
+                                    <div className="rounded-lg border border-border/40 bg-background/40 p-3">
+                                        <p className="mb-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                                            Changes Made
+                                        </p>
+                                        <div className="space-y-2">
+                                            {pgStatAiPayload.changes_made.map((change, idx) => (
+                                                <div key={`${change.change}-${idx}`} className="rounded border border-border/30 p-2">
+                                                    <p className="text-xs font-medium text-foreground">{change.change}</p>
+                                                    <p className="mt-1 text-[11px] text-muted-foreground">{change.reason}</p>
+                                                    <p className="mt-1 text-[11px] text-emerald-300/80">Impact: {change.impact}</p>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    </div>
+
+                                    {pgStatAiPayload.required_indexes.length > 0 ? (
+                                        <div className="rounded-lg border border-border/40 bg-background/40 p-3">
+                                            <p className="mb-2 text-[11px] uppercase tracking-wide text-muted-foreground">
+                                                Fix Actions
+                                            </p>
+                                            <div className="space-y-2">
+                                                {pgStatAiPayload.required_indexes.map((index, idx) => (
+                                                    <div key={`${index.sql}-${idx}`} className="rounded border border-border/30 p-2">
+                                                        <pre className="overflow-x-auto text-xs text-cyan-200/90">{index.sql}</pre>
+                                                        <p className="mt-1 text-[11px] text-muted-foreground">
+                                                            Estimated size: {index.estimated_size_mb}MB | Build time:{" "}
+                                                            {index.build_time_minutes}m |{" "}
+                                                            {index.locks_table ? "May lock table" : "No table lock (CONCURRENTLY)"}
+                                                        </p>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        </div>
+                                    ) : null}
+
+                                    <div className="grid gap-3 sm:grid-cols-3">
+                                        <MetricCard
+                                            label="Current"
+                                            value={formatMs(pgStatAiPayload.estimated_improvement.current_ms)}
+                                        />
+                                        <MetricCard
+                                            label="Estimated"
+                                            value={formatMs(pgStatAiPayload.estimated_improvement.optimized_ms)}
+                                        />
+                                        <MetricCard
+                                            label="Speedup"
+                                            value={`${pgStatAiPayload.estimated_improvement.speedup_factor}x`}
+                                            hint={`Confidence: ${pgStatAiPayload.estimated_improvement.confidence}`}
+                                        />
+                                    </div>
+                                </div>
+                            )}
+                        </section>
+
+                        <section className="rounded-xl border border-border/40 bg-card/20 p-4">
+                            <h2 className="text-sm font-semibold">Notes</h2>
+                            <Textarea
+                                value={pgStatNoteDraft}
+                                onChange={(e) => setPgStatNoteDraft(e.target.value)}
+                                placeholder="Team context, incident notes, or follow-up for this statement…"
+                                className="mt-3 min-h-[90px] text-sm"
+                            />
+                            <div className="mt-2 flex justify-end">
+                                <Button
+                                    variant="outline"
+                                    size="sm"
+                                    className="h-7 gap-1.5"
+                                    onClick={handleSavePgStatNote}
+                                    disabled={isSavingPgStatNote}
+                                >
+                                    {isSavingPgStatNote ? (
+                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                                    ) : (
+                                        <Sparkles className="h-3.5 w-3.5" />
+                                    )}
+                                    Save Note
+                                </Button>
                             </div>
                         </section>
                     </div>
@@ -1424,8 +2093,15 @@ export default function QueryHistoryPage() {
                         </section>
 
                         <section className="rounded-xl border border-border/40 bg-card/20 p-4">
-                            <div className="flex items-center justify-between gap-2">
-                                <h2 className="text-sm font-semibold">AI Explanation & Optimization</h2>
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div className="flex flex-wrap items-center gap-2">
+                                    <h2 className="text-sm font-semibold">AI Explanation & Optimization</h2>
+                                    {aiPayload ? (
+                                        <Badge variant="outline" className="h-5 text-[10px]">
+                                            {aiPayload.provider === "gemini" ? "Gemini" : "Heuristic"}
+                                        </Badge>
+                                    ) : null}
+                                </div>
                                 <Button
                                     variant="outline"
                                     size="sm"
@@ -1834,9 +2510,36 @@ export default function QueryHistoryPage() {
                                 Bookmarked
                             </Button>
 
+                            <Button
+                                variant={pgStatPinnedOnly ? "default" : "outline"}
+                                size="sm"
+                                className="h-7 gap-1.5 text-[11px]"
+                                onClick={() => setPgStatPinnedOnly((x) => !x)}
+                                disabled={source !== "pg_stat"}
+                            >
+                                <Pin className="h-3.5 w-3.5" />
+                                Pinned
+                            </Button>
+
+                            {source === "pg_stat" ? (
+                                <div className="flex items-center gap-2 rounded-lg border border-border/40 bg-card/20 px-2 py-1">
+                                    <Switch
+                                        id="qh-auto-snap"
+                                        checked={queryHistoryAutoSnapshotPgStat}
+                                        onCheckedChange={(c) =>
+                                            updateSettings({ queryHistoryAutoSnapshotPgStat: c })
+                                        }
+                                        className="scale-90"
+                                    />
+                                    <Label htmlFor="qh-auto-snap" className="cursor-pointer text-[11px] text-muted-foreground">
+                                        Auto-snapshot
+                                    </Label>
+                                </div>
+                            ) : null}
+
                             <TabsList className="ml-auto" variant="line">
                                 <TabsTrigger value="history" className="text-xs px-3">List View</TabsTrigger>
-                                <TabsTrigger value="dashboard" className="text-xs px-3" disabled={source === "pg_stat"}>
+                                <TabsTrigger value="dashboard" className="text-xs px-3">
                                     Dashboard
                                 </TabsTrigger>
                             </TabsList>
@@ -1845,6 +2548,32 @@ export default function QueryHistoryPage() {
 
                     <TabsContent value="history" className="h-full min-h-0">
                         <div className="flex h-full min-h-0 flex-col">
+                            {showPgStatSetupCallout && pgStatStatus ? (
+                                <PgStatStatementsSetupCallout
+                                    status={pgStatStatus}
+                                    onSetup={handleEnablePgStat}
+                                    isSettingUp={isEnablingPgStat}
+                                />
+                            ) : null}
+                            {source === "pg_stat" &&
+                            pgStatStatus?.can_query &&
+                            connectionTrendRisks.some((r) => r.risk_level === "high" || r.risk_level === "medium") ? (
+                                <div className="mx-3 mt-2 flex flex-wrap items-start gap-2 rounded-lg border border-amber-500/30 bg-amber-500/5 px-3 py-2 text-xs text-amber-100/90">
+                                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-400" />
+                                    <div>
+                                        <p className="font-medium text-amber-50/95">
+                                            {connectionTrendRisks.filter((r) => r.risk_level === "high").length} high ·{" "}
+                                            {connectionTrendRisks.filter((r) => r.risk_level === "medium").length} medium
+                                            risk statements from local snapshot trends
+                                        </p>
+                                        <p className="mt-0.5 text-[11px] text-amber-100/70">
+                                            Select a statement with snapshots and use{" "}
+                                            <span className="font-medium">Forecast bottlenecks</span> for preventive
+                                            recommendations.
+                                        </p>
+                                    </div>
+                                </div>
+                            ) : null}
                             <ResizablePanelGroup orientation="horizontal" className="flex-1 min-h-0">
                                 <ResizablePanel defaultSize={42} minSize={25}>
                                     <div className="h-full border-r border-border/20 bg-card/10">
@@ -1892,6 +2621,10 @@ export default function QueryHistoryPage() {
                                                     </div>
                                                 </div>
                                             )
+                                        ) : pgStatStatusLoading ? (
+                                            <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                                                <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Checking extension status…
+                                            </div>
                                         ) : pgStatLoading ? (
                                             <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
                                                 <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Loading pg_stat_statements…
@@ -1912,26 +2645,8 @@ export default function QueryHistoryPage() {
                                                 </p>
                                             </div>
                                         ) : !pgStatStatus?.can_query ? (
-                                            <div className="m-4 rounded-lg border border-amber-500/30 bg-amber-500/10 p-4">
-                                                <p className="text-sm font-medium text-amber-100">pg_stat_statements is not ready</p>
-                                                <p className="mt-1 text-xs text-amber-100/80">
-                                                    {pgStatStatus?.message ??
-                                                        "Enable extension and preload setting, then refresh."}
-                                                </p>
-                                                <Button
-                                                    variant="outline"
-                                                    size="sm"
-                                                    className="mt-3 h-7 gap-1.5"
-                                                    onClick={handleEnablePgStat}
-                                                    disabled={isEnablingPgStat}
-                                                >
-                                                    {isEnablingPgStat ? (
-                                                        <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                                                    ) : (
-                                                        <Wrench className="h-3.5 w-3.5" />
-                                                    )}
-                                                    Setup pg_stat_statements
-                                                </Button>
+                                            <div className="flex h-full flex-col items-center justify-center px-6 text-center text-muted-foreground">
+                                                <p className="text-sm">Complete the setup steps above to list statements.</p>
                                             </div>
                                         ) : pgStatError ? (
                                             <div className="m-4 rounded-lg border border-destructive/40 bg-destructive/10 p-4">
@@ -1946,14 +2661,23 @@ export default function QueryHistoryPage() {
                                                 <Clock3 className="h-8 w-8 text-muted-foreground/30" />
                                                 <p className="mt-2 text-sm text-muted-foreground">No statements matched your filters.</p>
                                             </div>
+                                        ) : displayPgStatItems.length === 0 ? (
+                                            <div className="flex h-full flex-col items-center justify-center px-6 text-center">
+                                                <Pin className="h-8 w-8 text-muted-foreground/30" />
+                                                <p className="mt-2 text-sm text-muted-foreground">
+                                                    No pinned statements. Pin items from the detail panel to list them here.
+                                                </p>
+                                            </div>
                                         ) : (
                                             <div className="h-full overflow-auto p-3" onScroll={handleListScroll}>
                                                 <div className="space-y-2">
-                                                    {pgStatItems.map((item) => (
+                                                    {displayPgStatItems.map((item) => (
                                                         <PgStatRow
                                                             key={item.query_id}
                                                             item={item}
                                                             active={item.query_id === selectedPgStatId}
+                                                            pinned={pinnedFingerprints.includes(item.query_id)}
+                                                            trendRisk={trendRiskByFingerprint.get(item.query_id) ?? null}
                                                             onClick={() => setSelectedPgStatId(item.query_id)}
                                                         />
                                                     ))}
@@ -1966,7 +2690,9 @@ export default function QueryHistoryPage() {
                                                         </div>
                                                     )}
                                                     <p className="text-center text-[11px] text-muted-foreground/70">
-                                                        Loaded {formatNumber(pgStatItems.length)} of {formatNumber(pgStatTotalCount)}
+                                                        Showing {formatNumber(displayPgStatItems.length)} of{" "}
+                                                        {formatNumber(pgStatItems.length)} loaded (
+                                                        {formatNumber(pgStatTotalCount)} total)
                                                     </p>
                                                 </div>
                                             </div>
@@ -2008,207 +2734,28 @@ export default function QueryHistoryPage() {
 
                     <TabsContent value="dashboard" className="h-full min-h-0">
                         <div className="h-full overflow-auto p-4">
-                            {source !== "local" ? (
-                                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                                    Dashboard is available in Local History mode.
-                                </div>
-                            ) : dashboardLoading ? (
-                                <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
-                                    <Loader2 className="mr-2 h-4 w-4 animate-spin" /> Building dashboard…
-                                </div>
-                            ) : dashboardError ? (
-                                <div className="rounded-lg border border-destructive/40 bg-destructive/10 p-4">
-                                    <p className="text-sm font-medium text-destructive">Failed to load dashboard</p>
-                                    <p className="mt-1 text-xs text-muted-foreground">{dashboardError}</p>
-                                </div>
-                            ) : !dashboard ? (
-                                <div className="text-sm text-muted-foreground">No dashboard data available.</div>
+                            {source === "local" ? (
+                                <QueryHistoryPerformanceDashboard
+                                    variant="local"
+                                    dashboard={dashboard}
+                                    loading={dashboardLoading}
+                                    error={dashboardError}
+                                    listStats={listData?.stats ?? null}
+                                />
                             ) : (
-                                <div className="grid gap-4 xl:grid-cols-2">
-                                    <div className="rounded-xl border border-border/40 bg-card/20 p-3">
-                                        <div className="mb-2 flex items-center gap-2 text-sm font-medium">
-                                            <Timer className="h-4 w-4 text-cyan-300" />
-                                            Query Speed Over Time
-                                        </div>
-                                        <div className="h-[250px] w-full">
-                                            <ResponsiveContainer>
-                                                <LineChart data={dashboard.trend}>
-                                                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.15)" />
-                                                    <XAxis
-                                                        dataKey="bucket_start"
-                                                        tickFormatter={(v) => new Date(v).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-                                                        stroke="rgba(148,163,184,0.5)"
-                                                        fontSize={11}
-                                                    />
-                                                    <YAxis stroke="rgba(148,163,184,0.5)" fontSize={11} />
-                                                    <RechartsTooltip
-                                                        formatter={(value: number | string | undefined) => [
-                                                            formatMs(Number(value ?? 0)),
-                                                            "Avg",
-                                                        ]}
-                                                        labelFormatter={(value) => new Date(Number(value)).toLocaleString()}
-                                                        contentStyle={{
-                                                            background: "#0b1220",
-                                                            border: "1px solid rgba(148,163,184,0.2)",
-                                                        }}
-                                                    />
-                                                    <Line type="monotone" dataKey="avg_ms" stroke="#22d3ee" strokeWidth={2} dot={false} />
-                                                </LineChart>
-                                            </ResponsiveContainer>
-                                        </div>
-                                    </div>
-
-                                    <div className="rounded-xl border border-border/40 bg-card/20 p-3">
-                                        <div className="mb-2 flex items-center gap-2 text-sm font-medium">
-                                            <Database className="h-4 w-4 text-emerald-300" />
-                                            Query Volume by Hour
-                                        </div>
-                                        <div className="h-[250px] w-full">
-                                            <ResponsiveContainer>
-                                                <BarChart data={dashboard.volume_by_hour}>
-                                                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.15)" />
-                                                    <XAxis dataKey="hour" stroke="rgba(148,163,184,0.5)" fontSize={11} />
-                                                    <YAxis stroke="rgba(148,163,184,0.5)" fontSize={11} />
-                                                    <RechartsTooltip
-                                                        formatter={(value: number | string | undefined) => [
-                                                            Number(value ?? 0).toLocaleString(),
-                                                            "Queries",
-                                                        ]}
-                                                        contentStyle={{
-                                                            background: "#0b1220",
-                                                            border: "1px solid rgba(148,163,184,0.2)",
-                                                        }}
-                                                    />
-                                                    <Bar dataKey="count" fill="#34d399" radius={[4, 4, 0, 0]} />
-                                                </BarChart>
-                                            </ResponsiveContainer>
-                                        </div>
-                                    </div>
-
-                                    <div className="rounded-xl border border-border/40 bg-card/20 p-3">
-                                        <div className="mb-2 flex items-center gap-2 text-sm font-medium">
-                                            <Flame className="h-4 w-4 text-red-300" />
-                                            Top 10 Slowest Query Groups
-                                        </div>
-                                        <div className="space-y-2">
-                                            {dashboard.top_slowest.map((item) => (
-                                                <div key={`${item.query_hash}`} className="rounded-lg border border-border/30 bg-background/40 p-2">
-                                                    <div className="flex items-center justify-between gap-2">
-                                                        <p className="truncate font-mono text-xs text-foreground/90">{clampPreview(item.query_text, 120)}</p>
-                                                        <Badge variant="outline" className="h-5 px-1.5 text-[10px] border-red-400/40 text-red-300">
-                                                            {formatMs(item.slowest_ms)}
-                                                        </Badge>
-                                                    </div>
-                                                    <p className="mt-1 text-[11px] text-muted-foreground">
-                                                        Avg {formatMs(item.avg_ms)} · Runs {item.run_count.toLocaleString()}
-                                                    </p>
-                                                </div>
-                                            ))}
-                                            {dashboard.top_slowest.length === 0 && (
-                                                <p className="text-xs text-muted-foreground">No slow queries in selected range.</p>
-                                            )}
-                                        </div>
-                                    </div>
-
-                                    <div className="rounded-xl border border-border/40 bg-card/20 p-3">
-                                        <div className="mb-2 flex items-center gap-2 text-sm font-medium">
-                                            <Layers className="h-4 w-4 text-violet-300" />
-                                            Table Hit Frequency
-                                        </div>
-                                        <div className="space-y-2">
-                                            {dashboard.table_frequency.map((table) => (
-                                                <div key={table.table_name}>
-                                                    <div className="mb-1 flex items-center justify-between text-xs">
-                                                        <span className="font-medium text-foreground/90">{table.table_name}</span>
-                                                        <span className="text-muted-foreground">{table.count.toLocaleString()}</span>
-                                                    </div>
-                                                    <div className="h-2 rounded bg-muted/30">
-                                                        <div
-                                                            className="h-2 rounded bg-violet-400/70"
-                                                            style={{
-                                                                width: `${Math.max(
-                                                                    8,
-                                                                    (table.count /
-                                                                        Math.max(
-                                                                            1,
-                                                                            dashboard.table_frequency[0]?.count ?? 1
-                                                                        )) *
-                                                                        100
-                                                                )}%`,
-                                                            }}
-                                                        />
-                                                    </div>
-                                                </div>
-                                            ))}
-                                            {dashboard.table_frequency.length === 0 && (
-                                                <p className="text-xs text-muted-foreground">No table frequency data available.</p>
-                                            )}
-                                        </div>
-                                    </div>
-
-                                    <div className="rounded-xl border border-border/40 bg-card/20 p-3 xl:col-span-2">
-                                        <div className="mb-2 flex items-center gap-2 text-sm font-medium">
-                                            <AlertTriangle className="h-4 w-4 text-amber-300" />
-                                            Error Rate and Cache Trend
-                                        </div>
-                                        <div className="h-[260px] w-full">
-                                            <ResponsiveContainer>
-                                                <AreaChart data={dashboard.trend}>
-                                                    <CartesianGrid strokeDasharray="3 3" stroke="rgba(148,163,184,0.15)" />
-                                                    <XAxis
-                                                        dataKey="bucket_start"
-                                                        tickFormatter={(v) => new Date(v).toLocaleDateString(undefined, { month: "short", day: "numeric" })}
-                                                        stroke="rgba(148,163,184,0.5)"
-                                                        fontSize={11}
-                                                    />
-                                                    <YAxis stroke="rgba(148,163,184,0.5)" fontSize={11} />
-                                                    <RechartsTooltip
-                                                        formatter={(value: number | string | undefined, name?: string) => {
-                                                            const numeric = Number(value ?? 0);
-                                                            if (name === "error_rate") return [`${numeric.toFixed(2)}%`, "Error rate"];
-                                                            return [`${numeric.toFixed(2)}%`, "Cache hit"];
-                                                        }}
-                                                        labelFormatter={(value) => new Date(Number(value)).toLocaleString()}
-                                                        contentStyle={{
-                                                            background: "#0b1220",
-                                                            border: "1px solid rgba(148,163,184,0.2)",
-                                                        }}
-                                                    />
-                                                    <Area type="monotone" dataKey="error_rate" stroke="#f97316" fill="#f9731630" />
-                                                    <Line type="monotone" dataKey="cache_hit_rate" stroke="#60a5fa" strokeWidth={2} dot={false} />
-                                                </AreaChart>
-                                            </ResponsiveContainer>
-                                        </div>
-                                    </div>
-
-                                    <div className="rounded-xl border border-border/40 bg-card/20 p-3 xl:col-span-2">
-                                        <div className="mb-2 flex items-center gap-2 text-sm font-medium">
-                                            <AlertTriangle className="h-4 w-4 text-red-300" />
-                                            Anomaly Detection
-                                        </div>
-                                        {dashboard.anomalies.length === 0 ? (
-                                            <p className="text-xs text-muted-foreground">
-                                                No major regressions detected in the current comparison window.
-                                            </p>
-                                        ) : (
-                                            <div className="space-y-2">
-                                                {dashboard.anomalies.map((item) => (
-                                                    <div key={`${item.query_hash}`} className="rounded-lg border border-red-500/30 bg-red-500/5 p-2">
-                                                        <div className="flex flex-wrap items-center justify-between gap-2">
-                                                            <p className="truncate font-mono text-xs text-foreground/90 max-w-[70%]">{clampPreview(item.query_text, 140)}</p>
-                                                            <Badge variant="outline" className="h-5 px-1.5 text-[10px] border-red-400/40 text-red-300">
-                                                                {item.delta_factor.toFixed(1)}x slower
-                                                            </Badge>
-                                                        </div>
-                                                        <p className="mt-1 text-[11px] text-muted-foreground">
-                                                            Previous avg {formatMs(item.previous_avg_ms)} → Recent avg {formatMs(item.recent_avg_ms)}
-                                                        </p>
-                                                    </div>
-                                                ))}
-                                            </div>
-                                        )}
-                                    </div>
-                                </div>
+                                <QueryHistoryPerformanceDashboard
+                                    variant="pg_stat"
+                                    isConnected={Boolean(isConnected && connectionId)}
+                                    statusLoading={pgStatStatusLoading}
+                                    statusError={pgStatStatusError}
+                                    statusErrorDisplay={pgStatStatusErrorDisplay}
+                                    canQuery={pgStatStatus?.can_query}
+                                    itemsLoading={pgStatLoading}
+                                    itemsError={pgStatError}
+                                    items={pgStatItems}
+                                    totalCount={pgStatTotalCount}
+                                    trendRisks={connectionTrendRisks}
+                                />
                             )}
                         </div>
                     </TabsContent>

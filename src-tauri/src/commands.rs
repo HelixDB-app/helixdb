@@ -1950,6 +1950,212 @@ pub async fn query_history_export_csv(
     .map_err(|e| format!("Query history CSV export worker failed: {}", e))?
 }
 
+// ─── Slow query snapshots (pg_stat_statements → SQLite) ───────────────────
+
+#[tauri::command]
+pub async fn slow_query_ingest_from_pg_stat(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    connection_id: String,
+    min_mean_ms: Option<f64>,
+    limit: Option<u32>,
+) -> Result<u32, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    let lim = limit.unwrap_or(200).clamp(1, 500);
+    let filter = PgStatStatementsFilter {
+        search_text: None,
+        min_mean_ms,
+        sort_by: Some("total".to_string()),
+        sort_dir: Some("DESC".to_string()),
+        limit: Some(lim),
+        offset: Some(0),
+    };
+    let page = queries::list_pg_stat_statements(&pool, &filter).await?;
+    let rows: Vec<query_history_storage::SlowQueryPgStatRow> = page
+        .items
+        .into_iter()
+        .map(|e| query_history_storage::SlowQueryPgStatRow {
+            query_fingerprint: e.query_id,
+            query: e.query,
+            calls: e.calls,
+            total_exec_time_ms: e.total_exec_time_ms,
+            mean_exec_time_ms: e.mean_exec_time_ms,
+            min_exec_time_ms: e.min_exec_time_ms,
+            max_exec_time_ms: e.max_exec_time_ms,
+            rows: e.rows,
+            shared_blks_hit: e.shared_blks_hit,
+            shared_blks_read: e.shared_blks_read,
+            temp_blks_written: e.temp_blks_written,
+            hit_percent: e.hit_percent,
+        })
+        .collect();
+
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let cid = connection_id.clone();
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::ingest_pg_stat_slow_snapshots(Some(app_data_dir), &cid, &rows)
+    })
+    .await
+    .map_err(|e| format!("Slow query ingest worker failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn slow_query_snapshots_for_fingerprint(
+    app: AppHandle,
+    connection_id: String,
+    query_fingerprint: String,
+    limit: Option<u32>,
+) -> Result<Vec<query_history_storage::SlowQuerySnapshotRecord>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let lim = limit.unwrap_or(60);
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::list_slow_query_snapshots(
+            Some(app_data_dir),
+            &connection_id,
+            &query_fingerprint,
+            lim,
+        )
+    })
+    .await
+    .map_err(|e| format!("Slow query snapshots worker failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn slow_query_get_insight(
+    app: AppHandle,
+    connection_id: String,
+    query_fingerprint: String,
+) -> Result<Option<query_history_storage::SlowQueryInsight>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::get_slow_query_insight(
+            Some(app_data_dir),
+            &connection_id,
+            &query_fingerprint,
+        )
+    })
+    .await
+    .map_err(|e| format!("Slow query insight worker failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn slow_query_save_explain_for_fingerprint(
+    app: AppHandle,
+    connection_id: String,
+    query_fingerprint: String,
+    query_text: String,
+    explain_json: String,
+) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::slow_query_save_explain_for_fingerprint(
+            Some(app_data_dir),
+            &connection_id,
+            &query_fingerprint,
+            &query_text,
+            explain_json,
+        )
+    })
+    .await
+    .map_err(|e| format!("Slow query explain save worker failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn slow_query_save_ai_for_fingerprint(
+    app: AppHandle,
+    connection_id: String,
+    query_fingerprint: String,
+    query_text: String,
+    ai_analysis_json: String,
+) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::slow_query_save_ai_for_fingerprint(
+            Some(app_data_dir),
+            &connection_id,
+            &query_fingerprint,
+            &query_text,
+            ai_analysis_json,
+        )
+    })
+    .await
+    .map_err(|e| format!("Slow query AI save worker failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn slow_query_save_note_for_fingerprint(
+    app: AppHandle,
+    connection_id: String,
+    query_fingerprint: String,
+    query_text: String,
+    note: Option<String>,
+) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::slow_query_save_note_for_fingerprint(
+            Some(app_data_dir),
+            &connection_id,
+            &query_fingerprint,
+            &query_text,
+            note,
+        )
+    })
+    .await
+    .map_err(|e| format!("Slow query note save worker failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn slow_query_set_pinned_for_fingerprint(
+    app: AppHandle,
+    connection_id: String,
+    query_fingerprint: String,
+    query_text: String,
+    pinned: bool,
+) -> Result<(), String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::slow_query_set_pinned_for_fingerprint(
+            Some(app_data_dir),
+            &connection_id,
+            &query_fingerprint,
+            &query_text,
+            pinned,
+        )
+    })
+    .await
+    .map_err(|e| format!("Slow query pin worker failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn slow_query_list_pinned_fingerprints(
+    app: AppHandle,
+    connection_id: String,
+) -> Result<Vec<String>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::list_slow_query_pinned_fingerprints(Some(app_data_dir), &connection_id)
+    })
+    .await
+    .map_err(|e| format!("Slow query pinned list worker failed: {}", e))?
+}
+
+#[tauri::command]
+pub async fn slow_query_list_trend_risks(
+    app: AppHandle,
+    connection_id: String,
+    min_snapshots: Option<u32>,
+    limit: Option<u32>,
+) -> Result<Vec<query_history_storage::SlowQueryTrendRisk>, String> {
+    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
+    let min_s = min_snapshots.unwrap_or(3);
+    let lim = limit.unwrap_or(15);
+    tokio::task::spawn_blocking(move || {
+        query_history_storage::list_slow_query_trend_risks(Some(app_data_dir), &connection_id, min_s, lim)
+    })
+    .await
+    .map_err(|e| format!("Slow query trend risks worker failed: {}", e))?
+}
+
 /// Open the given path in the system file manager (e.g. reveal in Finder). Pass a file path to open its parent folder.
 #[tauri::command]
 pub async fn open_path(app: AppHandle, path: String) -> Result<(), String> {

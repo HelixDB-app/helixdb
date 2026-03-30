@@ -219,6 +219,11 @@ export interface PgStatStatementsStatus {
     preload_enabled: boolean;
     can_query: boolean;
     shared_preload_libraries: string | null;
+    /** Same as `message`, split for bullet UI (empty when ready). */
+    issues: string[];
+    config_file: string | null;
+    /** Suggested postgresql.conf line when preload is missing. */
+    suggested_shared_preload_line: string | null;
     message: string | null;
 }
 
@@ -237,6 +242,8 @@ export interface PgStatStatementsFilter {
 /** One row from pg_stat_statements. */
 export interface PgStatStatementEntry {
     query_id: string;
+    /** PostgreSQL internal queryid when available (string for bigint safety). */
+    pg_query_id?: string | null;
     query: string;
     calls: number;
     total_exec_time_ms: number;
@@ -261,6 +268,93 @@ export interface PgStatStatementsPage {
     limit: number;
     offset: number;
     has_more: boolean;
+}
+
+/** Local SQLite snapshot of pg_stat_statements metrics over time. */
+export interface SlowQuerySnapshotRecord {
+    id: number;
+    connection_id: string;
+    query_fingerprint: string;
+    captured_at: number;
+    mean_exec_time_ms: number;
+    max_exec_time_ms: number;
+    min_exec_time_ms: number;
+    total_exec_time_ms: number;
+    calls: number;
+    rows_total: number;
+    hit_percent: number;
+}
+
+/** Aggregated execution trend risk from local slow_query_snapshot series. */
+export interface SlowQueryTrendRisk {
+    query_fingerprint: string;
+    query_text_preview: string | null;
+    snapshot_count: number;
+    span_days: number;
+    mean_ms_slope_per_day: number;
+    last_mean_ms: number;
+    baseline_median_ms: number;
+    last_vs_baseline_ratio: number;
+    mean_ms_volatility: number;
+    risk_level: string;
+    risk_score: number;
+    summary: string;
+}
+
+/** AI or heuristic forecast from execution trends (preventive optimizations). */
+export interface PerformanceForecastPayload {
+    headline: string;
+    horizon_weeks: number;
+    confidence: "high" | "medium" | "low";
+    predicted_bottlenecks: Array<{
+        title: string;
+        likelihood: string;
+        timeframe: string;
+        rationale: string;
+    }>;
+    preventive_actions: Array<{
+        action: string;
+        priority: "P0" | "P1" | "P2";
+        effort: string;
+        expected_impact: string;
+    }>;
+    monitoring_suggestions: string[];
+    trend_signals: string[];
+    generated_at: number;
+    provider: "gemini" | "local-heuristic";
+}
+
+/** Cached EXPLAIN / AI / notes for a pg_stat statement fingerprint. */
+export interface SlowQueryInsight {
+    connection_id: string;
+    query_fingerprint: string;
+    query_text_last_seen: string;
+    explain_json: string | null;
+    ai_analysis_json: string | null;
+    note: string | null;
+    pinned: boolean;
+    updated_at: number;
+}
+
+/** AI or heuristic query optimization package (local history + pg_stat). */
+export interface QueryOptimizationPayload {
+    explanation: string;
+    optimized_sql: string;
+    changes_made: Array<{ change: string; reason: string; impact: string }>;
+    required_indexes: Array<{
+        sql: string;
+        estimated_size_mb: number;
+        build_time_minutes: number;
+        locks_table: boolean;
+    }>;
+    estimated_improvement: {
+        current_ms: number;
+        optimized_ms: number;
+        speedup_factor: number;
+        confidence: "high" | "medium" | "low";
+    };
+    generated_at: number;
+    provider: "local-heuristic" | "gemini";
 }
 
 export interface ResultColumn {
