@@ -21,6 +21,7 @@ export type ApiFeatureType =
     | "query-error"
     | "nl-search"
     | "query-explain"
+    | "query-plan-insights"
     | "schema-doc"
     | "git"
     | "ai_command"

@@ -1287,3 +1287,85 @@ export interface AISchemaReport {
     estimated_load: string;
     summary: string;
 }
+
+// ── Replication Monitor (Tauri replication_snapshot / Patroni) ───────────
+
+export interface ReplicationReplicaRow {
+    pid: number;
+    usename: string;
+    applicationName: string;
+    clientAddr: string | null;
+    clientPort: number | null;
+    state: string;
+    sentLsn: string | null;
+    writeLsn: string | null;
+    flushLsn: string | null;
+    replayLsn: string | null;
+    writeLagMs: number | null;
+    flushLagMs: number | null;
+    replayLagMs: number | null;
+    syncState: string;
+    syncPriority: number;
+}
+
+export interface ReplicationSlotRow {
+    slotName: string;
+    slotType: string;
+    active: boolean;
+    activePid: number | null;
+    restartLsn: string | null;
+    confirmedFlushLsn: string | null;
+    walRetainedBytes: number | null;
+    database: string | null;
+    plugin: string | null;
+}
+
+export interface ReplicationSnapshot {
+    capturedAtMs: number;
+    primaryLsn: string;
+    replicas: ReplicationReplicaRow[];
+    slots: ReplicationSlotRow[];
+    walRetainedTotalBytes: number;
+    maxReplayLagMs: number | null;
+    fetchWarning?: string | null;
+    isInRecovery: boolean;
+}
+
+export interface PatroniNode {
+    name: string;
+    role: string;
+    state: string;
+    lag: number | null;
+    timeline: number | null;
+}
+
+export interface PatroniCluster {
+    scope: string;
+    nodes: PatroniNode[];
+    failoverPossible: boolean;
+}
+
+/** Row from `pg_publication` */
+export interface ReplicationPublicationRow {
+    name: string;
+    allTables: boolean;
+    pubInsert: boolean;
+    pubUpdate: boolean;
+    pubDelete: boolean;
+    pubTruncate: boolean;
+}
+
+export interface CreateLogicalPublicationRequest {
+    name: string;
+    /** `allTables` or `schemas` */
+    mode: "allTables" | "schemas";
+    schemas?: string[];
+}
+
+/** Generated physical-standby snippets (password never included). */
+export interface StandbyReplicationPlan {
+    primaryConninfoLine: string;
+    pgBasebackupExample: string;
+    standbySignalNote: string;
+    hints: string[];
+}

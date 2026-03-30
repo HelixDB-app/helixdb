@@ -3098,7 +3098,11 @@ function ResultsArea({
             {/* Plan view */}
             {!isSandboxMode && activeResultView === "plan" && activePlan && (
                 <div className="flex-1 overflow-hidden">
-                    <QueryPlanViewer rawJson={activePlan} onApplyFix={onApplyFix} />
+                    <QueryPlanViewer
+                        rawJson={activePlan}
+                        onApplyFix={onApplyFix}
+                        sql={activeTab.sql}
+                    />
                 </div>
             )}
 

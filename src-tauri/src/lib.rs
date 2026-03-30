@@ -18,6 +18,8 @@ mod native_menu;
 mod quick_search_icon;
 mod notes_storage;
 mod query_history_storage;
+mod replication;
+mod rls;
 mod schema_designer_storage;
 mod sql_sensitive;
 mod security_commands;
@@ -223,6 +225,11 @@ pub fn run() {
             commands::db_get_sessions,
             commands::db_terminate_backend,
             commands::db_cancel_backend,
+            commands::replication_snapshot,
+            commands::replication_patroni,
+            commands::replication_list_publications,
+            commands::replication_create_publication,
+            commands::replication_standby_plan,
             commands::db_explain_query,
             commands::db_sandbox_begin,
             commands::db_sandbox_execute,
@@ -276,6 +283,8 @@ pub fn run() {
             desktop_panel::desktop_set_active_connection,
             desktop_panel::desktop_toggle_quick_search_panel,
             commands::db_import_schema,
+            commands::rls_matrix_data,
+            commands::rls_impersonate_query,
             // Auth commands
             auth::auth_open_login,
             auth::auth_exchange_desktop_code,

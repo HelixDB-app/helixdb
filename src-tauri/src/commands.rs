@@ -6,6 +6,7 @@ use tauri::{AppHandle, Emitter, Manager, State};
 use tauri_plugin_shell::ShellExt;
 
 use crate::account_security_storage;
+use crate::rls;
 use crate::connections_storage::{self, SavedConnection, SshTunnelConfig};
 use crate::db::types::{ColumnStats, FilterCondition};
 use crate::db::{
@@ -1472,6 +1473,54 @@ pub async fn db_cancel_backend(
     queries::cancel_backend(&pool, pid).await
 }
 
+// ─── Replication Monitor ────────────────────────────────────────────────────
+
+#[tauri::command]
+pub async fn replication_snapshot(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<crate::replication::ReplicationSnapshot, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    crate::replication::fetch_replication_snapshot(&pool).await
+}
+
+#[tauri::command]
+pub async fn replication_patroni(patroni_url: String) -> Result<crate::replication::PatroniCluster, String> {
+    crate::replication::fetch_patroni_cluster(&patroni_url).await
+}
+
+#[tauri::command]
+pub async fn replication_list_publications(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<Vec<crate::replication::PublicationRow>, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    crate::replication::list_publications(&pool).await
+}
+
+#[tauri::command]
+pub async fn replication_create_publication(
+    state: State<'_, AppState>,
+    connection_id: String,
+    request: crate::replication::CreatePublicationRequest,
+) -> Result<String, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    let ver = state.conn_manager.get_pg_version(&connection_id);
+    crate::replication::create_logical_publication(&pool, ver, request).await
+}
+
+#[tauri::command]
+pub async fn replication_standby_plan(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<crate::replication::StandbyReplicationPlan, String> {
+    let conn = state
+        .conn_manager
+        .get_connection_string(&connection_id)
+        .ok_or_else(|| "No connection string for this session.".to_string())?;
+    crate::replication::build_standby_replication_plan(&conn)
+}
+
 // ─── Local PostgreSQL ──────────────────────────────────────────────────────
 
 /// Detect if local PostgreSQL is installed and running.
@@ -2240,4 +2289,36 @@ pub async fn db_import_schema(
         .unwrap_or_else(|_| ("unknown".to_string(), String::new()));
 
     queries::import_schema_full(&pool, &database, &schemas, pg_version).await
+}
+
+/// Load RLS policies, roles, and RLS-enabled tables for a schema (pg_policies + pg_roles + pg_class).
+#[tauri::command]
+pub async fn rls_matrix_data(
+    state: State<'_, AppState>,
+    connection_id: String,
+    schema: String,
+) -> Result<rls::RlsMatrixData, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    rls::load_rls_matrix(&pool, &schema).await
+}
+
+/// Run a read-only probe query as `role` inside BEGIN…ROLLBACK with SET LOCAL ROLE and row_security on.
+#[tauri::command]
+pub async fn rls_impersonate_query(
+    state: State<'_, AppState>,
+    connection_id: String,
+    role: String,
+    schema: String,
+    table: String,
+    custom_sql: Option<String>,
+) -> Result<rls::ImpersonationResult, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    rls::run_impersonation_probe(
+        &pool,
+        &role,
+        &schema,
+        &table,
+        custom_sql.as_deref(),
+    )
+    .await
 }

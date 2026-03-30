@@ -3139,6 +3139,7 @@ dependencies = [
  "block2",
  "chrono",
  "dashmap",
+ "deadpool",
  "deadpool-postgres",
  "dispatch",
  "dotenvy",

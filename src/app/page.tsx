@@ -88,6 +88,7 @@ import {
     PlugZap,
     RefreshCw,
     Clock3,
+    GitBranch,
     GitCompare,
     Search,
     Settings,
@@ -98,6 +99,7 @@ import {
     Terminal,
     Unplug,
     HardDriveDownload,
+    Lock,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -664,6 +666,44 @@ export default function Home() {
                                 Migration Studio
                             </TooltipContent>
                         </Tooltip>
+
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    asChild
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
+                                >
+                                    <Link href="/replication">
+                                        <GitBranch className="h-3.5 w-3.5" />
+                                        <span className="hidden 2xl:inline">Repl</span>
+                                    </Link>
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" sideOffset={6}>
+                                Replication Monitor
+                            </TooltipContent>
+                        </Tooltip>
+
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    asChild
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
+                                >
+                                    <Link href="/rls-matrix">
+                                        <Lock className="h-3.5 w-3.5" />
+                                        <span className="hidden 2xl:inline">RLS</span>
+                                    </Link>
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" sideOffset={6}>
+                                RLS policy matrix
+                            </TooltipContent>
+                        </Tooltip>
                     </div>
 
                     <div className="lg:hidden">
@@ -702,6 +742,18 @@ export default function Home() {
                                     <Link href="/migration-studio">
                                         <GitCompare className="h-3.5 w-3.5" />
                                         Migration Studio
+                                    </Link>
+                                </DropdownMenuItem>
+                                <DropdownMenuItem asChild className="gap-2 text-xs">
+                                    <Link href="/replication">
+                                        <GitBranch className="h-3.5 w-3.5" />
+                                        Replication Monitor
+                                    </Link>
+                                </DropdownMenuItem>
+                                <DropdownMenuItem asChild className="gap-2 text-xs">
+                                    <Link href="/rls-matrix">
+                                        <Lock className="h-3.5 w-3.5" />
+                                        RLS matrix
                                     </Link>
                                 </DropdownMenuItem>
                             </DropdownMenuContent>

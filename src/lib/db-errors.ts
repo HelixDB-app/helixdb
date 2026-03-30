@@ -127,3 +127,40 @@ export function isDbInfrastructureError(raw: string): boolean {
 
     return false;
 }
+
+/**
+ * Message from Tauri replication commands (tokio_postgres often surfaces useless "db error").
+ */
+export function normalizeReplicationError(raw: string): string {
+    let s = String(raw ?? "").trim();
+    s = s.replace(/^db error:?\s*/i, "").trim();
+    if (!s || s === "db error") {
+        return [
+            "The database driver returned a generic error with no details.",
+            "",
+            "Typical causes when creating a publication:",
+            "• Name already exists (choose another or DROP PUBLICATION).",
+            "• Permission denied — need privileges to create publications and own (or have rights on) published tables.",
+            "• FOR TABLES IN SCHEMA — you must be able to publish those tables (often superuser or table owner).",
+            "",
+            "Check PostgreSQL logs on the server for the full error.",
+        ].join("\n");
+    }
+    return s;
+}
+
+/** First line for toast title; remainder for description (Postgres messages are often multi-line). */
+export function splitReplicationErrorForToast(raw: string): { headline: string; detail: string } {
+    const full = normalizeReplicationError(raw);
+    const lines = full.split("\n").map((l) => l.trimEnd());
+    const idx = lines.findIndex((l) => l.length > 0);
+    if (idx < 0) return { headline: "Request failed", detail: full };
+    let headline = lines[idx]!;
+    if (headline.length > 160) headline = `${headline.slice(0, 157)}…`;
+    const detail = lines
+        .slice(idx + 1)
+        .join("\n")
+        .replace(/^\n+/, "")
+        .trim();
+    return { headline, detail };
+}

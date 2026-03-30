@@ -1,11 +1,22 @@
 "use client";
 
-import React, { useState, useMemo, useCallback } from "react";
+import React, { useState, useMemo, useCallback, useEffect } from "react";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { QueryPlanFlame, QueryPlanFlameLegend } from "@/components/query-plan-flame";
 import { cn } from "@/lib/utils";
 import { toast } from "sonner";
+import { buildPlanHierarchy, totalExecutionMs } from "@/lib/query-plan-hierarchy";
+import {
+    explainPlanHotspotsWithGemini,
+    type PlanHotspotInsight,
+} from "@/lib/query-plan-insights-ai";
+import type { ExplainOutput, PlanNode } from "@/lib/query-plan-types";
+import { nodeTime, parseExplainJson, selfTime } from "@/lib/query-plan-types";
+import { getResolvedGeminiApiKey } from "@/stores/settings-store";
+import { AIError } from "@/lib/ai-chat-engine";
 import {
     ChevronRight,
     ChevronDown,
@@ -18,82 +29,18 @@ import {
     Zap,
     TrendingUp,
     Loader2,
-    Table2,
     Hash,
     Timer,
     Layers,
     Eye,
     ArrowRight,
+    Sparkles,
+    Flame,
+    ListTree,
 } from "lucide-react";
 
-// ─── PostgreSQL EXPLAIN JSON types ─────────────────────────────────────────
-
-export interface PlanNode {
-    "Node Type": string;
-    "Startup Cost": number;
-    "Total Cost": number;
-    "Plan Rows": number;
-    "Plan Width": number;
-    "Actual Startup Time"?: number;
-    "Actual Total Time"?: number;
-    "Actual Rows"?: number;
-    "Actual Loops"?: number;
-    "Relation Name"?: string;
-    "Schema"?: string;
-    "Alias"?: string;
-    "Index Name"?: string;
-    "Index Cond"?: string;
-    "Filter"?: string;
-    "Recheck Cond"?: string;
-    "Join Type"?: string;
-    "Hash Cond"?: string;
-    "Merge Cond"?: string;
-    "Sort Key"?: string[];
-    "Sort Method"?: string;
-    "Rows Removed by Filter"?: number;
-    "Rows Removed by Recheck"?: number;
-    "Shared Hit Blocks"?: number;
-    "Shared Read Blocks"?: number;
-    "Local Hit Blocks"?: number;
-    "Local Read Blocks"?: number;
-    "Temp Read Blocks"?: number;
-    "Temp Written Blocks"?: number;
-    "Parent Relationship"?: string;
-    "Parallel Aware"?: boolean;
-    "Workers Planned"?: number;
-    "Workers Launched"?: number;
-    Plans?: PlanNode[];
-}
-
-export interface ExplainOutput {
-    Plan: PlanNode;
-    "Planning Time"?: number;
-    "Execution Time"?: number;
-}
-
-// ─── Parsing ────────────────────────────────────────────────────────────────
-
-export function parseExplainJson(raw: string): ExplainOutput | null {
-    try {
-        const parsed = JSON.parse(raw);
-        const first = Array.isArray(parsed) ? parsed[0] : parsed;
-        if (first && typeof first === "object" && "Plan" in first) return first as ExplainOutput;
-        return null;
-    } catch {
-        return null;
-    }
-}
-
-// ─── Metric helpers ──────────────────────────────────────────────────────────
-
-function nodeTime(n: PlanNode): number {
-    return (n["Actual Total Time"] ?? 0) * (n["Actual Loops"] ?? 1);
-}
-
-function selfTime(n: PlanNode): number {
-    const childSum = (n.Plans ?? []).reduce((s, c) => s + nodeTime(c), 0);
-    return Math.max(0, nodeTime(n) - childSum);
-}
+export type { ExplainOutput, PlanNode } from "@/lib/query-plan-types";
+export { parseExplainJson } from "@/lib/query-plan-types";
 
 type NodeColor = "red" | "orange" | "green" | "neutral";
 
@@ -244,11 +191,12 @@ interface NodeCardProps {
     node: PlanNode;
     totalMs: number;
     depth: number;
-    selected: boolean;
+    selectedNode: PlanNode | null;
     onSelect: (node: PlanNode) => void;
 }
 
-function NodeCard({ node, totalMs, depth, selected, onSelect }: NodeCardProps) {
+function NodeCard({ node, totalMs, depth, selectedNode, onSelect }: NodeCardProps) {
+    const selected = selectedNode === node;
     const [expanded, setExpanded] = useState(true);
     const children = node.Plans ?? [];
     const color = nodeColor(node, totalMs);
@@ -391,7 +339,7 @@ function NodeCard({ node, totalMs, depth, selected, onSelect }: NodeCardProps) {
                             node={child}
                             totalMs={totalMs}
                             depth={depth + 1}
-                            selected={selected && false}
+                            selectedNode={selectedNode}
                             onSelect={onSelect}
                         />
                     ))}
@@ -640,7 +588,7 @@ function SuggestionsPanel({ suggestions, onApplyFix }: SuggestionsPanelProps) {
         <div className="border-t border-border/20 shrink-0 flex flex-col">
             <div className="flex items-center gap-2 px-4 py-2 border-b border-border/10 bg-card/20 shrink-0">
                 <TrendingUp className="h-3.5 w-3.5 text-muted-foreground/60" />
-                <span className="text-xs font-semibold text-foreground/80">AI Analysis</span>
+                <span className="text-xs font-semibold text-foreground/80">Heuristics</span>
                 <Badge variant="secondary" className="text-[10px] h-4 px-1.5">
                     {suggestions.length} fix{suggestions.length > 1 ? "es" : ""}
                 </Badge>
@@ -702,14 +650,50 @@ function SuggestionsPanel({ suggestions, onApplyFix }: SuggestionsPanelProps) {
 export interface QueryPlanViewerProps {
     rawJson: string;
     onApplyFix?: (sql: string) => Promise<void>;
+    /** Optional SQL for Gemini hotspot context. */
+    sql?: string;
 }
 
-export function QueryPlanViewer({ rawJson, onApplyFix }: QueryPlanViewerProps) {
+export function QueryPlanViewer({ rawJson, onApplyFix, sql }: QueryPlanViewerProps) {
     const plan = useMemo(() => parseExplainJson(rawJson), [rawJson]);
     const suggestions = useMemo(() => (plan ? buildSuggestions(plan) : []), [plan]);
+    const hierarchy = useMemo(() => (plan ? buildPlanHierarchy(plan) : null), [plan]);
+    const totalMs = useMemo(() => (plan ? totalExecutionMs(plan) : 0), [plan]);
     const [selectedNode, setSelectedNode] = useState<PlanNode | null>(null);
+    const [planTab, setPlanTab] = useState("flame");
+    const [insights, setInsights] = useState<PlanHotspotInsight[] | null>(null);
+    const [insightsLoading, setInsightsLoading] = useState(false);
+    const hasGeminiKey = !!getResolvedGeminiApiKey();
 
-    if (!plan) {
+    useEffect(() => {
+        setInsights(null);
+    }, [rawJson]);
+
+    const insightsByPath = useMemo(() => {
+        if (!insights?.length) return undefined;
+        return Object.fromEntries(insights.map((i) => [i.pathId, i.sentence]));
+    }, [insights]);
+
+    const handleHotspotInsights = useCallback(async () => {
+        if (!hierarchy) return;
+        setInsightsLoading(true);
+        try {
+            const out = await explainPlanHotspotsWithGemini(hierarchy, { sql });
+            setInsights(out);
+        } catch (e) {
+            const msg =
+                e instanceof AIError
+                    ? e.message
+                    : e instanceof Error
+                      ? e.message
+                      : String(e);
+            toast.error(msg, { duration: 5000 });
+        } finally {
+            setInsightsLoading(false);
+        }
+    }, [hierarchy, sql]);
+
+    if (!plan || !hierarchy) {
         return (
             <div className="flex h-full items-center justify-center text-muted-foreground">
                 <div className="text-center">
@@ -721,37 +705,109 @@ export function QueryPlanViewer({ rawJson, onApplyFix }: QueryPlanViewerProps) {
         );
     }
 
-    const totalMs = plan["Execution Time"] ?? nodeTime(plan.Plan);
-
     return (
         <div className="flex flex-col h-full overflow-hidden">
             <StatsBar plan={plan} />
 
-            {/* Main body: tree + details panel */}
-            <div className="flex flex-1 min-h-0 overflow-hidden">
-                {/* Tree */}
-                <ScrollArea className={cn("flex-1 min-h-0 border-r border-border/20", selectedNode ? "w-[58%]" : "w-full")}>
-                    <div className="p-4">
-                        <NodeCard
-                            node={plan.Plan}
-                            totalMs={totalMs}
-                            depth={0}
-                            selected={selectedNode === plan.Plan}
-                            onSelect={setSelectedNode}
-                        />
+            <div className="flex min-h-0 flex-1 overflow-hidden">
+                <Tabs
+                    value={planTab}
+                    onValueChange={setPlanTab}
+                    className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
+                >
+                    <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 border-b border-border/20 px-2 py-1.5">
+                        <TabsList className="h-8">
+                            <TabsTrigger value="flame" className="gap-1.5 px-2.5 text-xs">
+                                <Flame className="h-3.5 w-3.5" />
+                                Flame
+                            </TabsTrigger>
+                            <TabsTrigger value="tree" className="gap-1.5 px-2.5 text-xs">
+                                <ListTree className="h-3.5 w-3.5" />
+                                Tree
+                            </TabsTrigger>
+                        </TabsList>
                     </div>
-                </ScrollArea>
 
-                {/* Details panel */}
+                    <TabsContent
+                        value="flame"
+                        className="mt-0 flex min-h-0 flex-1 flex-col overflow-hidden data-[state=inactive]:hidden"
+                    >
+                    <div className="flex flex-wrap items-center justify-end gap-2 border-b border-border/15 px-2 py-1">
+                        <Button
+                            type="button"
+                            variant="secondary"
+                            size="sm"
+                            className="h-7 gap-1.5 text-xs"
+                            disabled={!hasGeminiKey || insightsLoading}
+                            onClick={() => void handleHotspotInsights()}
+                        >
+                            {insightsLoading ? (
+                                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                            ) : (
+                                <Sparkles className="h-3.5 w-3.5 text-violet-400" />
+                            )}
+                            Explain top hotspots
+                        </Button>
+                    </div>
+                    <QueryPlanFlameLegend useCostFallback={hierarchy.useCostFallback} />
+                    <QueryPlanFlame
+                        hierarchy={hierarchy}
+                        totalMs={totalMs}
+                        insightsByPath={insightsByPath}
+                        onSelectNode={setSelectedNode}
+                    />
+                    {!hasGeminiKey && (
+                        <p className="border-t border-border/15 px-3 py-2 text-[10px] text-muted-foreground">
+                            Add a Gemini API key in Settings → AI to generate hotspot explanations.
+                        </p>
+                    )}
+                    {insights && insights.length > 0 && (
+                        <div className="border-t border-violet-500/20 bg-violet-500/5 px-3 py-2">
+                            <p className="mb-1.5 text-[10px] font-semibold uppercase tracking-wide text-violet-400/90">
+                                Gemini — top hotspots
+                            </p>
+                            <ul className="space-y-1.5 text-xs text-foreground/85">
+                                {insights.map((i) => (
+                                    <li key={i.pathId} className="leading-snug">
+                                        <span className="font-mono text-[10px] text-muted-foreground">{i.pathId}: </span>
+                                        {i.sentence}
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    )}
+                </TabsContent>
+
+                    <TabsContent
+                        value="tree"
+                        className="mt-0 flex min-h-0 flex-1 overflow-hidden data-[state=inactive]:hidden"
+                    >
+                        <ScrollArea className="min-h-0 flex-1 border-r border-border/20">
+                            <div className="p-4">
+                                <NodeCard
+                                    node={plan.Plan}
+                                    totalMs={totalMs}
+                                    depth={0}
+                                    selectedNode={selectedNode}
+                                    onSelect={setSelectedNode}
+                                />
+                            </div>
+                        </ScrollArea>
+                    </TabsContent>
+                </Tabs>
+
                 {selectedNode && (
-                    <div className="w-[42%] shrink-0 border-l border-border/20 flex flex-col overflow-hidden">
-                        <div className="flex items-center justify-between px-4 py-2 border-b border-border/20 bg-card/20 shrink-0">
+                    <div className="flex w-[42%] max-w-[420px] shrink-0 flex-col overflow-hidden border-l border-border/20 bg-card/10">
+                        <div className="flex shrink-0 items-center justify-between border-b border-border/20 bg-card/20 px-4 py-2">
                             <div className="flex items-center gap-1.5">
                                 <Hash className="h-3.5 w-3.5 text-muted-foreground/50" />
-                                <span className="text-xs font-medium text-muted-foreground/70">Node Details</span>
+                                <span className="text-xs font-medium text-muted-foreground/70">
+                                    Node Details
+                                </span>
                             </div>
                             <button
-                                className="text-muted-foreground/40 hover:text-muted-foreground transition-colors"
+                                type="button"
+                                className="text-muted-foreground/40 transition-colors hover:text-muted-foreground"
                                 onClick={() => setSelectedNode(null)}
                             >
                                 <XCircle className="h-3.5 w-3.5" />
@@ -762,7 +818,6 @@ export function QueryPlanViewer({ rawJson, onApplyFix }: QueryPlanViewerProps) {
                 )}
             </div>
 
-            {/* AI Analysis */}
             <SuggestionsPanel suggestions={suggestions} onApplyFix={onApplyFix} />
         </div>
     );

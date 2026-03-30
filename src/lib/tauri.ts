@@ -58,6 +58,11 @@ import type {
     PgStatStatementsStatus,
     PgStatStatementsFilter,
     PgStatStatementsPage,
+    ReplicationSnapshot,
+    PatroniCluster,
+    ReplicationPublicationRow,
+    CreateLogicalPublicationRequest,
+    StandbyReplicationPlan,
 } from "./types";
 
 export type { CreateColumnDef };
@@ -1085,6 +1090,35 @@ export async function dbTerminateBackend(connectionId: string, pid: number): Pro
 /** Cancel the current query of a backend by PID (gentler SIGINT) */
 export async function dbCancelBackend(connectionId: string, pid: number): Promise<boolean> {
     return invoke<boolean>("db_cancel_backend", { connectionId, pid });
+}
+
+// ─── Replication Monitor ───────────────────────────────────────────────────
+
+export async function replicationSnapshot(connectionId: string): Promise<ReplicationSnapshot> {
+    return invoke<ReplicationSnapshot>("replication_snapshot", { connectionId });
+}
+
+export async function replicationPatroni(patroniUrl: string): Promise<PatroniCluster> {
+    return invoke<PatroniCluster>("replication_patroni", { patroniUrl });
+}
+
+export async function replicationListPublications(
+    connectionId: string
+): Promise<ReplicationPublicationRow[]> {
+    return invoke<ReplicationPublicationRow[]>("replication_list_publications", { connectionId });
+}
+
+export async function replicationCreatePublication(
+    connectionId: string,
+    request: CreateLogicalPublicationRequest
+): Promise<string> {
+    return invoke<string>("replication_create_publication", { connectionId, request });
+}
+
+export async function replicationStandbyPlan(
+    connectionId: string
+): Promise<StandbyReplicationPlan> {
+    return invoke<StandbyReplicationPlan>("replication_standby_plan", { connectionId });
 }
 
 // ─── Column Statistics ────────────────────────────────────────────────────
