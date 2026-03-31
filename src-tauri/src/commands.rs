@@ -1473,6 +1473,16 @@ pub async fn db_cancel_backend(
     queries::cancel_backend(&pool, pid).await
 }
 
+/// Blocking graph (`pg_locks`) plus capped lock inventory for the Lock Inspector.
+#[tauri::command]
+pub async fn db_get_lock_inspector(
+    state: State<'_, AppState>,
+    connection_id: String,
+) -> Result<crate::db::types::LockInspectorData, String> {
+    let pool = state.conn_manager.get_pool(&connection_id)?;
+    queries::get_lock_inspector(&pool).await
+}
+
 // ─── Replication Monitor ────────────────────────────────────────────────────
 
 #[tauri::command]

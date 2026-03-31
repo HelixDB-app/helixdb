@@ -962,6 +962,49 @@ export interface PgSession {
     backend_duration_secs: number | null;
 }
 
+/** One blocked → blocking edge from `pg_locks` (session waiting on another holder). */
+export interface LockWaitEdge {
+    blocked_pid: number;
+    blocking_pid: number;
+    locktype: string;
+    blocked_mode: string;
+    blocking_mode: string;
+    relation_schema: string | null;
+    relation_name: string | null;
+    blocked_usename: string | null;
+    blocking_usename: string | null;
+    blocked_application_name: string | null;
+    blocking_application_name: string | null;
+    blocked_state: string | null;
+    blocking_state: string | null;
+    blocked_query: string | null;
+    blocking_query: string | null;
+    blocked_wait_event_type: string | null;
+    blocked_wait_event: string | null;
+}
+
+/** One row from `pg_locks` with session context (inventory tab). */
+export interface LockInventoryRow {
+    pid: number;
+    locktype: string;
+    mode: string;
+    granted: boolean;
+    fastpath: boolean;
+    relation_schema: string | null;
+    relation_name: string | null;
+    usename: string | null;
+    application_name: string | null;
+    state: string | null;
+    query_snippet: string | null;
+}
+
+/** Wait graph plus capped lock listing for the Lock Inspector UI. */
+export interface LockInspectorData {
+    wait_edges: LockWaitEdge[];
+    inventory: LockInventoryRow[];
+    inventory_truncated: boolean;
+}
+
 /** Extract a displayable string from a CellValue */
 export function formatCellValue(cell: CellValue): string {
     if (cell.type === "Null") return "NULL";

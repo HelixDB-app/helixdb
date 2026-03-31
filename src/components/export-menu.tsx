@@ -1,7 +1,9 @@
 'use client'
 
-import { Download } from 'lucide-react'
+import { useState } from 'react'
+import { Braces, Download } from 'lucide-react'
 import { useSchemaStore } from '@/lib/schema-store'
+import { TypeExporter } from '@/components/export/TypeExporter'
 import { generateSQL, generateTypeScript, generateJSON } from '@/lib/sql-export'
 import { Button } from '@/components/ui/button'
 import {
@@ -26,7 +28,9 @@ function downloadFile(content: string, filename: string, mimeType: string) {
 }
 
 export function ExportMenu() {
-  const { tables, relationships, functions, triggers, canvasItems } = useSchemaStore()
+  const { tables, relationships, functions, triggers, canvasItems } =
+    useSchemaStore()
+  const [typeExporterOpen, setTypeExporterOpen] = useState(false)
 
   const handleExportSQL = () => {
     const sql = generateSQL(tables, relationships, functions, triggers)
@@ -54,6 +58,7 @@ export function ExportMenu() {
   }
 
   return (
+    <>
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <Button variant="outline" size="sm" className="gap-2">
@@ -80,7 +85,21 @@ export function ExportMenu() {
         <DropdownMenuItem onClick={handleCopyTypeScript}>
           Copy TypeScript
         </DropdownMenuItem>
+        <DropdownMenuSeparator />
+        <DropdownMenuItem
+          onClick={() => setTypeExporterOpen(true)}
+          className="gap-2"
+        >
+          <Braces className="h-4 w-4" />
+          Type exporter…
+        </DropdownMenuItem>
       </DropdownMenuContent>
     </DropdownMenu>
+    <TypeExporter
+      open={typeExporterOpen}
+      onOpenChange={setTypeExporterOpen}
+      tables={tables}
+    />
+    </>
   )
 }

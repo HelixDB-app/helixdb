@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { useSchemaStore } from '@/lib/schema-store'
+import { defaultTablePosition } from '@/lib/schema-canvas-layout'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
@@ -26,11 +27,12 @@ export function AddTableDialog({ trigger }: AddTableDialogProps) {
   const handleAdd = () => {
     if (!tableName.trim()) return
 
+    const { x, y } = defaultTablePosition(tables.length)
     addTable({
       id: `table-${Date.now()}`,
       name: tableName,
-      x: 100 + tables.length * 50,
-      y: 100 + tables.length * 50,
+      x,
+      y,
       indexes: [],
       columns: [
         {

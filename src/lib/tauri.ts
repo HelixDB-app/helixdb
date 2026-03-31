@@ -44,6 +44,7 @@ import type {
     FilterCondition,
     ColumnStats,
     PgSession,
+    LockInspectorData,
     IndexStats,
     QuerySample,
     IndexImpactQuery,
@@ -1083,6 +1084,11 @@ export async function dbIsWatching(
 /** Fetch all active sessions from pg_stat_activity */
 export async function dbGetSessions(connectionId: string): Promise<PgSession[]> {
     return invoke<PgSession[]>("db_get_sessions", { connectionId });
+}
+
+/** Blocking graph from `pg_locks` plus capped lock inventory */
+export async function dbGetLockInspector(connectionId: string): Promise<LockInspectorData> {
+    return invoke<LockInspectorData>("db_get_lock_inspector", { connectionId });
 }
 
 /** Terminate a backend process by PID (SIGTERM) */

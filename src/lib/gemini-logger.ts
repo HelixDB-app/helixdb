@@ -25,6 +25,8 @@ export type ApiFeatureType =
     | "query-explain"
     | "query-plan-insights"
     | "schema-doc"
+    | "schema-cluster-domains"
+    | "type-export-jsdoc"
     | "git"
     | "ai_command"
     | "sql_completion"

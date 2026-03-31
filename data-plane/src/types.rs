@@ -158,6 +158,51 @@ pub struct PgSession {
     pub backend_duration_secs: Option<f64>,
 }
 
+// ── Lock inspector (`pg_locks` + blocking graph) ─────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockWaitEdge {
+    pub blocked_pid: i32,
+    pub blocking_pid: i32,
+    pub locktype: String,
+    pub blocked_mode: String,
+    pub blocking_mode: String,
+    pub relation_schema: Option<String>,
+    pub relation_name: Option<String>,
+    pub blocked_usename: Option<String>,
+    pub blocking_usename: Option<String>,
+    pub blocked_application_name: Option<String>,
+    pub blocking_application_name: Option<String>,
+    pub blocked_state: Option<String>,
+    pub blocking_state: Option<String>,
+    pub blocked_query: Option<String>,
+    pub blocking_query: Option<String>,
+    pub blocked_wait_event_type: Option<String>,
+    pub blocked_wait_event: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockInventoryRow {
+    pub pid: i32,
+    pub locktype: String,
+    pub mode: String,
+    pub granted: bool,
+    pub fastpath: bool,
+    pub relation_schema: Option<String>,
+    pub relation_name: Option<String>,
+    pub usename: Option<String>,
+    pub application_name: Option<String>,
+    pub state: Option<String>,
+    pub query_snippet: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LockInspectorData {
+    pub wait_edges: Vec<LockWaitEdge>,
+    pub inventory: Vec<LockInventoryRow>,
+    pub inventory_truncated: bool,
+}
+
 // ── Schema topology ──────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

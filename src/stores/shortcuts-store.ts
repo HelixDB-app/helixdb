@@ -16,6 +16,7 @@ export type ShortcutActionId =
     | "disconnect"
     | "query_history"
     | "extensions"
+    | "server_settings"
     | "bug_report"
     | "connect"
     | "new_window"
@@ -53,6 +54,12 @@ export const SHORTCUT_DEFINITIONS: ShortcutDefinition[] = [
     { id: "disconnect", label: "Disconnect", description: "Disconnect from database", defaultCombo: "Mod+Shift+D" },
     { id: "query_history", label: "Query History", description: "Open Query History & Performance", defaultCombo: "Mod+Shift+H" },
     { id: "extensions", label: "Extensions", description: "Open Extensions & User Management", defaultCombo: "Mod+Shift+E" },
+    {
+        id: "server_settings",
+        label: "Runtime Config",
+        description: "Open PostgreSQL Runtime Config Studio (pg_settings)",
+        defaultCombo: "Mod+Shift+O",
+    },
     { id: "bug_report", label: "Bug Report", description: "Submit feedback and bug reports", defaultCombo: "Mod+Shift+B" },
     { id: "connect", label: "Connect", description: "Connect to database (when disconnected)", defaultCombo: "Mod+K" },
     { id: "new_window", label: "New Window", description: "Open a new pgStudio window", defaultCombo: "Mod+Shift+N" },

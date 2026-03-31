@@ -14,6 +14,7 @@ import type {
     EventTriggerInfo,
     FilterCondition,
     FunctionInfo,
+    LockInspectorData,
     PgSession,
     QueryResult,
     SchemaInfo,
@@ -67,6 +68,7 @@ export interface DbPlatform {
         options?: DbExecuteQueryOptions
     ): Promise<QueryResult>;
     dbGetSessions(connectionId: string): Promise<PgSession[]>;
+    dbGetLockInspector(connectionId: string): Promise<LockInspectorData>;
     dbTerminateBackend(connectionId: string, pid: number): Promise<boolean>;
     dbCancelBackend(connectionId: string, pid: number): Promise<boolean>;
     dbGetSchemaTopology(connectionId: string, schema: string): Promise<TopologyData>;
@@ -194,6 +196,9 @@ class TauriDbPlatform implements DbPlatform {
     }
     dbGetSessions(connectionId: string) {
         return tauri.dbGetSessions(connectionId);
+    }
+    dbGetLockInspector(connectionId: string) {
+        return tauri.dbGetLockInspector(connectionId);
     }
     dbTerminateBackend(connectionId: string, pid: number) {
         return tauri.dbTerminateBackend(connectionId, pid);
@@ -509,6 +514,14 @@ class HttpDbPlatform implements DbPlatform {
             { headers: this.headers() }
         );
         return this.json<PgSession[]>(res);
+    }
+
+    async dbGetLockInspector(connectionId: string): Promise<LockInspectorData> {
+        const res = await fetch(
+            `${this.base}/v1/connections/${encodeURIComponent(connectionId)}/lock-inspector`,
+            { headers: this.headers() }
+        );
+        return this.json<LockInspectorData>(res);
     }
 
     async dbTerminateBackend(connectionId: string, pid: number): Promise<boolean> {
@@ -839,6 +852,10 @@ export function dbExecuteQuery(
 
 export function dbGetSessions(connectionId: string) {
     return p().dbGetSessions(connectionId);
+}
+
+export function dbGetLockInspector(connectionId: string) {
+    return p().dbGetLockInspector(connectionId);
 }
 
 export function dbTerminateBackend(connectionId: string, pid: number) {

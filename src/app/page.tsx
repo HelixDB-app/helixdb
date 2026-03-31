@@ -13,6 +13,8 @@ import { runtimeAuthFetchProfile, runtimeAuthGetToken } from "@/lib/auth-runtime
 import { eventMatchesCombo, formatShortcut, isEditableTarget } from "@/lib/shortcut-keys";
 import { APP_NAME } from "@/lib/app-config";
 import { useLayoutStore } from "@/stores/layout-store";
+import { useQueryStore } from "@/stores/query-store";
+import { PGSTUDIO_PENDING_QUERY_TAB_KEY } from "@/lib/database-vitals-queries";
 import { listenCollabJoin, openNewAppWindow } from "@/lib/desktop-shell";
 import dynamic from "next/dynamic";
 import { LandingConnections } from "@/components/landing-connections";
@@ -90,16 +92,20 @@ import {
     Clock3,
     GitBranch,
     GitCompare,
+    HeartPulse,
     Search,
     Settings,
     ShieldCheck,
+    SlidersHorizontal,
     Bug,
     Sparkles,
     Table2,
     Terminal,
     Unplug,
     HardDriveDownload,
+    Link2,
     Lock,
+    FlaskConical,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
@@ -172,6 +178,23 @@ export default function Home() {
     const [settingsOpen, setSettingsOpen] = useState(false);
     const [settingsSeed, setSettingsSeed] = useState<SettingsSection | null>(null);
     const [showProfile, setShowProfile] = useState(false);
+
+    /** Database Vitals → “Open in Query” hands off SQL via sessionStorage. */
+    useEffect(() => {
+        if (typeof window === "undefined") return;
+        const raw = sessionStorage.getItem(PGSTUDIO_PENDING_QUERY_TAB_KEY);
+        if (!raw) return;
+        sessionStorage.removeItem(PGSTUDIO_PENDING_QUERY_TAB_KEY);
+        try {
+            const parsed = JSON.parse(raw) as { sql?: string; title?: string };
+            if (!parsed.sql || typeof parsed.sql !== "string") return;
+            const id = useQueryStore.getState().addTab(parsed.title?.trim() || "Vitals query", parsed.sql);
+            useQueryStore.getState().setActiveTab(id);
+            setActiveView("query");
+        } catch {
+            // ignore malformed payload
+        }
+    }, []);
 
     /** Native app menu (Tauri) signals via query params on `/` so this works from any route. */
     useEffect(() => {
@@ -289,6 +312,7 @@ export default function Home() {
                 { id: "disconnect", combo: getCombo("disconnect") },
                 { id: "query_history", combo: getCombo("query_history") },
                 { id: "extensions", combo: getCombo("extensions") },
+                { id: "server_settings", combo: getCombo("server_settings") },
                 { id: "bug_report", combo: getCombo("bug_report") },
                 { id: "connect", combo: getCombo("connect") },
                 { id: "new_window", combo: getCombo("new_window") },
@@ -337,6 +361,9 @@ export default function Home() {
                         break;
                     case "extensions":
                         router.push("/extensions-management");
+                        break;
+                    case "server_settings":
+                        router.push("/pg-runtime-config");
                         break;
                     case "bug_report":
                         router.push("/bug-report");
@@ -704,6 +731,83 @@ export default function Home() {
                                 RLS policy matrix
                             </TooltipContent>
                         </Tooltip>
+
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    asChild
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
+                                >
+                                    <Link href="/lock-inspector">
+                                        <Link2 className="h-3.5 w-3.5" />
+                                        <span className="hidden 2xl:inline">Locks</span>
+                                    </Link>
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" sideOffset={6}>
+                                Lock &amp; Blocking Analyzer
+                            </TooltipContent>
+                        </Tooltip>
+
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    asChild
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
+                                >
+                                    <Link href="/database-vitals">
+                                        <HeartPulse className="h-3.5 w-3.5" />
+                                        <span className="hidden 2xl:inline">Vitals</span>
+                                    </Link>
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" sideOffset={6}>
+                                Database Vitals
+                            </TooltipContent>
+                        </Tooltip>
+
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    asChild
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
+                                >
+                                    <Link href="/pg-runtime-config">
+                                        <SlidersHorizontal className="h-3.5 w-3.5" />
+                                        <span className="hidden 2xl:inline">Config</span>
+                                    </Link>
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" sideOffset={6}>
+                                Runtime Config Studio
+                                {sc("server_settings") && ` (${sc("server_settings")})`}
+                            </TooltipContent>
+                        </Tooltip>
+
+                        <Tooltip>
+                            <TooltipTrigger asChild>
+                                <Button
+                                    asChild
+                                    variant="ghost"
+                                    size="sm"
+                                    className="h-7 shrink-0 gap-1 px-1.5 text-[10px] text-muted-foreground/55 hover:text-foreground hover:bg-muted/55 transition-all"
+                                >
+                                    <Link href="/optimizer-lab">
+                                        <FlaskConical className="h-3.5 w-3.5" />
+                                        <span className="hidden 2xl:inline">Lab</span>
+                                    </Link>
+                                </Button>
+                            </TooltipTrigger>
+                            <TooltipContent side="bottom" sideOffset={6}>
+                                Optimizer Lab (pg_stats)
+                            </TooltipContent>
+                        </Tooltip>
                     </div>
 
                     <div className="lg:hidden">
@@ -754,6 +858,30 @@ export default function Home() {
                                     <Link href="/rls-matrix">
                                         <Lock className="h-3.5 w-3.5" />
                                         RLS matrix
+                                    </Link>
+                                </DropdownMenuItem>
+                                <DropdownMenuItem asChild className="gap-2 text-xs">
+                                    <Link href="/lock-inspector">
+                                        <Link2 className="h-3.5 w-3.5" />
+                                        Lock analyzer
+                                    </Link>
+                                </DropdownMenuItem>
+                                <DropdownMenuItem asChild className="gap-2 text-xs">
+                                    <Link href="/database-vitals">
+                                        <HeartPulse className="h-3.5 w-3.5" />
+                                        Database Vitals
+                                    </Link>
+                                </DropdownMenuItem>
+                                <DropdownMenuItem asChild className="gap-2 text-xs">
+                                    <Link href="/pg-runtime-config">
+                                        <SlidersHorizontal className="h-3.5 w-3.5" />
+                                        Runtime Config
+                                    </Link>
+                                </DropdownMenuItem>
+                                <DropdownMenuItem asChild className="gap-2 text-xs">
+                                    <Link href="/optimizer-lab">
+                                        <FlaskConical className="h-3.5 w-3.5" />
+                                        Optimizer Lab
                                     </Link>
                                 </DropdownMenuItem>
                             </DropdownMenuContent>

@@ -225,6 +225,7 @@ pub fn run() {
             commands::db_get_sessions,
             commands::db_terminate_backend,
             commands::db_cancel_backend,
+            commands::db_get_lock_inspector,
             commands::replication_snapshot,
             commands::replication_patroni,
             commands::replication_list_publications,

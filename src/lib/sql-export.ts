@@ -5,6 +5,7 @@ import {
   SchemaTrigger,
   CanvasItem,
 } from './schema-store'
+import { generateTypeScriptInterfacesOnly } from '@/codegen/ts'
 
 export function generateSQL(
   tables: Table[],
@@ -116,58 +117,7 @@ export function generateSQL(
 }
 
 export function generateTypeScript(tables: Table[]): string {
-  const lines: string[] = []
-
-  tables.forEach((table) => {
-    // Type name in PascalCase
-    const typeName = table.name
-      .split('_')
-      .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
-      .join('')
-
-    lines.push(`export interface ${typeName} {`)
-
-    table.columns.forEach((col) => {
-      let tsType: string
-
-      switch (col.type) {
-        case 'string':
-          tsType = 'string'
-          break
-        case 'integer':
-          tsType = 'number'
-          break
-        case 'numeric':
-          tsType = 'number'
-          break
-        case 'boolean':
-          tsType = 'boolean'
-          break
-        case 'timestamp':
-          tsType = 'Date'
-          break
-        case 'uuid':
-          tsType = 'string'
-          break
-        case 'json':
-          tsType = 'Record<string, any>'
-          break
-        case 'text':
-          tsType = 'string'
-          break
-        default:
-          tsType = 'unknown'
-      }
-
-      const optionalSuffix = col.nullable ? ' | null' : ''
-      lines.push(`  ${col.name}: ${tsType}${optionalSuffix}`)
-    })
-
-    lines.push('}')
-    lines.push('')
-  })
-
-  return lines.join('\n')
+  return generateTypeScriptInterfacesOnly(tables)
 }
 
 export function generateJSON(

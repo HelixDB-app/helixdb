@@ -1,8 +1,9 @@
 //! Session monitor, schema topology, and rich table metadata (parity with Tauri `queries.rs`).
 
 use crate::types::{
-    ColumnInfo, PgSession, TableConstraint, TableDetails, TableIndex, TableTriggerInfo,
-    TopologyColumn, TopologyData, TopologyEdge, TopologyNode,
+    ColumnInfo, LockInspectorData, LockInventoryRow, LockWaitEdge, PgSession, TableConstraint,
+    TableDetails, TableIndex, TableTriggerInfo, TopologyColumn, TopologyData, TopologyEdge,
+    TopologyNode,
 };
 use deadpool_postgres::Pool;
 use std::collections::{HashMap, HashSet};
@@ -178,6 +179,160 @@ pub async fn cancel_backend(pool: &Pool, pid: i32) -> Result<bool, String> {
         .await
         .map_err(|e| e.to_string())?;
     Ok(row.get::<_, bool>(0))
+}
+
+const LOCK_INVENTORY_CAP: i64 = 500;
+
+/// Parity with Tauri `queries::get_lock_inspector`.
+pub async fn get_lock_inspector(pool: &Pool) -> Result<LockInspectorData, String> {
+    let client = pool.get().await.map_err(|e| e.to_string())?;
+    let _ = client
+        .execute("SET LOCAL statement_timeout = '20s'", &[])
+        .await;
+
+    let wait_sql = r#"
+        SELECT
+            blocked_locks.pid AS blocked_pid,
+            blocking_locks.pid AS blocking_pid,
+            blocked_locks.locktype::text AS locktype,
+            blocked_locks.mode::text AS blocked_mode,
+            blocking_locks.mode::text AS blocking_mode,
+            bn.nspname::text AS relation_schema,
+            bc.relname::text AS relation_name,
+            blocked_activity.usename::text AS blocked_usename,
+            blocking_activity.usename::text AS blocking_usename,
+            blocked_activity.application_name AS blocked_application_name,
+            blocking_activity.application_name AS blocking_application_name,
+            blocked_activity.state::text AS blocked_state,
+            blocking_activity.state::text AS blocking_state,
+            left(blocked_activity.query, 2000) AS blocked_query,
+            left(blocking_activity.query, 2000) AS blocking_query,
+            blocked_activity.wait_event_type::text AS blocked_wait_event_type,
+            blocked_activity.wait_event::text AS blocked_wait_event
+        FROM pg_catalog.pg_locks blocked_locks
+        JOIN pg_catalog.pg_stat_activity blocked_activity
+            ON blocked_activity.pid = blocked_locks.pid
+        JOIN pg_catalog.pg_locks blocking_locks
+            ON blocking_locks.locktype = blocked_locks.locktype
+            AND blocking_locks.database IS NOT DISTINCT FROM blocked_locks.database
+            AND blocking_locks.relation IS NOT DISTINCT FROM blocked_locks.relation
+            AND blocking_locks.page IS NOT DISTINCT FROM blocked_locks.page
+            AND blocking_locks.tuple IS NOT DISTINCT FROM blocked_locks.tuple
+            AND blocking_locks.virtualxid IS NOT DISTINCT FROM blocked_locks.virtualxid
+            AND blocking_locks.transactionid IS NOT DISTINCT FROM blocked_locks.transactionid
+            AND blocking_locks.classid IS NOT DISTINCT FROM blocked_locks.classid
+            AND blocking_locks.objid IS NOT DISTINCT FROM blocked_locks.objid
+            AND blocking_locks.objsubid IS NOT DISTINCT FROM blocked_locks.objsubid
+            AND blocking_locks.pid != blocked_locks.pid
+        JOIN pg_catalog.pg_stat_activity blocking_activity
+            ON blocking_activity.pid = blocking_locks.pid
+        LEFT JOIN pg_catalog.pg_class bc ON bc.oid = blocked_locks.relation
+        LEFT JOIN pg_catalog.pg_namespace bn ON bn.oid = bc.relnamespace
+        WHERE NOT blocked_locks.granted
+          AND blocking_locks.granted
+        ORDER BY blocked_locks.pid, blocking_locks.pid
+    "#;
+
+    let wait_rows = client
+        .query(wait_sql, &[])
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let wait_edges: Vec<LockWaitEdge> = wait_rows
+        .iter()
+        .map(|row| LockWaitEdge {
+            blocked_pid: row.get("blocked_pid"),
+            blocking_pid: row.get("blocking_pid"),
+            locktype: row.get::<_, String>("locktype"),
+            blocked_mode: row.get::<_, String>("blocked_mode"),
+            blocking_mode: row.get::<_, String>("blocking_mode"),
+            relation_schema: row.try_get("relation_schema").ok().flatten(),
+            relation_name: row.try_get("relation_name").ok().flatten(),
+            blocked_usename: row.try_get("blocked_usename").ok().flatten(),
+            blocking_usename: row.try_get("blocking_usename").ok().flatten(),
+            blocked_application_name: row.try_get("blocked_application_name").ok().flatten(),
+            blocking_application_name: row.try_get("blocking_application_name").ok().flatten(),
+            blocked_state: row.try_get("blocked_state").ok().flatten(),
+            blocking_state: row.try_get("blocking_state").ok().flatten(),
+            blocked_query: row.try_get("blocked_query").ok().flatten(),
+            blocking_query: row.try_get("blocking_query").ok().flatten(),
+            blocked_wait_event_type: row.try_get("blocked_wait_event_type").ok().flatten(),
+            blocked_wait_event: row.try_get("blocked_wait_event").ok().flatten(),
+        })
+        .collect();
+
+    let inv_sql = r#"
+        SELECT COUNT(*)::bigint AS cnt
+        FROM pg_catalog.pg_locks l
+        WHERE l.pid != pg_backend_pid()
+          AND (
+            l.locktype IN ('virtualxid', 'transactionid', 'object', 'userlock', 'advisory')
+            OR l.database IS NULL
+            OR l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+          )
+    "#;
+    let total_row = client
+        .query_one(inv_sql, &[])
+        .await
+        .map_err(|e| e.to_string())?;
+    let total: i64 = total_row.get("cnt");
+
+    let list_sql = r#"
+        SELECT
+            l.pid,
+            l.locktype::text AS locktype,
+            l.mode::text AS mode,
+            l.granted,
+            l.fastpath,
+            n.nspname::text AS relation_schema,
+            c.relname::text AS relation_name,
+            a.usename::text AS usename,
+            a.application_name AS application_name,
+            a.state::text AS state,
+            left(a.query, 500) AS query_snippet
+        FROM pg_catalog.pg_locks l
+        LEFT JOIN pg_catalog.pg_class c ON c.oid = l.relation
+        LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace
+        LEFT JOIN pg_catalog.pg_stat_activity a ON a.pid = l.pid
+        WHERE l.pid != pg_backend_pid()
+          AND (
+            l.locktype IN ('virtualxid', 'transactionid', 'object', 'userlock', 'advisory')
+            OR l.database IS NULL
+            OR l.database = (SELECT oid FROM pg_database WHERE datname = current_database())
+          )
+        ORDER BY l.granted ASC, l.locktype::text, l.pid
+        LIMIT $1
+    "#;
+
+    let inv_rows = client
+        .query(list_sql, &[&LOCK_INVENTORY_CAP])
+        .await
+        .map_err(|e| e.to_string())?;
+
+    let inventory: Vec<LockInventoryRow> = inv_rows
+        .iter()
+        .map(|row| LockInventoryRow {
+            pid: row.get("pid"),
+            locktype: row.get::<_, String>("locktype"),
+            mode: row.get::<_, String>("mode"),
+            granted: row.get("granted"),
+            fastpath: row.get("fastpath"),
+            relation_schema: row.try_get("relation_schema").ok().flatten(),
+            relation_name: row.try_get("relation_name").ok().flatten(),
+            usename: row.try_get("usename").ok().flatten(),
+            application_name: row.try_get("application_name").ok().flatten(),
+            state: row.try_get("state").ok().flatten(),
+            query_snippet: row.try_get("query_snippet").ok().flatten(),
+        })
+        .collect();
+
+    let inventory_truncated = total > LOCK_INVENTORY_CAP;
+
+    Ok(LockInspectorData {
+        wait_edges,
+        inventory,
+        inventory_truncated,
+    })
 }
 
 pub async fn get_schema_topology(pool: &Pool, schema: &str) -> Result<TopologyData, String> {

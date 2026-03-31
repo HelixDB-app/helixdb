@@ -968,6 +968,7 @@
   stroke-linecap: round;
   stroke-linejoin: round;
   stroke-width: 2.2px;
+  shape-rendering: geometricPrecision;
   filter: drop-shadow(
     0 1px 2px color-mix(in oklch, var(--primary) 25%, transparent)
   );
@@ -1035,6 +1036,12 @@
   );
   border-bottom: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
   min-height: 36px;
+}
+
+/* ERD table nodes: darker title strip, closer to dbdiagram-style cards */
+.schema-flow .schema-card--erd .schema-card-header {
+  background: color-mix(in oklch, var(--muted) 55%, var(--card));
+  border-bottom-color: color-mix(in oklch, var(--border) 85%, transparent);
 }
 
 .schema-flow .schema-card-title {

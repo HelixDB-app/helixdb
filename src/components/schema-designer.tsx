@@ -54,6 +54,8 @@ import {
   DialogHeader,
   DialogTitle,
 } from '@/components/ui/dialog'
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert'
+import { Skeleton } from '@/components/ui/skeleton'
 
 function formatTimestamp(value: string | null): string {
   if (!value) return '—'
@@ -85,6 +87,7 @@ export function SchemaDesigner({ projectId }: { projectId: string }) {
   } = useSchemaStore()
 
   const [loading, setLoading] = useState(true)
+  const [loadError, setLoadError] = useState<string | null>(null)
   const [saving, setSaving] = useState(false)
   const [dirty, setDirty] = useState(false)
   const [parseError, setParseError] = useState<string | null>(null)
@@ -121,6 +124,7 @@ export function SchemaDesigner({ projectId }: { projectId: string }) {
     let cancelled = false
     const load = async () => {
       setLoading(true)
+      setLoadError(null)
       const local = loadLocalProject(projectId)
       if (local && !cancelled) {
         applyProject(projectToStore(local))
@@ -148,6 +152,11 @@ export function SchemaDesigner({ projectId }: { projectId: string }) {
             await schemaDesignerSaveProject(fresh)
           }
         } catch {
+          if (!cancelled && local) {
+            setLoadError(
+              'Could not refresh this project from the app. Using your saved local copy.'
+            )
+          }
           if (!local && !cancelled) {
             const fresh = buildNewProject({ id: projectId })
             applyProject(projectToStore(fresh))
@@ -430,19 +439,49 @@ export function SchemaDesigner({ projectId }: { projectId: string }) {
           )}
         </aside>
 
-        <div className="flex-1 bg-background">
+        <div className="flex min-h-0 flex-1 flex-col bg-background">
           {loading ? (
-            <div className="h-full w-full flex items-center justify-center">
-              <div className="text-center space-y-2">
-                <Database className="h-8 w-8 text-primary mx-auto" />
-                <p className="text-sm text-muted-foreground">
-                  Loading schema designer...
-                </p>
+            <div className="h-full w-full overflow-auto p-6 sm:p-8">
+              <div className="mx-auto max-w-5xl space-y-5">
+                <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                  <Database className="h-5 w-5 shrink-0 text-primary" />
+                  <span>Loading schema canvas…</span>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+                  {Array.from({ length: 6 }, (_, i) => (
+                    <div
+                      key={i}
+                      className="space-y-3 rounded-xl border border-border/40 bg-card/25 p-4"
+                    >
+                      <Skeleton className="h-8 w-[72%] rounded-md" />
+                      <Skeleton className="h-3.5 w-full rounded-md" />
+                      <Skeleton className="h-3.5 w-[88%] rounded-md" />
+                      <Skeleton className="h-3.5 w-[55%] rounded-md" />
+                    </div>
+                  ))}
+                </div>
               </div>
             </div>
           ) : (
-            <div className="h-full w-full">
-              <div className="h-full w-full">
+            <div className="flex min-h-0 flex-1 flex-col">
+              {loadError ? (
+                <Alert className="m-3 shrink-0 border-amber-500/35 bg-amber-500/[0.06]">
+                  <AlertTitle className="text-sm">Offline copy</AlertTitle>
+                  <AlertDescription className="flex flex-col gap-2 text-xs sm:flex-row sm:items-center sm:justify-between">
+                    <span>{loadError}</span>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      size="sm"
+                      className="h-8 w-fit shrink-0"
+                      onClick={() => setLoadError(null)}
+                    >
+                      Dismiss
+                    </Button>
+                  </AlertDescription>
+                </Alert>
+              ) : null}
+              <div className="min-h-0 flex-1">
                 <FlowCanvas />
               </div>
             </div>

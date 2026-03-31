@@ -13,9 +13,9 @@ use tower_http::cors::{AllowOrigin, Any, CorsLayer};
 use tower_http::trace::TraceLayer;
 use crate::types::{
     CapabilitiesResponse, ColumnInfo, ConnectRequest, ConnectionResponse, CreateColumnDef,
-    EventTriggerInfo, ExecuteQueryBody, FunctionInfo, HealthResponse, PgSession, QueryResult,
-    SchemaInfo, TableDetails, TableInfo, TableSearchBody, TopologyData, TypeDefinitionDetail,
-    TypeInfo,
+    EventTriggerInfo, ExecuteQueryBody, FunctionInfo, HealthResponse, LockInspectorData, PgSession,
+    QueryResult, SchemaInfo, TableDetails, TableInfo, TableSearchBody, TopologyData,
+    TypeDefinitionDetail, TypeInfo,
 };
 
 #[derive(Clone)]
@@ -198,6 +198,10 @@ pub fn build_router() -> Router {
         .route(
             "/v1/connections/{connection_id}/sessions/{pid}/cancel",
             post(cancel_session),
+        )
+        .route(
+            "/v1/connections/{connection_id}/lock-inspector",
+            get(get_lock_inspector_handler),
         )
         .route(
             "/v1/connections/{connection_id}/topology",
@@ -608,6 +612,20 @@ async fn cancel_session(
         .await
         .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
     Ok(Json(ok))
+}
+
+async fn get_lock_inspector_handler(
+    State(state): State<AppState>,
+    Path(connection_id): Path<String>,
+) -> Result<Json<LockInspectorData>, (StatusCode, String)> {
+    let pool = state
+        .connections
+        .get_pool(&connection_id)
+        .map_err(|_| (StatusCode::NOT_FOUND, "unknown connection".to_string()))?;
+    let data = crate::extended::get_lock_inspector(&pool)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(data))
 }
 
 async fn get_database_topology(
