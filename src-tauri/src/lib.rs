@@ -20,6 +20,7 @@ mod notes_storage;
 mod query_history_storage;
 mod replication;
 mod rls;
+mod schema_designer;
 mod schema_designer_storage;
 mod sql_sensitive;
 mod security_commands;
@@ -254,6 +255,15 @@ pub fn run() {
             commands::schema_designer_get_project,
             commands::schema_designer_save_project,
             commands::schema_designer_delete_project,
+            schema_designer::schema_designer_v2_list_projects,
+            schema_designer::schema_designer_v2_search_projects,
+            schema_designer::schema_designer_v2_get_project,
+            schema_designer::schema_designer_v2_upsert_project,
+            schema_designer::schema_designer_v2_delete_project,
+            schema_designer::schema_designer_v2_list_api_keys,
+            schema_designer::schema_designer_v2_store_api_key,
+            schema_designer::schema_designer_v2_delete_api_key,
+            schema_designer::schema_designer_v2_stream_generate,
             commands::query_history_list,
             commands::query_history_get_detail,
             commands::query_history_get_dashboard,

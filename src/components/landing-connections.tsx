@@ -346,7 +346,7 @@ export function LandingConnections() {
                             {/* Schema projects */}
                             <SectionHeader icon={<Layers className="h-3.5 w-3.5" />} title="Schema projects" />
                             {/* Link to schema projects page */}
-                            <Link href="/schema-projects" className="text-[10px] text-muted-foreground/40 hover:text-foreground hover:underline">
+                            <Link href="/schema-designer" className="text-[10px] text-muted-foreground/40 hover:text-foreground hover:underline">
                                 View all schema projects
                             </Link>
 

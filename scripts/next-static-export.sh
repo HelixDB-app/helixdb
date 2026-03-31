@@ -22,6 +22,11 @@ fi
 
 # distDir is `out` (see next.config.ts). Old `out/dev/types/validator.ts` can still list stashed
 # API routes; `tsc` then cannot resolve ../../../src/app/api/... — clear before build.
-rm -rf "$ROOT/out"
+# Use Node's recursive rm with retries because BSD `rm -rf` occasionally flakes on
+# Turbopack cache directories on macOS when metadata files are still settling.
+if [ -e "$ROOT/out" ]; then
+    chmod -R u+w "$ROOT/out" 2>/dev/null || true
+    node -e 'const fs=require("fs"); const path=process.argv[1]; fs.rmSync(path,{recursive:true,force:true,maxRetries:8,retryDelay:150});' "$ROOT/out"
+fi
 
 (cd "$ROOT" && pnpm exec next build)

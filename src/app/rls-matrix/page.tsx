@@ -79,7 +79,7 @@ function chipState(
     role: string,
     table: string,
     op: PolicyCmd,
-): "off" | "open" | "ok" | "restrictive" | "denied" {
+): "off" | "ok" | "restrictive" | "denied" {
     const rlsOn = rlsEnabledTables.includes(table);
     if (!rlsOn) return "off";
     const matching = getPoliciesForCell(policies, role, table, op);
