@@ -19,6 +19,58 @@ import type {
   SchemaTable,
   SchemaTrigger as PersistedTrigger,
 } from '@/lib/schema-designer-types'
+import {
+  ERD_NEW_TABLE_GAP,
+  ERD_TABLE_CARD_WIDTH,
+  estimateErdaTableHeight,
+} from '@/lib/schema-canvas-layout'
+
+const PACK_COLUMNS = 3
+const PACK_BASE_X = 120
+const PACK_BASE_Y = 120
+const PACK_VERTICAL_GAP = 64
+const PACK_STEP_X = ERD_TABLE_CARD_WIDTH + ERD_NEW_TABLE_GAP
+
+function heightOfSchemaTable(t: SchemaTable): number {
+  return estimateErdaTableHeight(
+    t.columns?.length ?? 0,
+    (t.indexes?.length ?? 0) > 0 ? 1 : 0
+  )
+}
+
+/** Greedy bin-pack into columns so tall cards never overlap before auto-layout runs. */
+function packedPositionsForNewTables(
+  project: SchemaProject,
+  existing?: { tables: Table[]; relationships: Relationship[] }
+): Map<number, { x: number; y: number }> {
+  const out = new Map<number, { x: number; y: number }>()
+  const colNextY = Array(PACK_COLUMNS).fill(PACK_BASE_Y)
+
+  for (let index = 0; index < project.tables.length; index += 1) {
+    const table = project.tables[index]
+    const existingTable = existing?.tables.find(
+      (t) => normalizeName(t.name) === normalizeName(table.name)
+    )
+    if (table.position) {
+      out.set(index, table.position)
+      continue
+    }
+    if (existingTable) {
+      out.set(index, { x: existingTable.x, y: existingTable.y })
+      continue
+    }
+
+    let bestCol = 0
+    for (let c = 1; c < PACK_COLUMNS; c += 1) {
+      if (colNextY[c] < colNextY[bestCol]) bestCol = c
+    }
+    const x = PACK_BASE_X + bestCol * PACK_STEP_X
+    const y = colNextY[bestCol]
+    out.set(index, { x, y })
+    colNextY[bestCol] = y + heightOfSchemaTable(table) + PACK_VERTICAL_GAP
+  }
+  return out
+}
 
 const TYPE_MAP: Array<{ pattern: RegExp; value: Column['type'] }> = [
   { pattern: /\b(INT|INTEGER|BIGINT|SMALLINT|SERIAL|BIGSERIAL)\b/i, value: 'integer' },
@@ -261,9 +313,11 @@ export function parseSchemaSQL(
   const indexesByTable = new Map<string, SchemaIndex[]>()
 
   let newTableIndex = 0
+  /** Row stride must exceed tall cards; matches pack spacing ~order of magnitude. */
+  const SQL_GRID_ROW_STRIDE = 400
   const createLayout = (index: number) => ({
-    x: 120 + (index % 3) * 320,
-    y: 120 + Math.floor(index / 3) * 220,
+    x: PACK_BASE_X + (index % PACK_COLUMNS) * PACK_STEP_X,
+    y: PACK_BASE_Y + Math.floor(index / PACK_COLUMNS) * SQL_GRID_ROW_STRIDE,
   })
 
   for (const rawStmt of statements) {
@@ -595,6 +649,7 @@ export function projectToSummary(project: SchemaProject): SchemaProjectSummary {
     created_at: project.created_at,
     updated_at: project.updated_at,
     table_count: project.tables.length,
+    thumbnail_color: project.thumbnail_color ?? null,
   }
 }
 
@@ -602,14 +657,20 @@ export function projectToStore(
   project: SchemaProject,
   existing?: { tables: Table[]; relationships: Relationship[] }
 ) {
+  const packedByIndex = packedPositionsForNewTables(project, existing)
   let tables: Table[] = project.tables.map((table, index) => {
     const existingTable = existing?.tables.find(
       (t) => normalizeName(t.name) === normalizeName(table.name)
     )
-    const layout = table.position ?? (existingTable ? { x: existingTable.x, y: existingTable.y } : {
-      x: 120 + (index % 3) * 320,
-      y: 120 + Math.floor(index / 3) * 220,
-    })
+    const layout =
+      table.position != null
+        ? table.position
+        : existingTable
+          ? { x: existingTable.x, y: existingTable.y }
+          : (packedByIndex.get(index) ?? {
+              x: PACK_BASE_X,
+              y: PACK_BASE_Y,
+            })
     const existingColumnByName = new Map(
       (existingTable?.columns ?? []).map((c) => [normalizeName(c.name), c])
     )
@@ -618,6 +679,8 @@ export function projectToStore(
       name: table.name,
       x: layout.x,
       y: layout.y,
+      hexColor: table.hex_color ?? undefined,
+      description: table.description ?? undefined,
       indexes: (table.indexes ?? []).map((idx) => ({
         id: idx.id,
         name: idx.name,
@@ -736,6 +799,14 @@ export function projectToStore(
     triggers,
     canvasItems,
     code,
+    designerMessages: project.messages ?? [],
+    aiPanelMarkdown: project.ai_panel_markdown ?? '',
+    thumbnailColor: project.thumbnail_color ?? null,
+    lastModelId: project.last_model_id ?? null,
+    lastGenerationOptionsJson: project.last_generation_options_json ?? null,
+    canvasStateJson: project.canvas_state_json ?? null,
+    versionHistory: project.version_history ?? [],
+    designerEditTableId: null,
   }
 }
 
@@ -753,6 +824,13 @@ export function storeToProject(
     triggers?: SchemaTrigger[]
     canvasItems?: CanvasItem[]
     code: string
+    designerMessages?: import('@/lib/schema-designer-types').SchemaDesignerMessage[]
+    aiPanelMarkdown?: string
+    thumbnailColor?: string | null
+    lastModelId?: string | null
+    lastGenerationOptionsJson?: string | null
+    canvasStateJson?: string | null
+    versionHistory?: import('@/lib/schema-designer-types').SchemaSnapshot[]
   },
   updatedAtOverride?: string
 ): SchemaProject {
@@ -769,6 +847,8 @@ export function storeToProject(
     id: table.id,
     name: table.name,
     position: { x: table.x, y: table.y },
+    hex_color: table.hexColor ?? null,
+    description: table.description ?? null,
     columns: table.columns.map((col) => {
       const rel = relationshipsBySource.get(col.id)?.[0]
       const foreignKey: ForeignKeyRef | null = rel
@@ -794,7 +874,7 @@ export function storeToProject(
     app_type: state.projectAppType ?? 'database',
     description: state.projectDescription ?? '',
     tables,
-    version_history: [],
+    version_history: state.versionHistory ?? [],
     functions: (state.functions ?? []).map<PersistedFunction>((fn) => ({
       id: fn.id,
       name: fn.name,
@@ -827,6 +907,12 @@ export function storeToProject(
     created_at: createdAt,
     updated_at: now,
     code: state.code ?? '',
+    thumbnail_color: state.thumbnailColor ?? null,
+    messages: state.designerMessages ?? [],
+    ai_panel_markdown: state.aiPanelMarkdown ?? null,
+    last_model_id: state.lastModelId ?? null,
+    last_generation_options_json: state.lastGenerationOptionsJson ?? null,
+    canvas_state_json: state.canvasStateJson ?? null,
   }
 }
 

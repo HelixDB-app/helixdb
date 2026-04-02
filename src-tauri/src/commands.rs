@@ -1819,8 +1819,7 @@ pub async fn notes_search(
 pub async fn schema_designer_load_all(
     app: AppHandle,
 ) -> Result<Vec<crate::schema_designer_storage::SchemaProject>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    crate::schema_designer_storage::load_all(Some(app_data_dir))
+    crate::schema_designer_persist::load_all(app).await
 }
 
 #[tauri::command]
@@ -1828,8 +1827,7 @@ pub async fn schema_designer_get_project(
     app: AppHandle,
     id: String,
 ) -> Result<Option<crate::schema_designer_storage::SchemaProject>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    crate::schema_designer_storage::get_project(Some(app_data_dir), &id)
+    crate::schema_designer_persist::get_project(app, &id).await
 }
 
 #[tauri::command]
@@ -1837,8 +1835,7 @@ pub async fn schema_designer_save_project(
     app: AppHandle,
     project: crate::schema_designer_storage::SchemaProject,
 ) -> Result<Vec<crate::schema_designer_storage::SchemaProject>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    crate::schema_designer_storage::save_project(Some(app_data_dir), project)
+    crate::schema_designer_persist::save_project(app, project).await
 }
 
 #[tauri::command]
@@ -1846,8 +1843,7 @@ pub async fn schema_designer_delete_project(
     app: AppHandle,
     id: String,
 ) -> Result<Vec<crate::schema_designer_storage::SchemaProject>, String> {
-    let app_data_dir = app.path().app_data_dir().map_err(|e| e.to_string())?;
-    crate::schema_designer_storage::delete_project(Some(app_data_dir), &id)
+    crate::schema_designer_persist::delete_project(app, &id).await
 }
 
 // ─── Query History & Performance Intelligence (SQLite local store) ────────

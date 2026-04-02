@@ -20,3 +20,16 @@ export async function listenCollabJoin(
         handler(event.payload);
     });
 }
+
+/** Deep link `pgstudio://schema/share?token=…` from the OS. */
+export async function listenSchemaShare(
+    handler: (url: string) => void
+): Promise<() => void> {
+    if (!isTauri()) {
+        return () => {};
+    }
+    const { listen } = await import("@tauri-apps/api/event");
+    return await listen<string>("pgstudio-schema-share", (event) => {
+        handler(event.payload);
+    });
+}

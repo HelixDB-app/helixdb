@@ -121,6 +121,10 @@ pub fn build_router() -> Router {
     let auth_for_mw = auth.clone();
     let app = Router::new()
         .route("/health", get(health))
+        .route(
+            "/schema-designer/status",
+            get(schema_designer_http_stub),
+        )
         .route("/v1/capabilities", get(capabilities))
         .route("/v1/connections", post(connect))
         .route(
@@ -228,6 +232,15 @@ pub fn build_router() -> Router {
         .layer(TraceLayer::new_for_http());
 
     app
+}
+
+/// Placeholder for future HTTP parity with the desktop AI schema designer (Tauri IPC is primary).
+async fn schema_designer_http_stub() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "service": "ai-schema-exercise / ai-schema-designer",
+        "primary_transport": "tauri_ipc",
+        "note": "The pgStudio desktop app uses Rust commands for Groq and persistence; extend this route when a hosted API is needed."
+    }))
 }
 
 async fn health(State(state): State<AppState>) -> Json<HealthResponse> {

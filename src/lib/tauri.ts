@@ -1558,7 +1558,105 @@ export async function schemaDesignerDeleteProject(id: string): Promise<SchemaPro
     return invoke<SchemaProject[]>("schema_designer_delete_project", { id });
 }
 
+/** Local SQLite cache row for cloud sync (desktop). */
+export async function schemaSyncLocalPutCache(
+    projectId: string,
+    json: string,
+    revision: number
+): Promise<void> {
+    return invoke<void>("schema_sync_local_put_cache", {
+        project_id: projectId,
+        json,
+        revision,
+    });
+}
 
+export async function schemaSyncLocalEnqueue(
+    projectId: string,
+    payload: string,
+    clientOpId: string
+): Promise<void> {
+    return invoke<void>("schema_sync_local_enqueue", {
+        project_id: projectId,
+        payload,
+        client_op_id: clientOpId,
+    });
+}
+
+export type SchemaSyncOutboxEntry = {
+    id: number;
+    project_id: string;
+    payload: string;
+    client_op_id: string;
+    created_at: string;
+};
+
+export async function schemaSyncLocalListOutbox(): Promise<SchemaSyncOutboxEntry[]> {
+    return invoke<SchemaSyncOutboxEntry[]>("schema_sync_local_list_outbox");
+}
+
+export async function schemaSyncLocalRemoveOutboxIds(ids: number[]): Promise<void> {
+    return invoke<void>("schema_sync_local_remove_outbox_ids", { ids });
+}
+
+export type SchemaDesignerAiStreamPayload = {
+    requestId?: string;
+    projectId?: string;
+    messages: Array<{
+        role: string;
+        content: string;
+        attachments?: Array<{ mime_type: string; data_base64: string }>;
+    }>;
+    model: string;
+    temperature: number;
+    maxTokens: number;
+    options?: {
+        provider?: "groq" | "cloudflare" | "worker" | "openrouter" | "gemini" | "auto";
+        databaseTarget?: string;
+        outputFormat?: string;
+        auditColumns?: boolean;
+        includeIndexes?: boolean;
+        includeEnums?: boolean;
+        includeSampleData?: boolean;
+        normalization?: string;
+        namingConvention?: string;
+        reasoningEffort?: string;
+        runFeaturesPhase?: boolean;
+        runDocsPhase?: boolean;
+        runSavingStage?: boolean;
+    };
+};
+
+/** Store Groq API key in the OS keychain (desktop). */
+export async function schemaDesignerGroqSetApiKey(apiKey: string): Promise<void> {
+    return invoke<void>("schema_designer_groq_set_api_key", { api_key: apiKey });
+}
+
+export async function schemaDesignerGroqDeleteApiKey(): Promise<void> {
+    return invoke<void>("schema_designer_groq_delete_api_key");
+}
+
+export async function schemaDesignerGroqHasApiKey(): Promise<boolean> {
+    return invoke<boolean>("schema_designer_groq_has_api_key");
+}
+
+/** Start streaming Groq completion; listen for `schema-designer-ai-token` and `schema-designer-ai-done`. */
+export async function schemaDesignerAiStreamStart(
+    request: SchemaDesignerAiStreamPayload
+): Promise<string> {
+    return invoke<string>("schema_designer_ai_stream_start", { request });
+}
+
+/** Start the 3-phase agentic pipeline; events are streamed on the same channels. */
+export async function schemaDesignerAiPipelineStart(
+    request: SchemaDesignerAiStreamPayload
+): Promise<string> {
+    return invoke<string>("schema_designer_ai_pipeline_start", { request });
+}
+
+export async function schemaDesignerAiStreamCancel(requestId: string): Promise<void> {
+    return invoke<void>("schema_designer_ai_stream_cancel", { request_id: requestId });
+}
 
 // ─── Authentication ────────────────────────────────────────────────────────
 

@@ -1,5 +1,10 @@
 import { create } from 'zustand'
 
+import type {
+  SchemaDesignerMessage,
+  SchemaSnapshot,
+} from '@/lib/schema-designer-types'
+
 export interface Column {
   id: string
   name: string
@@ -33,6 +38,8 @@ export interface Table {
   indexes?: SchemaIndex[]
   x: number
   y: number
+  hexColor?: string
+  description?: string
 }
 
 export interface Relationship {
@@ -91,7 +98,14 @@ export interface SchemaState {
   selectedTableId: string | null
   selectedRelationshipId: string | null
   code: string
-  
+  designerMessages: SchemaDesignerMessage[]
+  aiPanelMarkdown: string
+  thumbnailColor: string | null
+  lastModelId: string | null
+  lastGenerationOptionsJson: string | null
+  canvasStateJson: string | null
+  versionHistory: SchemaSnapshot[]
+
   // Table operations
   addTable: (table: Table) => void
   updateTable: (id: string, table: Partial<Table>) => void
@@ -142,108 +156,53 @@ export interface SchemaState {
   // Project metadata
   setProjectMeta: (meta: Partial<Pick<SchemaState, 'projectId' | 'projectName' | 'projectDescription' | 'projectAppType' | 'projectCreatedAt' | 'projectUpdatedAt'>>) => void
 
+  setDesignerMessages: (messages: SchemaDesignerMessage[]) => void
+  appendDesignerMessage: (message: SchemaDesignerMessage) => void
+  setAiPanelMarkdown: (markdown: string) => void
+  setThumbnailColor: (color: string | null) => void
+  setLastModelId: (id: string | null) => void
+  setLastGenerationOptionsJson: (json: string | null) => void
+  setCanvasStateJson: (json: string | null) => void
+  setVersionHistory: (snapshots: SchemaSnapshot[]) => void
+
+  /** AI designer: full table editor modal */
+  designerEditTableId: string | null
+  setDesignerEditTableId: (id: string | null) => void
+
   // Hydrate full project state
-  hydrateProject: (payload: Pick<SchemaState, 'projectId' | 'projectName' | 'projectDescription' | 'projectAppType' | 'projectCreatedAt' | 'projectUpdatedAt' | 'tables' | 'relationships' | 'functions' | 'triggers' | 'canvasItems' | 'code'>) => void
+  hydrateProject: (
+    payload: Pick<
+      SchemaState,
+      | 'projectId'
+      | 'projectName'
+      | 'projectDescription'
+      | 'projectAppType'
+      | 'projectCreatedAt'
+      | 'projectUpdatedAt'
+      | 'tables'
+      | 'relationships'
+      | 'functions'
+      | 'triggers'
+      | 'canvasItems'
+      | 'code'
+      | 'designerMessages'
+      | 'aiPanelMarkdown'
+      | 'thumbnailColor'
+      | 'lastModelId'
+      | 'lastGenerationOptionsJson'
+      | 'canvasStateJson'
+      | 'versionHistory'
+      | 'designerEditTableId'
+    >
+  ) => void
   
   // Reset
   reset: () => void
 }
 
 export const DEFAULT_SCHEMA_STATE = {
-  tables: [
-    {
-      id: 'table-1',
-      name: 'users',
-      x: 100,
-      y: 100,
-      indexes: [],
-      columns: [
-        {
-          id: 'col-1',
-          name: 'id',
-          type: 'uuid' as const,
-          nullable: false,
-          isPrimaryKey: true,
-          isUnique: true,
-        },
-        {
-          id: 'col-2',
-          name: 'email',
-          type: 'string' as const,
-          nullable: false,
-          isPrimaryKey: false,
-          isUnique: true,
-        },
-        {
-          id: 'col-3',
-          name: 'created_at',
-          type: 'timestamp' as const,
-          nullable: false,
-          isPrimaryKey: false,
-          isUnique: false,
-        },
-      ],
-    },
-    {
-      id: 'table-2',
-      name: 'posts',
-      x: 500,
-      y: 100,
-      indexes: [],
-      columns: [
-        {
-          id: 'col-4',
-          name: 'id',
-          type: 'uuid' as const,
-          nullable: false,
-          isPrimaryKey: true,
-          isUnique: true,
-        },
-        {
-          id: 'col-5',
-          name: 'user_id',
-          type: 'uuid' as const,
-          nullable: false,
-          isPrimaryKey: false,
-          isUnique: false,
-        },
-        {
-          id: 'col-6',
-          name: 'title',
-          type: 'string' as const,
-          nullable: false,
-          isPrimaryKey: false,
-          isUnique: false,
-        },
-        {
-          id: 'col-7',
-          name: 'content',
-          type: 'text' as const,
-          nullable: true,
-          isPrimaryKey: false,
-          isUnique: false,
-        },
-        {
-          id: 'col-8',
-          name: 'created_at',
-          type: 'timestamp' as const,
-          nullable: false,
-          isPrimaryKey: false,
-          isUnique: false,
-        },
-      ],
-    },
-  ],
-  relationships: [
-    {
-      id: 'rel-1',
-      sourceTableId: 'table-1',
-      sourceColumnId: 'col-1',
-      targetTableId: 'table-2',
-      targetColumnId: 'col-5',
-      type: 'one-to-many' as const,
-    },
-  ],
+  tables: [],
+  relationships: [],
   selectedTableId: null,
   selectedRelationshipId: null,
   code: '',
@@ -267,6 +226,14 @@ const initialState = {
   projectAppType: 'database',
   projectCreatedAt: null,
   projectUpdatedAt: null,
+  designerMessages: [] as SchemaDesignerMessage[],
+  aiPanelMarkdown: '',
+  thumbnailColor: null as string | null,
+  lastModelId: null as string | null,
+  lastGenerationOptionsJson: null as string | null,
+  canvasStateJson: null as string | null,
+  versionHistory: [] as SchemaSnapshot[],
+  designerEditTableId: null,
   ...cloneDefaultState(),
 }
 
@@ -507,9 +474,39 @@ export const useSchemaStore = create<SchemaState>((set) => ({
       ...meta,
     })),
 
+  setDesignerMessages: (designerMessages) => set({ designerMessages }),
+
+  appendDesignerMessage: (message) =>
+    set((state) => ({
+      designerMessages: [...state.designerMessages, message],
+    })),
+
+  setAiPanelMarkdown: (aiPanelMarkdown) => set({ aiPanelMarkdown }),
+
+  setThumbnailColor: (thumbnailColor) => set({ thumbnailColor }),
+
+  setLastModelId: (lastModelId) => set({ lastModelId }),
+
+  setLastGenerationOptionsJson: (lastGenerationOptionsJson) =>
+    set({ lastGenerationOptionsJson }),
+
+  setCanvasStateJson: (canvasStateJson) => set({ canvasStateJson }),
+
+  setVersionHistory: (versionHistory) => set({ versionHistory }),
+
+  setDesignerEditTableId: (designerEditTableId) => set({ designerEditTableId }),
+
   hydrateProject: (payload) =>
     set({
       ...payload,
+      designerMessages: payload.designerMessages ?? [],
+      aiPanelMarkdown: payload.aiPanelMarkdown ?? '',
+      thumbnailColor: payload.thumbnailColor ?? null,
+      lastModelId: payload.lastModelId ?? null,
+      lastGenerationOptionsJson: payload.lastGenerationOptionsJson ?? null,
+      canvasStateJson: payload.canvasStateJson ?? null,
+      versionHistory: payload.versionHistory ?? [],
+      designerEditTableId: payload.designerEditTableId ?? null,
       selectedTableId: null,
       selectedRelationshipId: null,
     }),

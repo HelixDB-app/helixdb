@@ -65,6 +65,35 @@ pub struct SchemaFunction {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaExtension {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaCronJob {
+    pub id: String,
+    pub name: String,
+    pub schedule: String,
+    pub command: String,
+    #[serde(default)]
+    pub description: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaDocumentation {
+    pub overview: String,
+    #[serde(default)]
+    pub capacity_estimate: Option<String>,
+    #[serde(default)]
+    pub design_rationale: Option<String>,
+    #[serde(default)]
+    pub migration_notes: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SchemaTrigger {
     pub id: String,
     pub name: String,
@@ -111,6 +140,10 @@ pub struct SchemaTable {
     pub indexes: Vec<SchemaIndex>,
     #[serde(default)]
     pub position: Option<TablePosition>,
+    #[serde(default)]
+    pub hex_color: Option<String>,
+    #[serde(default)]
+    pub description: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -119,6 +152,29 @@ pub struct SchemaSnapshot {
     pub label: String,
     pub timestamp: String,
     pub tables: Vec<SchemaTable>,
+    #[serde(default)]
+    pub conversation_turn_id: Option<String>,
+}
+
+/// Image payload for schema designer chat (raw base64, no `data:` prefix).
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaMessageAttachment {
+    pub mime_type: String,
+    pub data_base64: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SchemaDesignerMessage {
+    pub id: String,
+    pub role: String,
+    pub content: String,
+    pub created_at: String,
+    #[serde(default)]
+    pub model: Option<String>,
+    #[serde(default)]
+    pub latency_ms: Option<u64>,
+    #[serde(default)]
+    pub attachments: Option<Vec<SchemaMessageAttachment>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -137,11 +193,33 @@ pub struct SchemaProject {
     #[serde(default)]
     pub triggers: Vec<SchemaTrigger>,
     #[serde(default)]
+    pub extensions: Vec<SchemaExtension>,
+    #[serde(default)]
+    pub cron_jobs: Vec<SchemaCronJob>,
+    #[serde(default)]
+    pub documentation: Option<SchemaDocumentation>,
+    #[serde(default)]
     pub canvas_items: Vec<CanvasItem>,
     pub created_at: String,
     pub updated_at: String,
     #[serde(default)]
     pub code: String,
+    /// Sidebar / card accent (hex).
+    #[serde(default)]
+    pub thumbnail_color: Option<String>,
+    /// Chat history for AI schema designer.
+    #[serde(default)]
+    pub messages: Vec<SchemaDesignerMessage>,
+    /// Last streamed markdown (sections after JSON).
+    #[serde(default)]
+    pub ai_panel_markdown: Option<String>,
+    #[serde(default)]
+    pub last_model_id: Option<String>,
+    #[serde(default)]
+    pub last_generation_options_json: Option<String>,
+    /// ReactFlow viewport: JSON `{ x, y, zoom }`.
+    #[serde(default)]
+    pub canvas_state_json: Option<String>,
 }
 
 // ── File Persistence ─────────────────────────────────────────────────────────
@@ -208,9 +286,18 @@ pub fn save_project(
         existing.version_history = project.version_history;
         existing.functions = project.functions;
         existing.triggers = project.triggers;
+        existing.extensions = project.extensions;
+        existing.cron_jobs = project.cron_jobs;
+        existing.documentation = project.documentation;
         existing.canvas_items = project.canvas_items;
         existing.code = project.code;
         existing.updated_at = project.updated_at;
+        existing.thumbnail_color = project.thumbnail_color;
+        existing.messages = project.messages;
+        existing.ai_panel_markdown = project.ai_panel_markdown;
+        existing.last_model_id = project.last_model_id;
+        existing.last_generation_options_json = project.last_generation_options_json;
+        existing.canvas_state_json = project.canvas_state_json;
     } else {
         file.projects.push(project);
     }

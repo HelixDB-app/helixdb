@@ -3,6 +3,7 @@ import { projectToSummary } from '@/lib/schema-designer-utils'
 
 const PROJECT_LIST_KEY = 'schema-designer-projects'
 const PROJECT_PREFIX = 'schema-designer-project:'
+const PROJECT_PENDING_PREFIX = 'schema-designer-project-pending:'
 
 function safeParse<T>(raw: string | null, fallback: T): T {
   if (!raw) return fallback
@@ -73,4 +74,20 @@ export function cacheProjectsToLocal(projects: SchemaProject[]): SchemaProjectSu
     )
   }
   return summaries
+}
+
+export function setPendingProject(project: SchemaProject): void {
+  if (!isBrowser()) return
+  window.localStorage.setItem(
+    `${PROJECT_PENDING_PREFIX}${project.id}`,
+    JSON.stringify(project)
+  )
+}
+
+export function takePendingProject(id: string): SchemaProject | null {
+  if (!isBrowser()) return null
+  const key = `${PROJECT_PENDING_PREFIX}${id}`
+  const project = safeParse<SchemaProject | null>(window.localStorage.getItem(key), null)
+  window.localStorage.removeItem(key)
+  return project
 }

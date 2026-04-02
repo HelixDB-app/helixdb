@@ -21,6 +21,10 @@ mod query_history_storage;
 mod replication;
 mod rls;
 mod schema_designer_storage;
+mod schema_designer_mongo;
+mod schema_designer_persist;
+mod schema_ai;
+mod schema_sync_local;
 mod sql_sensitive;
 mod security_commands;
 mod security_prefs;
@@ -76,6 +80,13 @@ pub fn run() {
                                     if let Err(e) = handle.emit("pgstudio-collab-join", &url) {
                                         log::error!(
                                             "[deep-link] failed to emit collaboration event: {e}"
+                                        );
+                                    }
+                                } else if url.starts_with("pgstudio://schema/share") {
+                                    log::info!("[deep-link] emitting pgstudio-schema-share");
+                                    if let Err(e) = handle.emit("pgstudio-schema-share", &url) {
+                                        log::error!(
+                                            "[deep-link] failed to emit schema share event: {e}"
                                         );
                                     }
                                 } else {
@@ -254,6 +265,16 @@ pub fn run() {
             commands::schema_designer_get_project,
             commands::schema_designer_save_project,
             commands::schema_designer_delete_project,
+            schema_sync_local::schema_sync_local_put_cache,
+            schema_sync_local::schema_sync_local_enqueue,
+            schema_sync_local::schema_sync_local_list_outbox,
+            schema_sync_local::schema_sync_local_remove_outbox_ids,
+            schema_ai::schema_designer_groq_set_api_key,
+            schema_ai::schema_designer_groq_delete_api_key,
+            schema_ai::schema_designer_groq_has_api_key,
+            schema_ai::schema_designer_ai_stream_start,
+            schema_ai::schema_designer_ai_pipeline_start,
+            schema_ai::schema_designer_ai_stream_cancel,
             commands::query_history_list,
             commands::query_history_get_detail,
             commands::query_history_get_dashboard,

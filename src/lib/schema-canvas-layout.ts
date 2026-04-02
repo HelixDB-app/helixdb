@@ -39,6 +39,19 @@ export function createSchemaColumnId(): string {
   return `col-${Date.now()}`
 }
 
+/** Estimated total card height for layout — matches FlowCanvas / auto-layout heuristics. */
+export function estimateErdaTableHeight(
+  columnCount: number,
+  indexCount: number
+): number {
+  return (
+    HEADER_HEIGHT +
+    columnCount * ROW_HEIGHT +
+    (indexCount > 0 ? INDEX_BLOCK_HEIGHT : 0) +
+    TABLE_CARD_BODY_PADDING_Y
+  )
+}
+
 /** Snap X so new tables align to the canvas grid. */
 export function snapCanvasX(x: number): number {
   return Math.round(x / GRID_SIZE) * GRID_SIZE

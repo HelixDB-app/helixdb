@@ -34,6 +34,37 @@ export interface SchemaFunction {
   y?: number
 }
 
+export type AgentStage =
+  | 'idle'
+  | 'planning'
+  | 'schema'
+  | 'features'
+  | 'docs'
+  | 'saving'
+  | 'done'
+  | 'error'
+
+export interface SchemaExtension {
+  id: string
+  name: string
+  reason?: string | null
+}
+
+export interface SchemaCronJob {
+  id: string
+  name: string
+  schedule: string
+  command: string
+  description?: string | null
+}
+
+export interface SchemaDocumentation {
+  overview: string
+  capacity_estimate?: string | null
+  design_rationale?: string | null
+  migration_notes?: string | null
+}
+
 export interface SchemaTrigger {
   id: string
   name: string
@@ -67,6 +98,8 @@ export interface SchemaTable {
   columns: SchemaColumn[]
   indexes?: SchemaIndex[]
   position?: TablePosition | null
+  hex_color?: string | null
+  description?: string | null
 }
 
 export interface SchemaSnapshot {
@@ -74,6 +107,23 @@ export interface SchemaSnapshot {
   label: string
   timestamp: string
   tables: SchemaTable[]
+  conversation_turn_id?: string | null
+}
+
+/** Persisted image turn (raw base64); matches Tauri `SchemaMessageAttachment`. */
+export interface SchemaDesignerMessageAttachment {
+  mime_type: string
+  data_base64: string
+}
+
+export interface SchemaDesignerMessage {
+  id: string
+  role: 'user' | 'assistant' | 'system'
+  content: string
+  created_at: string
+  model?: string | null
+  latency_ms?: number | null
+  attachments?: SchemaDesignerMessageAttachment[]
 }
 
 export interface SchemaProject {
@@ -85,10 +135,19 @@ export interface SchemaProject {
   version_history?: SchemaSnapshot[]
   functions?: SchemaFunction[]
   triggers?: SchemaTrigger[]
+  extensions?: SchemaExtension[]
+  cron_jobs?: SchemaCronJob[]
+  documentation?: SchemaDocumentation | null
   canvas_items?: CanvasItem[]
   created_at: string
   updated_at: string
   code?: string
+  thumbnail_color?: string | null
+  messages?: SchemaDesignerMessage[]
+  ai_panel_markdown?: string | null
+  last_model_id?: string | null
+  last_generation_options_json?: string | null
+  canvas_state_json?: string | null
 }
 
 export interface SchemaProjectSummary {
@@ -99,4 +158,5 @@ export interface SchemaProjectSummary {
   created_at: string
   updated_at: string
   table_count: number
+  thumbnail_color?: string | null
 }

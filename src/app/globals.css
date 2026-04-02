@@ -955,6 +955,18 @@
   );
 }
 
+.schema-flow.schema-flow--pan .react-flow__pane {
+  cursor: grab !important;
+}
+
+.schema-flow.schema-flow--pan .react-flow__pane:active {
+  cursor: grabbing !important;
+}
+
+.schema-flow.schema-flow--marquee .react-flow__pane {
+  cursor: crosshair !important;
+}
+
 .schema-flow .react-flow__pane,
 .schema-flow .react-flow__renderer {
   background: transparent;

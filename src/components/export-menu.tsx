@@ -5,6 +5,13 @@ import { Braces, Download } from 'lucide-react'
 import { useSchemaStore } from '@/lib/schema-store'
 import { TypeExporter } from '@/components/export/TypeExporter'
 import { generateSQL, generateTypeScript, generateJSON } from '@/lib/sql-export'
+import {
+  generateJsonSchemaTables,
+  generateMysqlDDL,
+  generatePrismaSchema,
+  generateSequelizeModels,
+  generateTypeOrmEntities,
+} from '@/lib/schema-export-extra'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -14,6 +21,8 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+
+export const SCHEMA_ERD_EXPORT_PNG_EVENT = 'schema-export-erd-png'
 
 function downloadFile(content: string, filename: string, mimeType: string) {
   const blob = new Blob([content], { type: mimeType })
@@ -47,6 +56,32 @@ export function ExportMenu() {
     downloadFile(json, 'schema.json', 'application/json')
   }
 
+  const handleExportMysql = () => {
+    const sql = generateMysqlDDL(tables, relationships, functions, triggers)
+    downloadFile(sql, 'schema.mysql.sql', 'text/sql')
+  }
+
+  const handleExportPrisma = () => {
+    downloadFile(generatePrismaSchema(tables), 'schema.prisma', 'text/plain')
+  }
+
+  const handleExportTypeOrm = () => {
+    downloadFile(generateTypeOrmEntities(tables), 'entities.ts', 'text/typescript')
+  }
+
+  const handleExportSequelize = () => {
+    downloadFile(generateSequelizeModels(tables), 'sequelize-models.ts', 'text/typescript')
+  }
+
+  const handleExportJsonSchema = () => {
+    downloadFile(generateJsonSchemaTables(tables), 'schema.tables.json', 'application/json')
+  }
+
+  const handleExportErdPng = () => {
+    if (typeof window === 'undefined') return
+    window.dispatchEvent(new CustomEvent(SCHEMA_ERD_EXPORT_PNG_EVENT))
+  }
+
   const handleCopySQL = async () => {
     const sql = generateSQL(tables, relationships, functions, triggers)
     await navigator.clipboard.writeText(sql)
@@ -76,6 +111,24 @@ export function ExportMenu() {
         </DropdownMenuItem>
         <DropdownMenuItem onClick={handleExportJSON}>
           JSON Schema (.json)
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={handleExportMysql}>
+          MySQL DDL (.sql)
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={handleExportPrisma}>
+          Prisma schema (.prisma)
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={handleExportTypeOrm}>
+          TypeORM entities (.ts)
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={handleExportSequelize}>
+          Sequelize models (.ts)
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={handleExportJsonSchema}>
+          JSON Schema bundle (.json)
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={handleExportErdPng}>
+          ERD screenshot (.png)
         </DropdownMenuItem>
         <DropdownMenuSeparator />
         <DropdownMenuLabel>Copy to Clipboard</DropdownMenuLabel>

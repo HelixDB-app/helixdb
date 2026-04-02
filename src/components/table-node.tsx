@@ -55,6 +55,7 @@ const ERD_GRID =
 export type TableNodeData = {
   tableName: string
   tableId: string
+  headerHex?: string
   columns: Array<{
     id: string
     name: string
@@ -74,6 +75,7 @@ export type TableNodeData = {
 
 function tableNodeDataEqual(a: TableNodeData, b: TableNodeData): boolean {
   if (a.tableId !== b.tableId || a.tableName !== b.tableName) return false
+  if (a.headerHex !== b.headerHex) return false
   if (a.columns.length !== b.columns.length) return false
   for (let i = 0; i < a.columns.length; i += 1) {
     const x = a.columns[i]
@@ -180,6 +182,10 @@ function TableNodeInner({ data, selected }: NodeProps<TableNodeData>) {
         selected && 'schema-card--selected'
       )}
       onClick={() => setSelectedTableId(data.tableId)}
+      onDoubleClick={(e) => {
+        if ((e.target as HTMLElement).closest('button, input')) return
+        useSchemaStore.getState().setDesignerEditTableId(data.tableId)
+      }}
     >
       {data.columns.map((col, index) => {
         const top = HEADER_HEIGHT + index * ROW_HEIGHT + ROW_HEIGHT / 2
@@ -203,7 +209,17 @@ function TableNodeInner({ data, selected }: NodeProps<TableNodeData>) {
         )
       })}
 
-      <CardHeader className="schema-card-header flex min-h-9 flex-row items-center justify-between space-y-0 px-3.5 py-2.5">
+      <CardHeader
+        className="schema-card-header flex min-h-9 flex-row items-center justify-between space-y-0 px-3.5 py-2.5"
+        style={
+          data.headerHex && /^#[0-9A-Fa-f]{6}$/i.test(data.headerHex)
+            ? {
+                backgroundColor: `color-mix(in srgb, ${data.headerHex} 38%, transparent)`,
+                borderBottom: `1px solid color-mix(in srgb, ${data.headerHex} 50%, transparent)`,
+              }
+            : undefined
+        }
+      >
         {editingTable ? (
           <Input
             className="nodrag nopan h-8 font-mono text-sm font-semibold tracking-tight"

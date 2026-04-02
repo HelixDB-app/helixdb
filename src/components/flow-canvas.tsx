@@ -1,30 +1,32 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode,
+} from 'react'
 import ReactFlow, {
   Background,
+  BackgroundVariant,
   Connection,
   Controls,
   Edge,
   ConnectionLineType,
   MarkerType,
-  MiniMap,
   Node,
   NodeTypes,
+  Panel,
   ReactFlowInstance,
   useEdgesState,
   useNodesState,
+  useReactFlow,
+  useStore,
 } from 'reactflow'
 import 'reactflow/dist/style.css'
-import {
-  StickyNote,
-  Image as ImageIcon,
-  AlarmClock,
-  LayoutGrid,
-  LayoutDashboard,
-  Search,
-  X,
-} from 'lucide-react'
+import { X } from 'lucide-react'
 import { ClusterBackground } from '@/canvas/ClusterBackground'
 import {
   computeClusterLayout,
@@ -32,7 +34,7 @@ import {
   type LayoutCluster,
 } from '@/canvas/clustering'
 import { useShallow } from 'zustand/react/shallow'
-import { useSchemaStore } from '@/lib/schema-store'
+import { useSchemaStore, type Table } from '@/lib/schema-store'
 import {
   COLUMN_GAP,
   ERD_TABLE_CARD_WIDTH,
@@ -42,6 +44,8 @@ import {
   ROW_GAP,
   ROW_HEIGHT,
   TABLE_CARD_BODY_PADDING_Y,
+  createSchemaColumnId,
+  estimateErdaTableHeight,
 } from '@/lib/schema-canvas-layout'
 import { TableNode } from '@/components/table-node'
 import { NoteNode } from '@/components/note-node'
@@ -57,20 +61,7 @@ import {
   CardHeader,
   CardTitle,
 } from '@/components/ui/card'
-import {
-  Command,
-  CommandEmpty,
-  CommandGroup,
-  CommandInput,
-  CommandItem,
-  CommandList,
-} from '@/components/ui/command'
 import { Label } from '@/components/ui/label'
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from '@/components/ui/popover'
 import {
   Select,
   SelectContent,
@@ -78,8 +69,28 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select'
-import { Separator } from '@/components/ui/separator'
-import { Switch } from '@/components/ui/switch'
+import dagre from '@dagrejs/dagre'
+import { toast } from 'sonner'
+import { SCHEMA_ERD_EXPORT_PNG_EVENT } from '@/components/export-menu'
+import {
+  SchemaFlowCanvasToolbar,
+  SchemaFlowClustersCard,
+} from '@/components/schema-flow-canvas-toolbar'
+import { cn } from '@/lib/utils'
+
+function CanvasZoomHud() {
+  const zoom = useStore((s) => s.transform[2])
+  return (
+    <Panel position="bottom-right" className="pointer-events-none z-10 m-3">
+      <div
+        className="pointer-events-auto rounded-full border border-border/55 bg-card/90 px-2.5 py-1 text-[11px] font-medium tabular-nums text-muted-foreground shadow-md backdrop-blur-md dark:bg-card/85"
+        aria-live="polite"
+      >
+        {Math.round(zoom * 100)}%
+      </div>
+    </Panel>
+  )
+}
 
 const nodeTypes: NodeTypes = {
   tableNode: TableNode,
@@ -92,6 +103,7 @@ const nodeTypes: NodeTypes = {
 }
 
 const REL_EDGE_STORAGE_KEY = 'schema-canvas-rel-edge-type'
+const DAGRE_RANKDIR_STORAGE_KEY = 'schema-dagre-rankdir'
 
 function createCanvasItemId(): string {
   return `canvas-${Date.now()}`
@@ -121,6 +133,33 @@ function relationshipLabel(type: string) {
   }
 }
 
+/** Detect visual overlap using the same height model as layout algorithms. */
+function tablesHaveBBoxOverlap(tables: Table[], margin = 12): boolean {
+  if (tables.length < 2) return false
+  const w = ERD_TABLE_CARD_WIDTH
+  for (let i = 0; i < tables.length; i += 1) {
+    const a = tables[i]
+    const ha = estimateErdaTableHeight(
+      a.columns.length,
+      (a.indexes?.length ?? 0) > 0 ? 1 : 0
+    )
+    for (let j = i + 1; j < tables.length; j += 1) {
+      const b = tables[j]
+      const hb = estimateErdaTableHeight(
+        b.columns.length,
+        (b.indexes?.length ?? 0) > 0 ? 1 : 0
+      )
+      const separated =
+        a.x + w + margin <= b.x ||
+        b.x + w + margin <= a.x ||
+        a.y + ha + margin <= b.y ||
+        b.y + hb + margin <= a.y
+      if (!separated) return true
+    }
+  }
+  return false
+}
+
 const CLUSTER_ANIM_MS = 600
 
 function easeInOutQuad(t: number) {
@@ -133,10 +172,56 @@ type ClusterLayoutSnapshot = {
   triggers: { id: string; x: number; y: number }[]
 }
 
-export function FlowCanvas() {
+export type FlowCanvasRemotePresence = {
+  userId: string
+  x: number
+  y: number
+  nodeId: string
+}
+
+export type FlowCanvasProps = {
+  cloudSyncSlot?: ReactNode
+  remotePresence?: FlowCanvasRemotePresence[]
+  onPanePointerFlowPosition?: (flowPos: { x: number; y: number }) => void
+}
+
+function RemotePresenceLayer({ peers }: { peers: FlowCanvasRemotePresence[] }) {
+  const { flowToScreenPosition } = useReactFlow()
+  if (peers.length === 0) return null
+  return (
+    <div
+      className="pointer-events-none absolute inset-0 z-[15] overflow-visible"
+      aria-hidden
+    >
+      {peers.map((p) => {
+        const s = flowToScreenPosition({ x: p.x, y: p.y })
+        return (
+          <div
+            key={p.userId}
+            className="absolute flex flex-col items-start"
+            style={{
+              transform: `translate(${s.x}px, ${s.y}px)`,
+            }}
+          >
+            <span className="max-w-[140px] truncate rounded-md bg-violet-600/95 px-1.5 py-0.5 text-[10px] font-medium text-white shadow-lg ring-1 ring-white/25">
+              {p.userId.length > 10 ? `${p.userId.slice(0, 8)}…` : p.userId}
+            </span>
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+export function FlowCanvas({
+  cloudSyncSlot,
+  remotePresence = [],
+  onPanePointerFlowPosition,
+}: FlowCanvasProps = {}) {
   const wrapperRef = useRef<HTMLDivElement>(null)
   const reactFlowRef = useRef<ReactFlowInstance | null>(null)
   const layoutRetryRef = useRef(0)
+  const dagreMeasureRetriesRef = useRef(0)
   const autoLayoutKeyRef = useRef<string | null>(null)
   const nodesSigRef = useRef('')
   const edgesSigRef = useRef('')
@@ -162,6 +247,7 @@ export function FlowCanvas() {
     setFunctions,
     setTriggers,
     setSelectedTableId,
+    addTable,
   } = useSchemaStore(
     useShallow((s) => ({
       tables: s.tables,
@@ -172,6 +258,7 @@ export function FlowCanvas() {
       selectedRelationshipId: s.selectedRelationshipId,
       updateTable: s.updateTable,
       setTables: s.setTables,
+      addTable: s.addTable,
       addRelationship: s.addRelationship,
       updateRelationship: s.updateRelationship,
       deleteRelationship: s.deleteRelationship,
@@ -188,6 +275,9 @@ export function FlowCanvas() {
 
   const [inspectorOpen, setInspectorOpen] = useState(false)
   const [jumpOpen, setJumpOpen] = useState(false)
+  const [canvasTool, setCanvasTool] = useState<
+    'select' | 'pan' | 'marquee'
+  >('select')
   const [clusterGrouped, setClusterGrouped] = useState(false)
   const [clusterLayouts, setClusterLayouts] = useState<LayoutCluster[]>([])
   const [clusterLayoutBusy, setClusterLayoutBusy] = useState(false)
@@ -208,6 +298,20 @@ export function FlowCanvas() {
     setRelEdgeType(t)
     if (typeof window !== 'undefined') {
       window.sessionStorage.setItem(REL_EDGE_STORAGE_KEY, t)
+    }
+  }, [])
+
+  const [dagreRankDir, setDagreRankDir] = useState<'TB' | 'LR'>(() => {
+    if (typeof window === 'undefined') return 'TB'
+    return window.sessionStorage.getItem(DAGRE_RANKDIR_STORAGE_KEY) === 'LR'
+      ? 'LR'
+      : 'TB'
+  })
+
+  const persistDagreRankDir = useCallback((dir: 'TB' | 'LR') => {
+    setDagreRankDir(dir)
+    if (typeof window !== 'undefined') {
+      window.sessionStorage.setItem(DAGRE_RANKDIR_STORAGE_KEY, dir)
     }
   }, [])
 
@@ -247,6 +351,7 @@ export function FlowCanvas() {
       data: {
         tableName: table.name,
         tableId: table.id,
+        headerHex: table.hexColor,
         columns: table.columns.map((col) => ({
           id: col.id,
           name: col.name,
@@ -342,38 +447,47 @@ export function FlowCanvas() {
   ])
 
   const edges: Edge[] = useMemo(() => {
-    const relationEdges = relationships.map((rel) => ({
-      id: rel.id,
-      source: rel.sourceTableId,
-      target: rel.targetTableId,
-      sourceHandle: `${rel.sourceColumnId}:source`,
-      targetHandle: `${rel.targetColumnId}:target`,
-      type: relEdgeType,
-      className: 'schema-edge schema-edge-rel',
-      markerEnd: {
-        type: MarkerType.ArrowClosed,
-        color: 'var(--primary)',
-      },
-      animated: rel.id === selectedRelationshipId,
-      label: relationshipLabel(rel.type),
-      labelBgStyle: {
-        fill: 'color-mix(in oklch, var(--background) 85%, transparent)',
-        fillOpacity: 0.92,
-        stroke: 'var(--border)',
-        strokeWidth: 1,
-      },
-      labelStyle: {
-        fill: 'var(--foreground)',
-        fontSize: 10,
-        fontWeight: 600,
-        letterSpacing: '0.02em',
-      },
-      style: {
-        stroke: 'var(--primary)',
-        strokeOpacity: rel.id === selectedRelationshipId ? 1 : 0.7,
-        strokeWidth: rel.id === selectedRelationshipId ? 2.6 : 2.2,
-      },
-    }))
+    const relationEdges = relationships.map((rel) => {
+      const srcTable = tables.find((t) => t.id === rel.sourceTableId)
+      const hex =
+        srcTable?.hexColor && /^#[0-9A-Fa-f]{6}$/.test(srcTable.hexColor)
+          ? srcTable.hexColor
+          : null
+      const stroke = hex ?? 'var(--primary)'
+      return {
+        id: rel.id,
+        source: rel.sourceTableId,
+        target: rel.targetTableId,
+        sourceHandle: `${rel.sourceColumnId}:source`,
+        targetHandle: `${rel.targetColumnId}:target`,
+        type: relEdgeType,
+        className: 'schema-edge schema-edge-rel',
+        markerEnd: {
+          type: MarkerType.ArrowClosed,
+          color: stroke,
+        },
+        animated: true,
+        label: relationshipLabel(rel.type),
+        labelBgStyle: {
+          fill: 'color-mix(in oklch, var(--background) 85%, transparent)',
+          fillOpacity: 0.92,
+          stroke: 'var(--border)',
+          strokeWidth: 1,
+        },
+        labelStyle: {
+          fill: 'var(--foreground)',
+          fontSize: 10,
+          fontWeight: 600,
+          letterSpacing: '0.02em',
+        },
+        style: {
+          stroke,
+          strokeDasharray: rel.id === selectedRelationshipId ? undefined : '5 4',
+          strokeOpacity: rel.id === selectedRelationshipId ? 1 : 0.75,
+          strokeWidth: rel.id === selectedRelationshipId ? 2.6 : 2.2,
+        },
+      }
+    })
 
     const triggerEdges: Edge[] = triggers.map((trg) => ({
       id: `trigger-edge:${trg.id}`,
@@ -423,6 +537,7 @@ export function FlowCanvas() {
     relationships,
     triggers,
     functions,
+    tables,
     selectedRelationshipId,
     relEdgeType,
   ])
@@ -812,6 +927,187 @@ export function FlowCanvas() {
     flowNodes,
   ])
 
+  const runDagreLayout = useCallback(() => {
+    if (tables.length === 0 || clusterGrouped) return
+
+    const missingSize = tables.some((table) => {
+      const node = flowNodes.find((n) => n.id === table.id)
+      return !node || !node.height
+    })
+    if (missingSize && dagreMeasureRetriesRef.current < 2) {
+      dagreMeasureRetriesRef.current += 1
+      requestAnimationFrame(() => {
+        runDagreLayout()
+      })
+      return
+    }
+    dagreMeasureRetriesRef.current = 0
+
+    const tableMap = new Map(tables.map((t) => [t.id, t]))
+    const snap = (value: number) =>
+      Math.round(value / GRID_SIZE) * GRID_SIZE
+    const estimateHeight = (table: (typeof tables)[number]) =>
+      HEADER_HEIGHT +
+      table.columns.length * ROW_HEIGHT +
+      (table.indexes && table.indexes.length > 0 ? INDEX_BLOCK_HEIGHT : 0) +
+      TABLE_CARD_BODY_PADDING_Y
+
+    const heightById = new Map<string, number>()
+    tables.forEach((table) => {
+      heightById.set(
+        table.id,
+        getNodeHeight(table.id, estimateHeight(table))
+      )
+    })
+
+    const maxRankHeight = Math.max(
+      160,
+      ...tables.map(
+        (t) => heightById.get(t.id) ?? estimateHeight(t)
+      )
+    )
+
+    const g = new dagre.graphlib.Graph({ multigraph: false })
+    g.setDefaultEdgeLabel(() => ({}))
+    g.setGraph({
+      rankdir: dagreRankDir,
+      nodesep: dagreRankDir === 'LR' ? 56 : 72,
+      ranksep:
+        dagreRankDir === 'LR'
+          ? Math.max(110, Math.round(maxRankHeight * 0.42))
+          : Math.max(96, Math.round(maxRankHeight * 0.52)),
+      marginx: 48,
+      marginy: 48,
+      ranker: 'network-simplex',
+    })
+
+    const nodeWidth = ERD_TABLE_CARD_WIDTH
+    for (const t of tables) {
+      const h = heightById.get(t.id) ?? estimateHeight(t)
+      g.setNode(t.id, { width: nodeWidth, height: h })
+    }
+
+    const edgeKey = new Set<string>()
+    for (const rel of relationships) {
+      const parent = rel.targetTableId
+      const child = rel.sourceTableId
+      if (!tableMap.has(parent) || !tableMap.has(child)) continue
+      const ek = `${parent}\0${child}`
+      if (edgeKey.has(ek)) continue
+      edgeKey.add(ek)
+      g.setEdge(parent, child)
+    }
+
+    dagre.layout(g)
+
+    const positionById = new Map<string, { x: number; y: number }>()
+    for (const t of tables) {
+      const ln = g.node(t.id)
+      if (!ln || ln.x === undefined || ln.y === undefined) continue
+      const w = (ln.width as number) ?? nodeWidth
+      const h = (ln.height as number) ?? heightById.get(t.id) ?? 100
+      positionById.set(t.id, {
+        x: snap((ln.x ?? 0) - w / 2),
+        y: snap((ln.y ?? 0) - h / 2),
+      })
+    }
+
+    const nextTables = tables.map((table) => {
+      const pos = positionById.get(table.id)
+      return pos ? { ...table, ...pos } : table
+    })
+    setTables(nextTables)
+
+    let maxRight = 120
+    for (const t of nextTables) {
+      maxRight = Math.max(maxRight, t.x + nodeWidth + 48)
+    }
+    const rightEdge = Math.round(maxRight / GRID_SIZE) * GRID_SIZE
+    setFunctions(
+      functions.map((fn, index) => ({
+        ...fn,
+        x: rightEdge,
+        y: Math.round((120 + index * 120) / GRID_SIZE) * GRID_SIZE,
+      }))
+    )
+
+    const triggersByTable = new Map<string, number>()
+    setTriggers(
+      triggers.map((trg) => {
+        const tablePos = positionById.get(trg.tableId)
+        const tableFallback = tableMap.get(trg.tableId)
+        if (!tablePos && !tableFallback) return trg
+        const baseX = tablePos?.x ?? tableFallback?.x ?? 0
+        const baseY = tablePos?.y ?? tableFallback?.y ?? 0
+        const offset = triggersByTable.get(trg.tableId) ?? 0
+        triggersByTable.set(trg.tableId, offset + 1)
+        const rawX = baseX + 240
+        const rawY = baseY - 60 - offset * 60
+        return {
+          ...trg,
+          x: Math.round(rawX / GRID_SIZE) * GRID_SIZE,
+          y: Math.round(rawY / GRID_SIZE) * GRID_SIZE,
+        }
+      })
+    )
+
+    requestAnimationFrame(() => {
+      reactFlowRef.current?.fitView({ padding: 0.2, duration: 500 })
+    })
+  }, [
+    tables,
+    relationships,
+    functions,
+    triggers,
+    clusterGrouped,
+    setTables,
+    setFunctions,
+    setTriggers,
+    getNodeHeight,
+    flowNodes,
+    dagreRankDir,
+  ])
+
+  useEffect(() => {
+    const onExport = async () => {
+      const el = wrapperRef.current
+      if (!el) {
+        toast.error('Canvas not ready')
+        return
+      }
+      try {
+        const html2canvas = (await import('html2canvas')).default
+        const canvas = await html2canvas(el, {
+          backgroundColor: null,
+          scale: 2,
+          useCORS: true,
+          logging: false,
+        })
+        canvas.toBlob((blob) => {
+          if (!blob) {
+            toast.error('Could not create image')
+            return
+          }
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = `schema-erd-${Date.now()}.png`
+          document.body.appendChild(a)
+          a.click()
+          document.body.removeChild(a)
+          URL.revokeObjectURL(url)
+          toast.success('ERD image downloaded')
+        }, 'image/png')
+      } catch (e) {
+        console.error(e)
+        toast.error('Export failed')
+      }
+    }
+    window.addEventListener(SCHEMA_ERD_EXPORT_PNG_EVENT, onExport)
+    return () =>
+      window.removeEventListener(SCHEMA_ERD_EXPORT_PNG_EVENT, onExport)
+  }, [])
+
   const applySmartCluster = useCallback(async () => {
     if (tables.length === 0 || clusterGrouped) return
     setClusterLayoutBusy(true)
@@ -1009,11 +1305,24 @@ export function FlowCanvas() {
         tables.filter((o) => o.id !== t.id && o.x === t.x && o.y === t.y)
           .length > 0
     )
-    if (isCollapsed || hasStacked) {
+    const hasOverlap = tablesHaveBBoxOverlap(tables)
+    if (isCollapsed || hasStacked || hasOverlap) {
       autoLayoutKeyRef.current = key
-      requestAnimationFrame(() => autoLayout())
+      requestAnimationFrame(() => {
+        if (relationships.length > 0) {
+          runDagreLayout()
+        } else {
+          autoLayout()
+        }
+      })
     }
-  }, [tables, relationships, autoLayout, clusterGrouped])
+  }, [
+    tables,
+    relationships,
+    autoLayout,
+    runDagreLayout,
+    clusterGrouped,
+  ])
 
   const onEdgeClick = useCallback(
     (_event: React.MouseEvent, edge: Edge) => {
@@ -1088,6 +1397,133 @@ export function FlowCanvas() {
     [setSelectedTableId]
   )
 
+  const handleFitView = useCallback(() => {
+    reactFlowRef.current?.fitView({ padding: 0.2, duration: 400 })
+  }, [])
+
+  const handleAddBlankTable = useCallback(() => {
+    const id = `table-${Date.now()}`
+    addTable({
+      id,
+      name: 'new_table',
+      x: 240,
+      y: 240,
+      columns: [
+        {
+          id: createSchemaColumnId(),
+          name: 'id',
+          type: 'uuid',
+          nullable: false,
+          isPrimaryKey: true,
+          isUnique: true,
+        },
+      ],
+      indexes: [],
+      hexColor: '#6366f1',
+    })
+  }, [addTable])
+
+  const inspectorPanels = (
+    <>
+      {inspectorOpen && selectedRelationship ? (
+        <Card className="pointer-events-auto w-60 border-border/55 bg-card/95 text-xs text-card-foreground shadow-2xl backdrop-blur-xl dark:bg-zinc-950/94">
+          <CardHeader className="flex flex-row items-center justify-between space-y-0 px-3 py-2 pb-2">
+            <CardTitle className="text-sm font-semibold text-foreground">
+              Relationship
+            </CardTitle>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon"
+              className="nodrag h-7 w-7 shrink-0"
+              aria-label="Close"
+              onClick={() => setInspectorOpen(false)}
+            >
+              <X className="h-4 w-4" />
+            </Button>
+          </CardHeader>
+          <CardContent className="space-y-2 px-3 pb-3 pt-0">
+            <div className="space-y-1.5">
+              <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
+                Cardinality
+              </Label>
+              <Select
+                value={selectedRelationship.type}
+                onValueChange={(v) =>
+                  updateRelationship(selectedRelationship.id, {
+                    type: v as (typeof selectedRelationship)['type'],
+                  })
+                }
+              >
+                <SelectTrigger className="nodrag h-8 w-full text-xs">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent className="z-[100]">
+                  <SelectItem value="one-to-many">One to many</SelectItem>
+                  <SelectItem value="one-to-one">One to one</SelectItem>
+                  <SelectItem value="many-to-many">Many to many</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <Button
+              size="sm"
+              variant="outline"
+              className="nodrag h-8 w-full"
+              type="button"
+              onClick={() =>
+                updateRelationship(selectedRelationship.id, {
+                  sourceTableId: selectedRelationship.targetTableId,
+                  sourceColumnId: selectedRelationship.targetColumnId,
+                  targetTableId: selectedRelationship.sourceTableId,
+                  targetColumnId: selectedRelationship.sourceColumnId,
+                })
+              }
+            >
+              Flip direction
+            </Button>
+            <Button
+              size="sm"
+              variant="destructive"
+              className="nodrag h-8 w-full"
+              type="button"
+              onClick={() => {
+                deleteRelationship(selectedRelationship.id)
+                setSelectedRelationshipId(null)
+                setInspectorOpen(false)
+              }}
+            >
+              Remove link
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
+      {inspectorOpen && !selectedRelationship ? (
+        <Card className="pointer-events-auto w-60 border-border/55 bg-card/95 text-card-foreground shadow-2xl backdrop-blur-xl dark:bg-zinc-950/94">
+          <CardContent className="px-3 py-3">
+            <Alert variant="destructive">
+              <AlertTitle className="text-xs">Relationship unavailable</AlertTitle>
+              <AlertDescription className="text-[11px]">
+                This link may have been removed. Close and select another edge.
+              </AlertDescription>
+            </Alert>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="mt-3 w-full"
+              onClick={() => {
+                setInspectorOpen(false)
+                setSelectedRelationshipId(null)
+              }}
+            >
+              Close
+            </Button>
+          </CardContent>
+        </Card>
+      ) : null}
+    </>
+  )
+
   return (
     <div ref={wrapperRef} className="h-full w-full">
       <ReactFlow
@@ -1123,288 +1559,90 @@ export function FlowCanvas() {
         maxZoom={2}
         panOnScroll
         zoomOnScroll={false}
+        panOnDrag={canvasTool === 'pan' ? true : [1, 2]}
+        selectionOnDrag={canvasTool === 'marquee'}
+        nodesDraggable={canvasTool !== 'pan'}
         fitView
-        className="schema-flow"
+        className={cn(
+          'schema-flow',
+          canvasTool === 'pan' && 'schema-flow--pan',
+          canvasTool === 'marquee' && 'schema-flow--marquee'
+        )}
         nodeTypes={nodeTypes}
         onInit={(instance) => {
           reactFlowRef.current = instance
         }}
+        onPaneMouseMove={
+          onPanePointerFlowPosition
+            ? (e) => {
+                const inst = reactFlowRef.current
+                if (!inst) return
+                const p = inst.screenToFlowPosition({
+                  x: e.clientX,
+                  y: e.clientY,
+                })
+                onPanePointerFlowPosition(p)
+              }
+            : undefined
+        }
       >
         <Background
-          color="color-mix(in oklch, var(--muted-foreground) 12%, transparent)"
-          gap={GRID_SIZE}
+          id="schema-dots"
+          variant={BackgroundVariant.Dots}
+          color="color-mix(in oklch, var(--muted-foreground) 22%, transparent)"
+          gap={GRID_SIZE * 2}
+          size={1.2}
         />
         <Controls />
-        <MiniMap />
+        <CanvasZoomHud />
+        <RemotePresenceLayer peers={remotePresence} />
 
-        <Card className="absolute left-4 top-4 z-20 w-[min(100vw-2rem,22rem)] border-border/60 bg-background/95 shadow-md backdrop-blur-sm">
-          <CardHeader className="space-y-1 px-3 py-2 pb-2">
-            <CardTitle className="text-xs font-semibold text-muted-foreground">
-              Canvas
-            </CardTitle>
-          </CardHeader>
-          <CardContent className="space-y-3 px-3 pb-3 pt-0">
-            <div className="flex flex-wrap items-center gap-2">
-              <Popover open={jumpOpen} onOpenChange={setJumpOpen}>
-                <PopoverTrigger asChild>
-                  <Button
-                    size="sm"
-                    variant="secondary"
-                    className="h-8 gap-1"
-                    type="button"
-                  >
-                    <Search className="h-3.5 w-3.5" />
-                    Find table
-                  </Button>
-                </PopoverTrigger>
-                <PopoverContent
-                  className="w-[min(calc(100vw-2rem),280px)] p-0 z-[100]"
-                  align="start"
-                >
-                  <Command className="rounded-xl border-0 shadow-none">
-                    <CommandInput
-                      placeholder="Search tables…"
-                      className="text-sm"
-                    />
-                    <CommandList>
-                      <CommandEmpty>No tables found.</CommandEmpty>
-                      <CommandGroup heading="Tables">
-                        {sortedTables.map((t) => (
-                          <CommandItem
-                            key={t.id}
-                            value={`${t.name} ${t.id}`}
-                            onSelect={() => handleJumpToTable(t.id)}
-                          >
-                            {t.name}
-                          </CommandItem>
-                        ))}
-                      </CommandGroup>
-                    </CommandList>
-                  </Command>
-                </PopoverContent>
-              </Popover>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Button
-                size="sm"
-                variant="secondary"
-                className="h-8 gap-1"
-                type="button"
-                onClick={() => addCanvas('note')}
-              >
-                <StickyNote className="h-3.5 w-3.5" />
-                Note
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                className="h-8 gap-1"
-                type="button"
-                onClick={() => addCanvas('image')}
-              >
-                <ImageIcon className="h-3.5 w-3.5" aria-hidden />
-                Image
-              </Button>
-              <Button
-                size="sm"
-                variant="secondary"
-                className="h-8 gap-1"
-                type="button"
-                onClick={() => addCanvas('cron')}
-              >
-                <AlarmClock className="h-3.5 w-3.5" />
-                Cron
-              </Button>
-              <Button
-                size="sm"
-                variant="outline"
-                className="h-8 gap-1"
-                type="button"
-                onClick={autoLayout}
-              >
-                <LayoutGrid className="h-3.5 w-3.5" />
-                Align
-              </Button>
-            </div>
-            <div className="flex flex-wrap items-center gap-2">
-              <Select
-                value={clusterMode}
-                onValueChange={(v) =>
-                  setClusterMode(v as 'heuristic' | 'gemini')
-                }
-                disabled={clusterGrouped || clusterLayoutBusy}
-              >
-                <SelectTrigger className="nodrag h-8 w-[8.75rem] text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent className="z-[100]">
-                  <SelectItem value="heuristic">Heuristic</SelectItem>
-                  <SelectItem value="gemini">Gemini</SelectItem>
-                </SelectContent>
-              </Select>
-              <Button
-                size="sm"
-                variant={clusterGrouped ? 'default' : 'outline'}
-                className="h-8 gap-1"
-                type="button"
-                disabled={clusterLayoutBusy || tables.length === 0}
-                onClick={() =>
-                  clusterGrouped
-                    ? ungroupSmartClusters()
-                    : void applySmartCluster()
-                }
-              >
-                <LayoutDashboard className="h-3.5 w-3.5" />
-                {clusterGrouped ? 'Ungroup' : 'Cluster'}
-              </Button>
-            </div>
-            <Separator />
-            <div className="flex items-center justify-between gap-2">
-              <Label
-                htmlFor="schema-edge-smooth"
-                className="text-[11px] font-medium leading-tight text-muted-foreground"
-              >
-                Smooth FK edges
-              </Label>
-              <Switch
-                id="schema-edge-smooth"
-                size="sm"
-                checked={relEdgeType === 'smoothstep'}
-                onCheckedChange={(c) =>
-                  persistRelEdgeType(c ? 'smoothstep' : 'step')
-                }
-              />
-            </div>
-          </CardContent>
-        </Card>
-
-        {clusterGrouped && clusterLayouts.length > 0 && (
-          <Card className="absolute right-4 top-28 z-20 w-[min(100vw-2rem,14rem)] border-border/60 bg-background/95 shadow-md backdrop-blur-sm">
-            <CardHeader className="space-y-0 px-3 py-2 pb-2">
-              <CardTitle className="text-xs font-semibold text-muted-foreground">
-                Clusters
-              </CardTitle>
-            </CardHeader>
-            <CardContent className="space-y-2 px-3 pb-3 pt-0">
-              {clusterLayouts.map((c) => (
-                <div
-                  key={c.id}
-                  className="flex items-center gap-2 text-[11px] leading-tight"
-                >
-                  <div
-                    className="h-3.5 w-3.5 shrink-0 rounded-sm border border-border/50"
-                    style={{ backgroundColor: c.colorHex }}
-                    aria-hidden
-                  />
-                  <span className="min-w-0 flex-1 truncate font-medium">
-                    {c.label}
-                  </span>
-                  <span className="shrink-0 tabular-nums text-muted-foreground">
-                    {c.tableIds.length}
-                  </span>
-                </div>
-              ))}
-            </CardContent>
-          </Card>
-        )}
-
-        {inspectorOpen && selectedRelationship && (
-          <Card className="absolute right-4 top-4 z-20 w-60 border-border/60 bg-background/95 text-xs shadow-md backdrop-blur-sm">
-            <CardHeader className="flex flex-row items-center justify-between space-y-0 px-3 py-2 pb-2">
-              <CardTitle className="text-sm font-semibold text-foreground">
-                Relationship
-              </CardTitle>
-              <Button
-                type="button"
-                variant="ghost"
-                size="icon"
-                className="nodrag h-7 w-7 shrink-0"
-                aria-label="Close"
-                onClick={() => setInspectorOpen(false)}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </CardHeader>
-            <CardContent className="space-y-2 px-3 pb-3 pt-0">
-              <div className="space-y-1.5">
-                <Label className="text-[10px] uppercase tracking-wide text-muted-foreground">
-                  Cardinality
-                </Label>
-                <Select
-                  value={selectedRelationship.type}
-                  onValueChange={(v) =>
-                    updateRelationship(selectedRelationship.id, {
-                      type: v as (typeof selectedRelationship)['type'],
-                    })
-                  }
-                >
-                  <SelectTrigger className="nodrag h-8 w-full text-xs">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent className="z-[100]">
-                    <SelectItem value="one-to-many">One to many</SelectItem>
-                    <SelectItem value="one-to-one">One to one</SelectItem>
-                    <SelectItem value="many-to-many">Many to many</SelectItem>
-                  </SelectContent>
-                </Select>
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                className="nodrag h-8 w-full"
-                type="button"
-                onClick={() =>
-                  updateRelationship(selectedRelationship.id, {
-                    sourceTableId: selectedRelationship.targetTableId,
-                    sourceColumnId: selectedRelationship.targetColumnId,
-                    targetTableId: selectedRelationship.sourceTableId,
-                    targetColumnId: selectedRelationship.sourceColumnId,
-                  })
-                }
-              >
-                Flip direction
-              </Button>
-              <Button
-                size="sm"
-                variant="destructive"
-                className="nodrag h-8 w-full"
-                type="button"
-                onClick={() => {
-                  deleteRelationship(selectedRelationship.id)
-                  setSelectedRelationshipId(null)
-                  setInspectorOpen(false)
-                }}
-              >
-                Remove link
-              </Button>
-            </CardContent>
-          </Card>
-        )}
-
-        {inspectorOpen && !selectedRelationship && (
-          <Card className="absolute right-4 top-4 z-20 w-60 border-border/60 bg-background/95 shadow-md backdrop-blur-sm">
-            <CardContent className="px-3 py-3">
-              <Alert variant="destructive">
-                <AlertTitle className="text-xs">Relationship unavailable</AlertTitle>
-                <AlertDescription className="text-[11px]">
-                  This link may have been removed. Close and select another edge.
-                </AlertDescription>
-              </Alert>
-              <Button
-                type="button"
-                variant="outline"
-                size="sm"
-                className="mt-3 w-full"
-                onClick={() => {
-                  setInspectorOpen(false)
-                  setSelectedRelationshipId(null)
-                }}
-              >
-                Close
-              </Button>
-            </CardContent>
-          </Card>
-        )}
+        <SchemaFlowCanvasToolbar
+          canvasTool={canvasTool}
+          setCanvasTool={setCanvasTool}
+          sortedTables={sortedTables}
+          onJumpToTable={handleJumpToTable}
+          jumpOpen={jumpOpen}
+          setJumpOpen={setJumpOpen}
+          onAddNote={() => {
+            addCanvas('note')
+            setCanvasTool('select')
+          }}
+          onAddImage={() => {
+            addCanvas('image')
+            setCanvasTool('select')
+          }}
+          onAddCron={() => {
+            addCanvas('cron')
+            setCanvasTool('select')
+          }}
+          onAddTable={handleAddBlankTable}
+          onAlign={autoLayout}
+          dagreRankDir={dagreRankDir}
+          onDagreDirChange={persistDagreRankDir}
+          onDagreLayout={runDagreLayout}
+          clusterMode={clusterMode}
+          onClusterModeChange={setClusterMode}
+          clusterGrouped={clusterGrouped}
+          clusterLayoutBusy={clusterLayoutBusy}
+          tablesLength={tables.length}
+          onClusterToggle={() => {
+            void applySmartCluster()
+          }}
+          onUngroupClusters={ungroupSmartClusters}
+          relEdgeSmooth={relEdgeType === 'smoothstep'}
+          onRelEdgeSmoothChange={(smooth) =>
+            persistRelEdgeType(smooth ? 'smoothstep' : 'step')
+          }
+          onFitView={handleFitView}
+          clustersPanel={
+            clusterGrouped && clusterLayouts.length > 0 ? (
+              <SchemaFlowClustersCard layouts={clusterLayouts} />
+            ) : null
+          }
+          inspector={inspectorPanels}
+          cloudSyncSlot={cloudSyncSlot}
+        />
       </ReactFlow>
     </div>
   )

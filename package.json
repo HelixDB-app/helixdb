@@ -17,9 +17,11 @@
     "ios:dev:open": "sh scripts/ios-dev.sh --open",
     "ios:dev:open:lan": "pnpm tauri ios dev --open --host --force-ip-prompt",
     "ios:build": "pnpm tauri ios build",
-    "icons": "make icons"
+    "icons": "make icons",
+    "schema-sync": "cargo run --manifest-path schema-sync/Cargo.toml"
   },
   "dependencies": {
+    "@dagrejs/dagre": "^3.0.0",
     "@monaco-editor/react": "^4.7.0",
     "@radix-ui/react-context-menu": "^2.2.16",
     "@tailwindcss/typography": "^0.5.19",
