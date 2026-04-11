@@ -4,6 +4,7 @@ import { useEffect, useMemo } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Button } from '@/components/ui/button'
+import { aiSchemaViewHref } from '@/lib/ai-schema-routes'
 
 function extractLegacyProjectId(pathname: string): string | null {
   const match = pathname.match(/^\/schema-projects\/([^/]+)\/?$/)
@@ -19,7 +20,7 @@ export default function NotFound() {
 
   useEffect(() => {
     if (!legacyId) return
-    router.replace(`/schema-projects/designer?id=${legacyId}`)
+    router.replace(aiSchemaViewHref(legacyId))
   }, [legacyId, router])
 
   return (

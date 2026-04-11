@@ -30,7 +30,7 @@ else
 fi
 
 if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
-  echo "No built app found. Run: cargo tauri build  then  ./apple/codesign-app.sh"
+  echo "No built app found. Run: pnpm tauri build  then  ./apple/codesign-app.sh"
   exit 1
 fi
 

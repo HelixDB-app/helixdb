@@ -35,10 +35,11 @@ grep -q 'TEAM_ID' "$ENTITLEMENTS" && { echo "ERROR: entitlements still contain T
 trap "rm -f '$ENTITLEMENTS'" EXIT
 
 cd "$REPO_ROOT"
+source "$REPO_ROOT/apple/tauri-cli.sh"
 
 echo "=== 1. Build (universal macOS) ==="
 unset CI
-cargo tauri build --target universal-apple-darwin
+"$TAURI_CLI" build --target universal-apple-darwin
 
 APP_PATH="$REPO_ROOT/src-tauri/target/universal-apple-darwin/release/bundle/macos/$APP_NAME.app"
 [[ ! -d "$APP_PATH" ]] && APP_PATH="$REPO_ROOT/src-tauri/target/release/bundle/macos/$APP_NAME.app"

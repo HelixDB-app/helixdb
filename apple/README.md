@@ -86,7 +86,7 @@ Add testers in App Store Connect → pgStudio → TestFlight; they install via t
 **Manual steps (TestFlight):**
 
 ```bash
-cargo tauri build
+pnpm install && pnpm tauri build
 export SIGNING_IDENTITY="3rd Party Mac Developer Application: Your Name (TEAM_ID)"
 ./apple/codesign-app.sh
 export INSTALLER_IDENTITY="3rd Party Mac Developer Installer: Your Name (TEAM_ID)"

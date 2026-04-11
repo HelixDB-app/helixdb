@@ -1,5 +1,4 @@
 import type { Metadata, Viewport } from "next";
-import { Inter, JetBrains_Mono } from "next/font/google";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Toaster } from "@/components/ui/sonner";
 import { ThemeProvider } from "@/components/theme-provider";
@@ -21,16 +20,6 @@ import { ErrorBoundary } from "@/components/error-boundary";
 import { TrialProvider, TrialBanner, TrialGate } from "@/components/trial-banner";
 import { APP_NAME, APP_TAGLINE } from "@/lib/app-config";
 import "./globals.css";
-
-const inter = Inter({
-  variable: "--font-inter",
-  subsets: ["latin"],
-});
-
-const jetbrainsMono = JetBrains_Mono({
-  variable: "--font-jetbrains-mono",
-  subsets: ["latin"],
-});
 
 export const metadata: Metadata = {
   title: `${APP_NAME} — ${APP_TAGLINE}`,
@@ -83,9 +72,7 @@ export default function RootLayout({
             preventing a flash of white on first paint. */}
         <style dangerouslySetInnerHTML={{ __html: `body{background-color:var(--background);}` }} />
       </head>
-      <body
-        className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased`}
-      >
+      <body className="font-sans antialiased">
         <AppSplash />
         <DesktopMenuBridge />
         <WebAccountHashBridge />
@@ -107,7 +94,7 @@ export default function RootLayout({
                       <SubscriptionProvider>
                         <TrialProvider>
                           {/* <TrialGate /> */}
-                          <TrialBanner />
+                          {/* <TrialBanner /> */}
                           <AppUpdateManager />
                           <WhatsNewModal />
                           <ErrorBoundary>

@@ -85,6 +85,7 @@ if [[ "$INSTALL_ID" == *"3rd Party Mac Developer Application"* ]]; then
 fi
 
 cd "$REPO_ROOT"
+source "$REPO_ROOT/apple/tauri-cli.sh"
 
 # ── Bump build number (CFBundleVersion) for TestFlight ─────────────────────
 export TAURI_CONF_PATH="$TAURI_CONF"
@@ -135,7 +136,7 @@ echo "Target: $TARGET"
 unset CI
 export GITHUB_CLIENT_ID="${GITHUB_CLIENT_ID:-}"
 export GITHUB_CLIENT_SECRET="${GITHUB_CLIENT_SECRET:-}"
-cargo tauri build --target "$TARGET"
+"$TAURI_CLI" build --target "$TARGET"
 
 APP_PATH="$REPO_ROOT/src-tauri/target/$TARGET/release/bundle/macos/$APP_NAME.app"
 if [[ ! -d "$APP_PATH" ]]; then

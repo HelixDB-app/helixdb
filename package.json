@@ -8,10 +8,10 @@
     "start": "next start",
     "lint": "eslint",
     "test:unit": "node --test src/lib/sql-risk-guard.test.ts src/lib/nl-search-json.test.ts",
-    "tauri": "cargo tauri",
+    "tauri": "tauri",
     "build:mac": "sh -c 'case \"$(uname -m)\" in arm64) T=aarch64-apple-darwin;; x86_64) T=x86_64-apple-darwin;; *) T=;; esac; if [ -n \"$T\" ]; then pnpm tauri build --target \"$T\"; else pnpm tauri build; fi'",
     "release:mac": "pnpm build:mac",
-    "ios:init": "cargo tauri ios init",
+    "ios:init": "tauri ios init",
     "ios:dev": "sh scripts/ios-dev.sh",
     "ios:dev:lan": "pnpm tauri ios dev --host --force-ip-prompt",
     "ios:dev:open": "sh scripts/ios-dev.sh --open",
@@ -62,6 +62,7 @@
     "zustand": "^5.0.11"
   },
   "devDependencies": {
+    "@tauri-apps/cli": "^2.10.0",
     "@tailwindcss/postcss": "^4",
     "@types/d3": "^7.4.3",
     "@types/leaflet": "^1.9.21",

@@ -13,6 +13,8 @@ pub struct LocalPostgresStatus {
     pub host: String,
     pub connection_string: Option<String>,
     pub install_method: Option<String>,
+    /// False for macOS App Sandbox (MAS) and Windows — UI should show manual install instead of `brew`/apt.
+    pub auto_install_supported: bool,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
@@ -102,6 +104,39 @@ fn find_brew() -> Option<String> {
         }
     }
     which("brew")
+}
+
+/// macOS App Store builds run inside App Sandbox; spawning Homebrew or package installers is blocked.
+#[cfg(target_os = "macos")]
+fn is_macos_app_sandboxed() -> bool {
+    std::env::var("APP_SANDBOX_CONTAINER_ID")
+        .map(|v| !v.trim().is_empty())
+        .unwrap_or(false)
+}
+
+fn auto_install_supported_for_platform() -> bool {
+    #[cfg(target_os = "macos")]
+    {
+        !is_macos_app_sandboxed()
+    }
+    #[cfg(target_os = "windows")]
+    {
+        false
+    }
+    #[cfg(all(not(target_os = "macos"), not(target_os = "windows")))]
+    {
+        true
+    }
+}
+
+fn install_method_for_check() -> Option<String> {
+    #[cfg(target_os = "macos")]
+    {
+        if is_macos_app_sandboxed() {
+            return Some("manual".to_string());
+        }
+    }
+    detect_install_method()
 }
 
 /// Returns (brew_path, service_name) for the installed postgresql formula.
@@ -195,8 +230,9 @@ pub async fn check_local_postgres() -> LocalPostgresStatus {
     let installed = psql.is_some();
     let running = is_running();
     let version = psql.as_ref().and_then(|p| get_pg_version(p));
-    let install_method = detect_install_method();
+    let install_method = install_method_for_check();
     let data_dir = find_data_dir();
+    let auto_install_supported = auto_install_supported_for_platform();
 
     LocalPostgresStatus {
         installed,
@@ -211,6 +247,7 @@ pub async fn check_local_postgres() -> LocalPostgresStatus {
             None
         },
         install_method,
+        auto_install_supported,
     }
 }
 
@@ -297,6 +334,19 @@ pub async fn restart_local_postgres() -> Result<LocalPostgresStatus, String> {
     Ok(check_local_postgres().await)
 }
 
+fn truncate_diagnostic(text: &str, max_chars: usize) -> String {
+    let t = text.trim();
+    if t.is_empty() {
+        return "(no output from installer)".to_string();
+    }
+    let collected: String = t.chars().take(max_chars).collect();
+    if t.chars().count() > max_chars {
+        format!("{collected}…")
+    } else {
+        collected
+    }
+}
+
 pub async fn install_local_postgres(app: &tauri::AppHandle) -> Result<LocalPostgresStatus, String> {
     #[cfg(any(target_os = "macos", target_os = "linux"))]
     let emit = |percent: u32, message: &str, log: Option<String>| {
@@ -312,18 +362,31 @@ pub async fn install_local_postgres(app: &tauri::AppHandle) -> Result<LocalPostg
 
     #[cfg(target_os = "macos")]
     {
+        if is_macos_app_sandboxed() {
+            return Err(
+                "Automatic installation is not available in the App Store build (macOS security sandbox). \
+                 Install PostgreSQL using the in-app guide or the official download page, then use “Check again”."
+                    .to_string(),
+            );
+        }
+
         let brew = find_brew().ok_or_else(|| {
-            "Homebrew is not installed. Install it first from https://brew.sh".to_string()
+            "Homebrew was not found. Install Homebrew from https://brew.sh, or install PostgreSQL manually using the guide in the app.".to_string()
         })?;
 
         emit(5, "Checking Homebrew...", None);
+        // Best-effort; a failed `brew update` should not block `brew install`.
         let _ = StdCommand::new(&brew).arg("update").output();
 
         emit(15, "Installing PostgreSQL 16...", None);
         let out = StdCommand::new(&brew)
             .args(["install", "postgresql@16"])
             .output()
-            .map_err(|e| format!("brew install failed: {e}"))?;
+            .map_err(|e| {
+                format!(
+                    "Could not run Homebrew (permission or system error: {e}). Try again, or install PostgreSQL manually from the official download page."
+                )
+            })?;
 
         let log_text = format!(
             "{}\n{}",
@@ -334,8 +397,18 @@ pub async fn install_local_postgres(app: &tauri::AppHandle) -> Result<LocalPostg
         if !out.status.success() {
             let stderr = String::from_utf8_lossy(&out.stderr);
             if !stderr.contains("already installed") {
-                let last_line = stderr.lines().last().unwrap_or("Unknown error").to_string();
-                return Err(format!("Installation failed: {last_line}"));
+                let combined = truncate_diagnostic(&log_text, 800);
+                let sandbox_hint = if stderr.contains("Operation not permitted")
+                    || stderr.contains("EPERM")
+                    || stderr.contains("not allowed")
+                {
+                    "\n\nThis often means the app does not have permission to run the installer."
+                } else {
+                    ""
+                };
+                return Err(format!(
+                    "PostgreSQL could not be installed automatically.{sandbox_hint}\n\nDetails:\n{combined}\n\nYou can install PostgreSQL manually using the guide, or fix Homebrew and tap “Try again”."
+                ));
             }
         }
 
@@ -345,9 +418,21 @@ pub async fn install_local_postgres(app: &tauri::AppHandle) -> Result<LocalPostg
         let start_out = StdCommand::new(&brew)
             .args(["services", "start", "postgresql@16"])
             .output()
-            .map_err(|e| format!("Failed to start service: {e}"))?;
+            .map_err(|e| format!("Could not start PostgreSQL service: {e}"))?;
 
-        let start_log = String::from_utf8_lossy(&start_out.stdout).to_string();
+        let start_stderr = String::from_utf8_lossy(&start_out.stderr).to_string();
+        let start_stdout = String::from_utf8_lossy(&start_out.stdout).to_string();
+        if !start_out.status.success() {
+            let diag = truncate_diagnostic(
+                &format!("{start_stderr}\n{start_stdout}"),
+                600,
+            );
+            return Err(format!(
+                "PostgreSQL was installed but the service did not start.\n\nDetails:\n{diag}\n\nTry starting PostgreSQL from Terminal: brew services start postgresql@16 — or use the manual setup guide."
+            ));
+        }
+
+        let start_log = start_stdout;
         emit(90, "Waiting for PostgreSQL to be ready...", Some(start_log));
 
         tokio::time::sleep(tokio::time::Duration::from_secs(3)).await;

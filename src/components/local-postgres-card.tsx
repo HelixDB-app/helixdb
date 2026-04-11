@@ -5,6 +5,7 @@ import { listen } from "@tauri-apps/api/event";
 import { isTauri } from "@/lib/tauri-runtime";
 import type { InstallProgress, LocalPostgresStatus } from "@/lib/types";
 import {
+    authOpenBrowser,
     localPostgresCheck,
     localPostgresInstall,
     localPostgresRestart,
@@ -16,10 +17,11 @@ import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import {
     AlertCircle,
-    CheckCircle2,
+    BookOpen,
     ChevronDown,
     ChevronUp,
     Download,
+    ExternalLink,
     Loader2,
     Monitor,
     Play,
@@ -30,16 +32,36 @@ import {
     Zap,
 } from "lucide-react";
 
+const URL_PG_DOWNLOAD = "https://www.postgresql.org/download/";
+const URL_PG_MACOS = "https://www.postgresql.org/download/macosx/";
+const URL_HOMEBREW = "https://brew.sh";
+const URL_POSTGRESAPP = "https://postgresapp.com/";
+
+function formatTauriError(e: unknown): string {
+    if (e instanceof Error) return e.message;
+    if (typeof e === "string") return e;
+    if (e && typeof e === "object" && "message" in e && typeof (e as { message: unknown }).message === "string") {
+        return (e as { message: string }).message;
+    }
+    return String(e);
+}
+
+/** When status is unknown (e.g. check never succeeded), do not offer automatic install. */
+function effectiveAutoInstallSupported(s: LocalPostgresStatus | null | undefined): boolean {
+    if (s == null) return false;
+    return s.auto_install_supported ?? true;
+}
+
 // ── Types ──────────────────────────────────────────────────────────────────
 
 type CardPhase =
     | { kind: "checking" }
-    | { kind: "not_installed"; installMethod: string | null }
+    | { kind: "not_installed"; installMethod: string | null; autoInstallSupported: boolean }
     | { kind: "stopped"; status: LocalPostgresStatus }
     | { kind: "running"; status: LocalPostgresStatus }
     | { kind: "installing"; progress: number; message: string; log: string }
     | { kind: "managing"; action: "starting" | "stopping" | "restarting" }
-    | { kind: "error"; message: string; status?: LocalPostgresStatus };
+    | { kind: "error"; message: string; status?: LocalPostgresStatus; recover?: "install" | "check" };
 
 // ── Component ──────────────────────────────────────────────────────────────
 
@@ -51,6 +73,103 @@ function LocalPostgresCardHydrationFallback() {
                 <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin" aria-hidden />
                 <span>Preparing local PostgreSQL…</span>
             </div>
+        </div>
+    );
+}
+
+function PostgresInstallGuide({ defaultOpen }: { defaultOpen: boolean }) {
+    const [open, setOpen] = useState(defaultOpen);
+
+    useEffect(() => {
+        if (defaultOpen) setOpen(true);
+    }, [defaultOpen]);
+
+    return (
+        <div className="rounded-lg border border-border/40 bg-muted/15 overflow-hidden">
+            <button
+                type="button"
+                onClick={() => setOpen((v) => !v)}
+                className="flex w-full items-center justify-between gap-2 px-3 py-2 text-left text-[11px] font-medium text-foreground/85 hover:bg-muted/30 transition-colors"
+            >
+                <span className="flex items-center gap-1.5">
+                    <BookOpen className="h-3.5 w-3.5 shrink-0 text-muted-foreground" aria-hidden />
+                    PostgreSQL setup guide
+                </span>
+                <ChevronDown
+                    className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform", open && "rotate-180")}
+                    aria-hidden
+                />
+            </button>
+            {open && (
+                <div className="space-y-3 border-t border-border/30 px-3 py-2.5 text-[11px] text-muted-foreground leading-relaxed">
+                    <div>
+                        <p className="mb-1 font-semibold text-foreground/90">macOS</p>
+                        <ol className="list-decimal space-y-1.5 pl-4">
+                            <li>
+                                Download an installer from the official PostgreSQL site (or use Postgres.app).
+                            </li>
+                            <li>Run the installer and complete the setup wizard (default port is usually 5432).</li>
+                            <li>Start PostgreSQL if the installer does not start it automatically.</li>
+                            <li>Return here and tap <span className="text-foreground/80">Check again</span> so pgStudio can detect your server.</li>
+                        </ol>
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-7 gap-1 text-[10px]"
+                                onClick={() => void authOpenBrowser(URL_PG_MACOS)}
+                            >
+                                <ExternalLink className="h-3 w-3" />
+                                PostgreSQL.org (macOS)
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-7 gap-1 text-[10px]"
+                                onClick={() => void authOpenBrowser(URL_POSTGRESAPP)}
+                            >
+                                <ExternalLink className="h-3 w-3" />
+                                Postgres.app
+                            </Button>
+                            <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="h-7 gap-1 text-[10px]"
+                                onClick={() => void authOpenBrowser(URL_HOMEBREW)}
+                            >
+                                <ExternalLink className="h-3 w-3" />
+                                Homebrew
+                            </Button>
+                        </div>
+                    </div>
+                    <div>
+                        <p className="mb-1 font-semibold text-foreground/90">Linux</p>
+                        <p className="mb-1">Example on Debian/Ubuntu:</p>
+                        <pre className="rounded-md bg-black/35 px-2 py-1.5 font-mono text-[10px] text-muted-foreground/90 whitespace-pre-wrap">
+                            sudo apt update{"\n"}
+                            sudo apt install -y postgresql postgresql-contrib{"\n"}
+                            sudo systemctl start postgresql
+                        </pre>
+                    </div>
+                    <div>
+                        <p className="mb-1 font-semibold text-foreground/90">Windows</p>
+                        <p>Use the official installer from postgresql.org, then create a database user if prompted.</p>
+                        <Button
+                            type="button"
+                            variant="outline"
+                            size="sm"
+                            className="mt-2 h-7 gap-1 text-[10px]"
+                            onClick={() => void authOpenBrowser("https://www.postgresql.org/download/windows/")}
+                        >
+                            <ExternalLink className="h-3 w-3" />
+                            Windows downloads
+                        </Button>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
@@ -80,9 +199,11 @@ function LocalPostgresCardDesktop() {
     const { connect, isConnecting } = useConnectionStore();
     const [phase, setPhase] = useState<CardPhase>({ kind: "checking" });
     const [showLog, setShowLog] = useState(false);
+    const [guideDefaultOpen, setGuideDefaultOpen] = useState(false);
     const [connectError, setConnectError] = useState<string | null>(null);
     const [isAutoConnecting, setIsAutoConnecting] = useState(false);
     const unlistenRef = useRef<(() => void) | null>(null);
+    const lastStatusRef = useRef<LocalPostgresStatus | null>(null);
 
     const check = async () => {
         setPhase({ kind: "checking" });
@@ -90,13 +211,18 @@ function LocalPostgresCardDesktop() {
             const s = await localPostgresCheck();
             applyStatus(s);
         } catch (e) {
-            setPhase({ kind: "error", message: String(e) });
+            setPhase({ kind: "error", message: formatTauriError(e), recover: "check" });
         }
     };
 
     const applyStatus = (s: LocalPostgresStatus) => {
+        lastStatusRef.current = s;
         if (!s.installed) {
-            setPhase({ kind: "not_installed", installMethod: s.install_method });
+            setPhase({
+                kind: "not_installed",
+                installMethod: s.install_method,
+                autoInstallSupported: effectiveAutoInstallSupported(s),
+            });
         } else if (s.running) {
             setPhase({ kind: "running", status: s });
         } else {
@@ -117,6 +243,17 @@ function LocalPostgresCardDesktop() {
     }, []);
 
     const handleInstall = async () => {
+        if (!effectiveAutoInstallSupported(lastStatusRef.current)) {
+            setGuideDefaultOpen(true);
+            setPhase({
+                kind: "error",
+                message:
+                    "Automatic installation is not available in this build. Use the guide below or the official PostgreSQL download page, then tap Check again.",
+                recover: "check",
+            });
+            return;
+        }
+
         setShowLog(false);
         setPhase({ kind: "installing", progress: 0, message: "Starting installation...", log: "" });
 
@@ -145,7 +282,8 @@ function LocalPostgresCardDesktop() {
         } catch (e) {
             unlisten();
             unlistenRef.current = null;
-            setPhase({ kind: "error", message: String(e) });
+            setGuideDefaultOpen(true);
+            setPhase({ kind: "error", message: formatTauriError(e), recover: "install" });
         }
     };
 
@@ -155,7 +293,7 @@ function LocalPostgresCardDesktop() {
             const s = await localPostgresStart();
             applyStatus(s);
         } catch (e) {
-            setPhase({ kind: "error", message: String(e) });
+            setPhase({ kind: "error", message: formatTauriError(e), recover: "check" });
         }
     };
 
@@ -165,7 +303,7 @@ function LocalPostgresCardDesktop() {
             const s = await localPostgresStop();
             applyStatus(s);
         } catch (e) {
-            setPhase({ kind: "error", message: String(e) });
+            setPhase({ kind: "error", message: formatTauriError(e), recover: "check" });
         }
     };
 
@@ -175,7 +313,7 @@ function LocalPostgresCardDesktop() {
             const s = await localPostgresRestart();
             applyStatus(s);
         } catch (e) {
-            setPhase({ kind: "error", message: String(e) });
+            setPhase({ kind: "error", message: formatTauriError(e), recover: "check" });
         }
     };
 
@@ -195,6 +333,7 @@ function LocalPostgresCardDesktop() {
         if (method === "brew") return "Install via Homebrew";
         if (method === "apt") return "Install via apt";
         if (method === "dnf" || method === "yum") return "Install via dnf";
+        if (method === "manual") return "Install PostgreSQL";
         return "Install PostgreSQL";
     };
 
@@ -274,31 +413,61 @@ function LocalPostgresCardDesktop() {
 
                 {phase.kind === "not_installed" && (
                     <div className="space-y-2">
-                        <p className="text-xs text-muted-foreground/60">
-                            PostgreSQL is not installed on this machine.
+                        <p className="text-xs text-muted-foreground/70 leading-relaxed">
+                            {phase.installMethod === "windows" ? (
+                                <>PostgreSQL is not installed. Use the official Windows installer, then return here.</>
+                            ) : phase.autoInstallSupported ? (
+                                <>
+                                    PostgreSQL is not installed. You can install it automatically (requires Homebrew on
+                                    macOS, or apt/dnf on Linux), or follow the guide for a manual setup.
+                                </>
+                            ) : (
+                                <>
+                                    PostgreSQL is not installed. This App Store build cannot run system installers for
+                                    you — use the official download or the guide, then tap{" "}
+                                    <span className="text-foreground/80 font-medium">Check again</span>.
+                                </>
+                            )}
                         </p>
                         {phase.installMethod === "windows" ? (
                             <Button
                                 size="sm"
                                 className="w-full h-8 gap-1.5 text-xs bg-blue-600/90 hover:bg-blue-500 text-white"
-                                onClick={() =>
-                                    window.open(
-                                        "https://www.postgresql.org/download/windows/",
-                                        "_blank"
-                                    )
-                                }
+                                onClick={() => void authOpenBrowser("https://www.postgresql.org/download/windows/")}
                             >
                                 <Download className="h-3.5 w-3.5" />
                                 Download PostgreSQL Installer
                             </Button>
-                        ) : (
+                        ) : phase.autoInstallSupported ? (
                             <Button
                                 size="sm"
                                 className="w-full h-8 gap-1.5 text-xs bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white"
-                                onClick={handleInstall}
+                                onClick={() => void handleInstall()}
                             >
                                 <Download className="h-3.5 w-3.5" />
                                 {installLabel(phase.installMethod)}
+                            </Button>
+                        ) : (
+                            <Button
+                                size="sm"
+                                className="w-full h-8 gap-1.5 text-xs bg-gradient-to-r from-sky-600 to-blue-600 hover:from-sky-500 hover:to-blue-500 text-white"
+                                onClick={() => void authOpenBrowser(URL_PG_MACOS)}
+                            >
+                                <ExternalLink className="h-3.5 w-3.5" />
+                                Open official PostgreSQL for macOS
+                            </Button>
+                        )}
+                        <PostgresInstallGuide defaultOpen={!phase.autoInstallSupported} />
+                        {phase.autoInstallSupported && (
+                            <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className="w-full h-7 text-[10px] text-muted-foreground hover:text-foreground"
+                                onClick={() => void authOpenBrowser(URL_PG_DOWNLOAD)}
+                            >
+                                <ExternalLink className="h-3 w-3 mr-1" />
+                                Browse all PostgreSQL downloads
                             </Button>
                         )}
                     </div>
@@ -418,19 +587,53 @@ function LocalPostgresCardDesktop() {
 
                 {phase.kind === "error" && (
                     <div className="space-y-2">
-                        <div className="flex items-start gap-1.5 rounded-lg bg-red-500/10 border border-red-500/20 px-2.5 py-2 text-[10px] text-red-400">
-                            <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" />
-                            <span className="break-all">{phase.message}</span>
+                        <div className="rounded-lg bg-red-500/10 border border-red-500/20 px-2.5 py-2 text-[10px] text-red-400">
+                            <div className="flex items-start gap-1.5">
+                                <AlertCircle className="h-3 w-3 mt-0.5 shrink-0" aria-hidden />
+                                <div className="min-w-0 space-y-1">
+                                    <p className="font-semibold text-red-300/95">
+                                        {phase.recover === "install"
+                                            ? "Installation could not finish"
+                                            : "Something went wrong"}
+                                    </p>
+                                    <p className="whitespace-pre-wrap break-words text-red-400/95 leading-relaxed">
+                                        {phase.message}
+                                    </p>
+                                </div>
+                            </div>
                         </div>
-                        <Button
-                            variant="outline"
-                            size="sm"
-                            className="w-full h-7 gap-1.5 text-[10px] border-border/30"
-                            onClick={check}
-                        >
-                            <RefreshCw className="h-3 w-3" />
-                            Retry Detection
-                        </Button>
+                        <div className="flex flex-col gap-1.5">
+                            {phase.recover === "install" && effectiveAutoInstallSupported(lastStatusRef.current) && (
+                                    <Button
+                                        variant="default"
+                                        size="sm"
+                                        className="w-full h-8 gap-1.5 text-xs bg-gradient-to-r from-emerald-600 to-cyan-600 hover:from-emerald-500 hover:to-cyan-500 text-white"
+                                        onClick={() => void handleInstall()}
+                                    >
+                                        <RefreshCw className="h-3.5 w-3.5" />
+                                        Try installing again
+                                    </Button>
+                                )}
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="w-full h-8 gap-1.5 text-xs border-border/40"
+                                onClick={() => void authOpenBrowser(URL_PG_DOWNLOAD)}
+                            >
+                                <ExternalLink className="h-3.5 w-3.5" />
+                                Open official download page
+                            </Button>
+                            <Button
+                                variant="outline"
+                                size="sm"
+                                className="w-full h-7 gap-1.5 text-[10px] border-border/30"
+                                onClick={check}
+                            >
+                                <RefreshCw className="h-3 w-3" />
+                                Check again
+                            </Button>
+                        </div>
+                        <PostgresInstallGuide defaultOpen={guideDefaultOpen} />
                     </div>
                 )}
             </div>

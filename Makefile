@@ -65,7 +65,7 @@ icons:
 		-background '#0f172a' -extent 1024x1024 \
 		-strip \
 		src-tauri/icons/app-icon-source.png
-	cd src-tauri && cargo tauri icon icons/app-icon-source.png --ios-color '#0f172a'
+	cd src-tauri && ../node_modules/.bin/tauri icon icons/app-icon-source.png --ios-color '#0f172a'
 	cp src-tauri/icons/ios/*.png src-tauri/gen/apple/Assets.xcassets/AppIcon.appiconset/
 	magick src-tauri/icons/app-icon-source.png -resize 180x180 -strip public/apple-touch-icon.png
 	magick src-tauri/icons/app-icon-source.png -resize 192x192 -strip public/icon-192.png

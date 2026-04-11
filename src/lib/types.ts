@@ -928,8 +928,10 @@ export interface LocalPostgresStatus {
     port: number;
     host: string;
     connection_string: string | null;
-    /** "brew" | "apt" | "dnf" | "yum" | "pacman" | "system" | "windows" | null */
+    /** "brew" | "apt" | "dnf" | "yum" | "pacman" | "system" | "windows" | "manual" | null */
     install_method: string | null;
+    /** False for macOS App Store (sandbox) and Windows — use manual install / official downloads. */
+    auto_install_supported: boolean;
 }
 
 /** Progress event payload emitted during PostgreSQL installation */

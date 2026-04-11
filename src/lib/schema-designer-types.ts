@@ -100,3 +100,86 @@ export interface SchemaProjectSummary {
   updated_at: string
   table_count: number
 }
+
+export type SchemaNodeCategory = 'core' | 'junction' | 'audit' | 'config' | 'view'
+export type SchemaCardinality = '1:1' | '1:N' | 'N:M'
+export type SchemaOnDelete = 'CASCADE' | 'SET NULL' | 'RESTRICT' | 'NO ACTION'
+export type MilestoneKey =
+  | 'meta'
+  | 'tables'
+  | 'indexes'
+  | 'graph'
+  | 'nodes'
+  | 'docs'
+  | 'first_table'
+  | 'done'
+
+export interface OpenRouterModel {
+  id: string
+  label: string
+  contextK: number
+  free: boolean
+  latencyTier: 'fast' | 'balanced' | 'slow'
+}
+
+export interface SchemaGraphColumn {
+  name: string
+  type: string
+  constraints: string[]
+  indexed: boolean
+}
+
+export interface SchemaGraphNode {
+  id: string
+  type: 'tableNode'
+  position: { x: number; y: number }
+  data: {
+    label: string
+    category: SchemaNodeCategory
+    columns: SchemaGraphColumn[]
+    rowEstimate: string
+  }
+}
+
+export interface SchemaGraphEdge {
+  id: string
+  source: string
+  target: string
+  sourceHandle: string
+  targetHandle: string
+  label: string
+  data: {
+    cardinality: SchemaCardinality
+    onDelete: SchemaOnDelete
+  }
+}
+
+export interface AISchemaResult {
+  schema_meta: Record<string, unknown>
+  sql_blocks: Record<string, string>
+  react_flow_graph: {
+    nodes: SchemaGraphNode[]
+    edges: SchemaGraphEdge[]
+  }
+  schema_doc?: string
+}
+
+export interface AISchemaProject {
+  id: string
+  name: string
+  description?: string
+  prompt: string
+  update_prompt?: string
+  model?: string
+  created_at: string
+  updated_at: string
+  schema: AISchemaResult
+}
+
+export interface AISchemaProjectSummary {
+  id: string
+  name: string
+  description?: string
+  updated_at: string
+  table_count: number
+}

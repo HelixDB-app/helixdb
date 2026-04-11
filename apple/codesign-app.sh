@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Sign pgStudio.app for Mac App Store / TestFlight.
-# 1. Build first: cargo tauri build  (or pnpm tauri build)
+# 1. Build first: pnpm tauri build  (or ./apple/build-and-upload-testflight.sh step 1)
 # 2. Get your identity: security find-identity -v -p codesigning
 # 3. Set it: export SIGNING_IDENTITY="3rd Party Mac Developer Application: Your Name (TEAMID)"
 # 4. Run: ./apple/codesign-app.sh
@@ -10,7 +10,7 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 APP_NAME="pgStudio"
 ENTITLEMENTS="$REPO_ROOT/src-tauri/Entitlements.plist"
 
-# Default cargo tauri build (no --target) → target/release/; with --target → target/$TARGET/release/
+# Default pnpm tauri build (no --target) → target/release/; with --target → target/$TARGET/release/
 APP_PATH=""
 if [[ -d "$REPO_ROOT/src-tauri/target/release/bundle/macos/$APP_NAME.app" ]]; then
   APP_PATH="$REPO_ROOT/src-tauri/target/release/bundle/macos/$APP_NAME.app"
@@ -24,7 +24,7 @@ else
 fi
 
 if [[ -z "$APP_PATH" || ! -d "$APP_PATH" ]]; then
-  echo "No built app found. Run: cargo tauri build  (or pnpm tauri build)"
+  echo "No built app found. Run: pnpm tauri build  (from repo root, after pnpm install)"
   exit 1
 fi
 

@@ -32,7 +32,7 @@ If you don’t want to run the full script:
 
 1. **Build** (universal macOS):
    ```bash
-   unset CI && cargo tauri build --target universal-apple-darwin
+   pnpm install && unset CI && pnpm tauri build --target universal-apple-darwin
    ```
    App path: `src-tauri/target/universal-apple-darwin/release/bundle/macos/pgStudio.app`
 
@@ -47,7 +47,7 @@ If you don’t want to run the full script:
 ## Why not “Archive” in Xcode?
 
 - **Archive** and **Distribute App** in Xcode work with **Xcode projects** (.xcodeproj) or workspaces. Your app is built with **Tauri** (Rust + web frontend); there is no Xcode project in this repo.
-- So you **cannot** use **Product → Archive** in Xcode for this app. You build with `cargo tauri build`, then either:
+- So you **cannot** use **Product → Archive** in Xcode for this app. You build with `pnpm tauri build` (after `pnpm install`), then either:
   - upload the resulting signed **.pkg** via the script (`altool`), or  
   - upload the same signed **.pkg** via **Transporter**.
 

@@ -1,5 +1,5 @@
 #!/bin/sh
-# Build phase helper for Tauri iOS: runs `cargo tauri ios xcode-script` with a valid arch.
+# Build phase helper for Tauri iOS: runs `tauri ios xcode-script` (from @tauri-apps/cli / pnpm) with a valid arch.
 #
 # Xcode 15+ may set ARCHS=undefined_arch during script phases. Tauri only accepts arm64 | x86_64.
 # Xcode GUI builds also omit login-shell PATH, so ~/.cargo/bin is often missing.
@@ -199,9 +199,17 @@ if [ ! -f "$TAURI_APP_PATH/tauri.conf.json" ] && [ ! -f "$TAURI_APP_PATH/tauri.c
 fi
 unset PNPM_PACKAGE_NAME npm_lifecycle_event 2>/dev/null || true
 
+_REPO_ROOT=$(cd "$TAURI_APP_PATH/.." && pwd)
+TAURI_CLI="$_REPO_ROOT/node_modules/.bin/tauri"
+if [ ! -x "$TAURI_CLI" ]; then
+  echo "error: Tauri CLI not found at $TAURI_CLI" >&2
+  echo "  Run: cd \"$_REPO_ROOT\" && pnpm install" >&2
+  exit 1
+fi
+
 # Do not pass --framework-search-paths "" etc. Empty values break clap parsing so the arch positional
 # is mis-read and you get "Arch specified by Xcode was invalid".
-set -- cargo tauri ios xcode-script -v \
+set -- "$TAURI_CLI" ios xcode-script -v \
   --platform "$PLATFORM_DISPLAY_NAME" \
   --sdk-root "$SDKROOT"
 

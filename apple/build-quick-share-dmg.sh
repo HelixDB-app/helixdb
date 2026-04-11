@@ -25,10 +25,11 @@ if [[ "$SIGN_ID" != *"Developer ID Application"* ]]; then
 fi
 
 cd "$REPO_ROOT"
+source "$REPO_ROOT/apple/tauri-cli.sh"
 
 echo "=== 1. Build ==="
 unset CI
-cargo tauri build
+"$TAURI_CLI" build
 
 APP_PATH="$REPO_ROOT/src-tauri/target/release/bundle/macos/$APP_NAME.app"
 [[ ! -d "$APP_PATH" ]] && APP_PATH="$REPO_ROOT/src-tauri/target/aarch64-apple-darwin/release/bundle/macos/$APP_NAME.app"

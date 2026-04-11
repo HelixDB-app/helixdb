@@ -9,6 +9,13 @@ export function readGeminiApiKeyFromEnv(): string {
     return process.env.NEXT_PUBLIC_GEMINI_API_KEY.trim();
 }
 
+export function readOpenRouterApiKeyFromEnv(): string {
+    if (typeof process === "undefined" || !process.env.NEXT_PUBLIC_OPENROUTER_API_KEY) {
+        return "";
+    }
+    return process.env.NEXT_PUBLIC_OPENROUTER_API_KEY.trim();
+}
+
 /** User setting overrides env when non-empty. */
 export function resolveGeminiApiKey(userOverride: string | undefined | null): string {
     const fromUser = (userOverride ?? "").trim();
@@ -76,6 +83,8 @@ export interface AppSettings {
     aiShowSuggestionLatency: boolean;
     aiCompletionUrl: string;
     aiWorkerUrl: string;
+    openRouterApiKey: string;
+    aiSchemaDefaultModel: string;
 
     /** When true, opening Query History on pg_stat tab ingests a snapshot (local SQLite). */
     queryHistoryAutoSnapshotPgStat: boolean;
@@ -112,7 +121,7 @@ const DEFAULT_SETTINGS: AppSettings = {
     aiReviewComplexLineThreshold: 10,
     notificationsEnabled: true,
     lastSeenVersion: "",
-    geminiApiKey: "",
+    geminiApiKey: "AIzaSyCxmZL-XutmW9S1yTNYjW98YH9ht4waIto",
     defaultAiModel: "gemini-2.5-flash",
     aiAutocompleteEnabled: true,
     aiInlineSuggestions: true,
@@ -124,6 +133,8 @@ const DEFAULT_SETTINGS: AppSettings = {
     aiShowSuggestionLatency: true,
     aiCompletionUrl: "",
     aiWorkerUrl: "",
+    openRouterApiKey: "",
+    aiSchemaDefaultModel: "arcee-ai/trinity-mini:free",
     queryHistoryAutoSnapshotPgStat: false,
     gitAiProvider: "cloudflare",
     cloudflareApiToken: "",
@@ -145,7 +156,7 @@ export const useSettingsStore = create<SettingsStore>()(
         }),
         {
             name: "helix-settings",
-            version: 4,
+            version: 5,
             migrate: (persisted, version) => {
                 const p = persisted as Partial<AppSettings>;
                 if (version < 4) {
@@ -153,6 +164,14 @@ export const useSettingsStore = create<SettingsStore>()(
                         ...DEFAULT_SETTINGS,
                         ...p,
                         queryHistoryAutoSnapshotPgStat: p.queryHistoryAutoSnapshotPgStat ?? false,
+                    } as AppSettings;
+                }
+                if (version < 5) {
+                    return {
+                        ...DEFAULT_SETTINGS,
+                        ...p,
+                        openRouterApiKey: p.openRouterApiKey ?? "",
+                        aiSchemaDefaultModel: p.aiSchemaDefaultModel ?? "arcee-ai/trinity-mini:free",
                     } as AppSettings;
                 }
                 return persisted as AppSettings;

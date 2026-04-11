@@ -25,10 +25,11 @@ trap "rm -f '$ENTITLEMENTS'" EXIT
 echo "Using Team ID: $TEAM_ID"
 
 cd "$REPO_ROOT"
+source "$REPO_ROOT/apple/tauri-cli.sh"
 
 echo "=== 1. Build ==="
 unset CI
-cargo tauri build
+"$TAURI_CLI" build
 
 APP_PATH="$REPO_ROOT/src-tauri/target/release/bundle/macos/$APP_NAME.app"
 for TARGET in universal-apple-darwin aarch64-apple-darwin x86_64-apple-darwin; do

@@ -193,7 +193,7 @@ Output under `out/`. **`serverExternalPackages: ["mongodb"]`** only applies when
 ### macOS `.app` and DMG
 
 ```bash
-cd /path/to/helixDB && unset CI && cargo tauri build
+cd /path/to/helixDB && pnpm install && unset CI && pnpm tauri build
 ```
 
 Artifacts (paths may vary by version):
